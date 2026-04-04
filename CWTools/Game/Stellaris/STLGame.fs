@@ -650,6 +650,8 @@ type STLGame(setupSettings: StellarisSettings) =
         member _.RefreshLocalisationCaches() =
             game.LocalisationManager.UpdateProcessedLocalisation()
 
+        member _.CleanupCache(existingFiles) = game.CleanupCache existingFiles
+
         member _.ForceRecompute() = resources.ForceRecompute()
         member _.Types() = game.Lookup.typeDefInfo
         member _.TypeDefs() = game.Lookup.typeDefs

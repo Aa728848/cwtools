@@ -49,6 +49,34 @@ type ErrorCache() =
     let selfErrors = ConcurrentDictionary<string, HashSet<CWError>>()
 
     let monitor = new Object()
+    
+    /// 清理不存在文件的缓存条目，防止内存泄漏
+    member this.Cleanup(existingFiles: Set<string>) =
+        lock monitor (fun () ->
+            // 清理 sourceToErrorsForTargets 中不存在的文件
+            let sourceFiles = sourceToErrorsForTargets.Keys |> Seq.toList
+            for sourceFile in sourceFiles do
+                if not (existingFiles.Contains sourceFile) then
+                    match sourceToErrorsForTargets.TryRemove sourceFile with
+                    | true, _ -> ()
+                    | _ -> ()
+            
+            // 清理 targetToErrors 中不存在的文件
+            let targetFiles = targetToErrors.Keys |> Seq.toList
+            for targetFile in targetFiles do
+                if not (existingFiles.Contains targetFile) then
+                    match targetToErrors.TryRemove targetFile with
+                    | true, _ -> ()
+                    | _ -> ()
+            
+            // 清理 selfErrors 中不存在的文件
+            let selfErrorFiles = selfErrors.Keys |> Seq.toList
+            for selfFile in selfErrorFiles do
+                if not (existingFiles.Contains selfFile) then
+                    match selfErrors.TryRemove selfFile with
+                    | true, _ -> ()
+                    | _ -> ()
+        )
 
     member this.AddErrorsGeneratedByFile(fromEntity: Entity, errorsForFiles: CWError seq) =
         lock monitor (fun () ->
@@ -346,6 +374,9 @@ type ValidationManager<'T when 'T :> ComputedData>
     member _.Validate(shallow: bool, entities: struct (Entity * Lazy<'T>) list) = validate shallow entities
     member _.ValidateLocalisation(entities: struct (Entity * Lazy<'T>) list) = validateLocalisation entities
     member _.ValidateGlobalLocalisation() = globalTypeDefLoc ()
+
+    /// 清理不存在文件的缓存条目，防止内存泄漏
+    member _.Cleanup(existingFiles: Set<string>) = errorCache.Cleanup existingFiles
 
     member _.CachedRuleErrors(entities: struct (Entity * Lazy<'T>) list) =
         let res =

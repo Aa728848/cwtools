@@ -60,7 +60,8 @@ type EU4ComputedData
     inherit
         ComputedData(referencedtypes, definedvariable, withRulesData, effectBlocks, triggersBlocks, savedEventTargets)
 
-    member _.ScriptedEffectParams: string list option = scriptedeffectparams
+    member val ScriptedEffectParams: string list option = scriptedeffectparams with get, set
+    member val ScriptValueParams: string list option = None with get, set
 
 type HOI4ComputedData = ComputedData
 type CK2ComputedData = ComputedData
@@ -79,7 +80,8 @@ type ScriptedEffectComputedData
     inherit
         ComputedData(referencedtypes, definedvariable, withRulesData, effectBlocks, triggersBlocks, savedEventTargets)
 
-    member _.ScriptedEffectParams: string list option = scriptedeffectparams
+    member val ScriptedEffectParams: string list option = scriptedeffectparams with get, set
+    member val ScriptValueParams: string list option = None with get, set
 
 type STLComputedData = ScriptedEffectComputedData
 type JominiComputedData = ScriptedEffectComputedData
@@ -668,7 +670,9 @@ type ResourceManager<'T when 'T :> ComputedData>
                             let values =
                                 n.Leaves
                                 |> Seq.map (fun l -> "$" + l.Key + "$", l.ValueText)
-                                |> Seq.where (fun (k, v) -> k.Length > 0 && v.Length > 0)
+                                // 只过滤空 key，允许空 value（空值会被替换为空字符串）
+                                // 这样 wg_crisis$CURRENT$.100 当 CURRENT 为空时能正确解析为 wg_crisis.100
+                                |> Seq.where (fun (k, v) -> k.Length > 0)
 
                             match inlineScriptsMap |> Map.tryFind scriptName with
                             | Some scriptNode ->

@@ -1,0 +1,34 @@
+# 测试 script_values 中的 $A$ 参数支持
+
+# 简单的 script_value 不带参数
+simple_value = {
+    add = 10
+}
+
+# 带参数的 script_value
+# 参数名: amount, 缺省值: 5
+value_with_param = {
+    add = $amount|5$
+}
+
+# 多个参数的 script_value
+# 参数名: base_value, 缺省值: 10
+# 参数名: multiplier, 缺省值: 2
+multi_param_value = {
+    add = $base_value|10$
+    multiply = $multiplier|2$
+}
+
+# 混合使用：有的有缺省值，有的没有
+mixed_param_value = {
+    $operation$ = $value|100$
+}
+
+# 复杂表达式
+complex_value = {
+    add = $base|10$
+    multiply = $mult|1$
+    divide = $div|1$
+    min = $min_val|0$
+    max = $max_val|999$
+}

@@ -68,9 +68,40 @@ module EU4 =
         let getDollarText (s: string) acc =
             s.Split('$')
             |> Array.mapi (fun i s -> i, s)
-            |> Array.fold (fun acc (i, s) -> if i % 2 = 1 then s :: acc else acc) acc
+            |> Array.fold (fun acc (i, s) ->
+                if i % 2 = 1 then
+                    // 处理 $A|B$ 语法，| 后面是缺省值，只取 | 前面的参数名
+                    let paramName =
+                        match s.Split('|') with
+                        | [| name; _ |] -> name  // 有缺省值，只取名字部分
+                        | _ -> s  // 没有缺省值，使用整个字符串
+                    paramName :: acc
+                else acc) acc
         // let split = s.Split([|'$'|],3)
         // if split.Length = 3 then split.[1]::acc else acc
+        let fNode =
+            (fun (x: Node) acc ->
+                let nodeRes = getDollarText x.Key acc
+
+                x.Leaves
+                |> Seq.fold (fun a n -> getDollarText n.Key (getDollarText (n.Value.ToRawString()) a)) nodeRes)
+
+        node |> (foldNode7 fNode) |> List.ofSeq
+
+    // 提取 script_values 中的参数（与 scripted_effect 相同逻辑）
+    let getScriptValueParams (node: Node) =
+        let getDollarText (s: string) acc =
+            s.Split('$')
+            |> Array.mapi (fun i s -> i, s)
+            |> Array.fold (fun acc (i, s) ->
+                if i % 2 = 1 then
+                    // 处理 $A|B$ 语法，| 后面是缺省值，只取 | 前面的参数名
+                    let paramName =
+                        match s.Split('|') with
+                        | [| name; _ |] -> name  // 有缺省值，只取名字部分
+                        | _ -> s  // 没有缺省值，使用整个字符串
+                    paramName :: acc
+                else acc) acc
         let fNode =
             (fun (x: Node) acc ->
                 let nodeRes = getDollarText x.Key acc
@@ -250,9 +281,40 @@ module Jomini =
         let getDollarText (s: string) acc =
             s.Split('$')
             |> Array.mapi (fun i s -> i, s)
-            |> Array.fold (fun acc (i, s) -> if i % 2 = 1 then s :: acc else acc) acc
+            |> Array.fold (fun acc (i, s) ->
+                if i % 2 = 1 then
+                    // 处理 $A|B$ 语法，| 后面是缺省值，只取 | 前面的参数名
+                    let paramName =
+                        match s.Split('|') with
+                        | [| name; _ |] -> name  // 有缺省值，只取名字部分
+                        | _ -> s  // 没有缺省值，使用整个字符串
+                    paramName :: acc
+                else acc) acc
         // let split = s.Split([|'$'|],3)
         // if split.Length = 3 then split.[1]::acc else acc
+        let fNode =
+            (fun (x: Node) acc ->
+                let nodeRes = getDollarText x.Key acc
+
+                x.Leaves
+                |> Seq.fold (fun a n -> getDollarText n.Key (getDollarText (n.Value.ToRawString()) a)) nodeRes)
+
+        node |> (foldNode7 fNode) |> List.ofSeq
+
+    // 提取 script_values 中的参数（与 scripted_effect 相同逻辑）
+    let getScriptValueParams (node: Node) =
+        let getDollarText (s: string) acc =
+            s.Split('$')
+            |> Array.mapi (fun i s -> i, s)
+            |> Array.fold (fun acc (i, s) ->
+                if i % 2 = 1 then
+                    // 处理 $A|B$ 语法，| 后面是缺省值，只取 | 前面的参数名
+                    let paramName =
+                        match s.Split('|') with
+                        | [| name; _ |] -> name  // 有缺省值，只取名字部分
+                        | _ -> s  // 没有缺省值，使用整个字符串
+                    paramName :: acc
+                else acc) acc
         let fNode =
             (fun (x: Node) acc ->
                 let nodeRes = getDollarText x.Key acc
@@ -271,6 +333,14 @@ module Jomini =
         else
             []
 
+    let getScriptValueParamsEntity (e: Entity) =
+        if
+            (e.logicalpath.StartsWith("common/script_values", StringComparison.OrdinalIgnoreCase))
+        then
+            getScriptValueParams e.entity
+        else
+            []
+
     let computeJominiData (infoService: unit -> InfoService option) (e: Entity) =
         let withRulesData = infoService().IsSome
 
@@ -286,6 +356,7 @@ module Jomini =
             | None -> (None, None, None, None, None)
         // let hastechs = getAllTechPrereqs e
         let scriptedeffectparams = Some(getScriptedEffectParamsEntity e)
+        let scriptvalueparams = Some(getScriptValueParamsEntity e)
 
         let referencedtypes =
             referencedtypes
@@ -293,15 +364,19 @@ module Jomini =
                 r
                 |> Seq.fold (fun acc kv -> acc |> (Map.add kv.Key (kv.Value |> List.ofSeq))) Map.empty)
 
-        JominiComputedData(
-            referencedtypes,
-            definedvariable,
-            scriptedeffectparams,
-            withRulesData,
-            effectBlocks,
-            triggersBlocks,
-            savedEventTargets
-        )
+        let computedData =
+            JominiComputedData(
+                referencedtypes,
+                definedvariable,
+                scriptedeffectparams,
+                withRulesData,
+                effectBlocks,
+                triggersBlocks,
+                savedEventTargets
+            )
+        
+        computedData.ScriptValueParams <- scriptvalueparams
+        computedData
 
     let computeJominiDataUpdate (infoService: unit -> InfoService option) (e: Entity) (data: JominiComputedData) =
         let withRulesData = infoService().IsSome
@@ -329,3 +404,4 @@ module Jomini =
         data.EffectBlocks <- effectBlocks
         data.TriggerBlocks <- triggersBlocks
         data.WithRulesData <- withRulesData
+        data.ScriptValueParams <- Some(getScriptValueParamsEntity e)

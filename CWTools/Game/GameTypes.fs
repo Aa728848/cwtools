@@ -83,6 +83,7 @@ type IGame =
     abstract ReplaceConfigRules: (string * string) list -> unit
     abstract RefreshCaches: unit -> unit
     abstract RefreshLocalisationCaches: unit -> unit
+    abstract CleanupCache: Set<string> -> unit
     abstract ForceRecompute: unit -> unit
     abstract Types: unit -> Map<string, TypeDefInfo array>
     abstract TypeDefs: unit -> CWTools.Rules.TypeDefinition list

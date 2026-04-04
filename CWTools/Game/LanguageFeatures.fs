@@ -1,5 +1,6 @@
 namespace CWTools.Games
 
+open System
 open CWTools.Utilities.Position
 open System.IO
 open Files
@@ -68,11 +69,15 @@ module LanguageFeatures =
         (filetext: string)
         =
         let split = filetext.Split('\n')
+        
+        // 获取当前行（注意 pos.Line 是 1-based）
+        let currentLineIdx = pos.Line - 1
+        let currentLine = if currentLineIdx >= 0 && currentLineIdx < split.Length then split.[currentLineIdx] else ""
 
         let filetext =
             split
             |> Array.mapi (fun i s ->
-                if i = (pos.Line - 1) then
+                if i = currentLineIdx then
                     log (sprintf "%s" s)
                     let s = s.Insert(pos.Column, magicCharString) in
                     log (sprintf "%s" s)
@@ -83,18 +88,172 @@ module LanguageFeatures =
 
         let resource = makeEntityResourceInput fileManager filepath filetext
 
-        match
-            Path.GetExtension filepath, resourceManager.ManualProcessResource resource, completionService, infoService
-        with
-        | ".yml", _, Some completion, _ -> completion.LocalisationComplete(pos, filetext) |> List.ofArray
-        | _, Some e, Some completion, Some info ->
-            log (sprintf "completion %s %s" (fileManager.ConvertPathToLogicalPath filepath) filepath)
+        // 特殊处理：value:script_value|param| 语法的参数补全
+        let tryScriptValueCompletion () =
+            // 先检查是否是注释行（以 # 开头的行）
+            if currentLineIdx >= 0 && currentLineIdx < split.Length then
+                let line = split.[currentLineIdx]
+                let trimmedLine = line.TrimStart()
+                
+                // 如果是注释行，跳过 script_value 参数补全
+                if trimmedLine.StartsWith("#") then
+                    None
+                else
+                    let col = pos.Column
+                    
+                    // 检查是否是 value:name|param| 模式
+                    // 情况1：已经存在 | 的情况 - value:xxx|
+                    let searchEnd = min col line.Length
+                    if searchEnd > 0 then
+                        let valuePattern = System.Text.RegularExpressions.Regex(@"value\s*:\s*([^|\s]+)\|")
+                        let m = valuePattern.Match(line.Substring(0, searchEnd))
 
-            match info.GetInfo(pos, e) with
-            | Some(ctx, _) -> completion.Complete(pos, e, Some ctx)
-            | None -> completion.Complete(pos, e, None)
-        | _, Some e, Some completion, None -> completion.Complete(pos, e, None)
-        | _, _, _, _ -> []
+                        if m.Success then
+                            let scriptValueName = m.Groups.[1].Value
+
+                            // 计算第一个 | 之后的位置
+                            let pipeAfterValue = m.Index + m.Length
+                            let remainingLen = col - pipeAfterValue
+
+                            if remainingLen >= 0 then
+                                let remainingText =
+                                    if pipeAfterValue <= line.Length then
+                                        line.Substring(pipeAfterValue, min remainingLen (line.Length - pipeAfterValue))
+                                    else ""
+
+                                // 检查是否在参数位置（偶数索引位置，0-based）
+                                // value:name|param1|val1|param2|val2|
+                                //             ^0    ^1   ^2   ^3
+                                let pipeCount = remainingText.Split('|').Length - 1
+                                let isParamPosition = pipeCount % 2 = 0
+
+                                if isParamPosition then
+                                    // 直接从所有实体中提取 script_value 参数
+                                    // 不依赖预计算数据，而是实时提取
+                                    let allEntities = resourceManager.Api.AllEntities()
+                                    let extractParams (e: Entity) =
+                                        let getDollarText (s: string) acc =
+                                            s.Split('$')
+                                            |> Array.mapi (fun i s -> i, s)
+                                            |> Array.fold (fun acc (i, s) ->
+                                                if i % 2 = 1 then
+                                                    match s.Split('|') with
+                                                    | [| name; _ |] -> name :: acc
+                                                    | _ -> s :: acc
+                                                else acc) acc
+                                        let fNode = (fun (x: Node) acc ->
+                                            let nodeRes = getDollarText x.Key acc
+                                            x.Leaves |> Seq.fold (fun a leaf ->
+                                                getDollarText leaf.Key (getDollarText (leaf.Value.ToRawString()) a)) nodeRes)
+                                        e.entity |> (ProcessCore.foldNode7 fNode) |> List.ofSeq
+
+                                    let allParams =
+                                        allEntities
+                                        |> Seq.filter (fun struct (e, _) ->
+                                            e.logicalpath.Contains("common/script_values", StringComparison.OrdinalIgnoreCase) ||
+                                            e.logicalpath.Contains("common\\script_values", StringComparison.OrdinalIgnoreCase))
+                                        |> Seq.collect (fun struct (e, _) -> extractParams e)
+                                        |> Seq.distinct
+                                        |> Seq.toArray
+
+                                    if allParams.Length > 0 then
+                                        log (sprintf "ScriptValue completion params: %A" allParams)
+                                        let completionItems =
+                                            allParams
+                                            |> Array.map (fun p ->
+                                                // 设置 sortText 为一个极小值，使其排在列表最前面
+                                                // 使用 CompletionCategory.Value
+                                                CompletionResponse.Simple(p, None, CompletionCategory.Value))
+                                            |> Array.toList
+                                        log (sprintf "ScriptValue completion items count: %d" completionItems.Length)
+                                        Some completionItems
+                                    else
+                                        None
+                                else
+                                    None
+                            else
+                                None
+                        else
+                            // 情况2：刚输入 | 但文档中可能还没有 - value:xxx 后面紧跟 |
+                            // 检查光标前是否有 value:xxx 模式（没有 |）
+                            let valueNoPipePattern = System.Text.RegularExpressions.Regex(@"value\s*:\s*([^|\s]+)$")
+                            let textBeforeCursor =
+                                if searchEnd <= line.Length then line.Substring(0, searchEnd)
+                                else line
+                            let m2 = valueNoPipePattern.Match(textBeforeCursor)
+
+                            if m2.Success then
+                                let scriptValueName = m2.Groups.[1].Value
+                                let endOfMatch = m2.Index + m2.Length
+                                // 确认光标就在 value:xxx 末尾或后面紧跟 |
+                                if col >= endOfMatch - 1 && col <= endOfMatch + 1 then
+                                    // 直接从所有实体中提取 script_value 参数
+                                    let allEntities = resourceManager.Api.AllEntities()
+                                    let extractParams (e: Entity) =
+                                        let getDollarText (s: string) acc =
+                                            s.Split('$')
+                                            |> Array.mapi (fun i s -> i, s)
+                                            |> Array.fold (fun acc (i, s) ->
+                                                if i % 2 = 1 then
+                                                    match s.Split('|') with
+                                                    | [| name; _ |] -> name :: acc
+                                                    | _ -> s :: acc
+                                                else acc) acc
+                                        let fNode = (fun (x: Node) acc ->
+                                            let nodeRes = getDollarText x.Key acc
+                                            x.Leaves |> Seq.fold (fun a leaf ->
+                                                getDollarText leaf.Key (getDollarText (leaf.Value.ToRawString()) a)) nodeRes)
+                                        e.entity |> (ProcessCore.foldNode7 fNode) |> List.ofSeq
+
+                                    let allParams =
+                                        allEntities
+                                        |> Seq.filter (fun struct (e, _) ->
+                                            e.logicalpath.Contains("common/script_values", StringComparison.OrdinalIgnoreCase) ||
+                                            e.logicalpath.Contains("common\\script_values", StringComparison.OrdinalIgnoreCase))
+                                        |> Seq.collect (fun struct (e, _) -> extractParams e)
+                                        |> Seq.distinct
+                                        |> Seq.toArray
+
+                                    if allParams.Length > 0 then
+                                        log (sprintf "ScriptValue completion (no pipe) params: %A" allParams)
+                                        let completionItems =
+                                            allParams
+                                            |> Array.map (fun p ->
+                                                CompletionResponse.Simple(p, None, CompletionCategory.Value))
+                                            |> Array.toList
+                                        log (sprintf "ScriptValue completion (no pipe) items count: %d" completionItems.Length)
+                                        Some completionItems
+                                    else
+                                        None
+                                else
+                                    None
+                            else
+                                None
+                    else
+                        None
+            else
+                None
+
+        // 先尝试 script_value 参数补全
+        let svResult = tryScriptValueCompletion()
+        match svResult with
+        | Some items -> 
+            log (sprintf "ScriptValue completion returning %d items" items.Length)
+            items
+        | None ->
+            // 使用常规补全逻辑
+            match
+                Path.GetExtension filepath, resourceManager.ManualProcessResource resource, completionService, infoService
+            with
+            | ".yml", _, Some completion, _ -> completion.LocalisationComplete(pos, filetext) |> List.ofArray
+            | _, Some e, Some completion, Some info ->
+                log (sprintf "completion %s %s" (fileManager.ConvertPathToLogicalPath filepath) filepath)
+
+                match info.GetInfo(pos, e) with
+                | Some(ctx, _) -> completion.Complete(pos, e, Some ctx)
+                | None -> completion.Complete(pos, e, None)
+            | _, Some e, Some completion, None -> completion.Complete(pos, e, None)
+            | _, _, _, _ -> []
 
 
     let getInfoAtPos

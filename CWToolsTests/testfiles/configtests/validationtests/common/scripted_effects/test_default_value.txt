@@ -1,0 +1,33 @@
+# 测试 $A|B$ 缺省值语法的 scripted_effect
+
+# 这个应该能被正确识别，参数名为 amount，缺省值为 10
+test_effect_with_default = {
+    add_resource = {
+        type = energy
+        amount = $amount|10$
+    }
+}
+
+# 多个参数都带缺省值
+test_effect_multiple_defaults = {
+    set_variable = {
+        name = $var_name|my_var$
+        value = $var_value|100$
+    }
+}
+
+# 混合使用：有的有缺省值，有的没有
+test_effect_mixed = {
+    $target$ = {
+        add_modifier = {
+            name = $modifier_name|default_modifier$
+            duration = $duration|3600$
+        }
+    }
+    log = "$message|Hello World$"
+}
+
+# 左侧使用缺省值语法
+$effect_name|my_effect$ = {
+    effect = yes
+}

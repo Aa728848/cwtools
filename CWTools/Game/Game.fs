@@ -360,6 +360,10 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 (if debugMode then noneContext else defaultContext),
                 validationManager.ErrorCache()
             )
+    
+    /// 清理不存在文件的缓存条目，防止内存泄漏
+    member _.CleanupCache(existingFiles: Set<string>) =
+        validationManager.Cleanup existingFiles
 
     member this.InfoAtPos pos file text =
         LanguageFeatures.symbolInformationAtPos

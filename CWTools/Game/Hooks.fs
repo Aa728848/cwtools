@@ -231,10 +231,33 @@ let refreshConfigBeforeFirstTypesHook (lookup: Lookup) (resources: IResourceAPI<
           values = paramsDValues
           valuesWithRange = paramsDValues |> Array.map (fun x -> x, None) }
 
+    // 提取 script_value 参数
+    let scriptValueKeys =
+        (resources.AllEntities()
+         |> PSeq.map (fun struct (e, l) ->
+             (l.Force().ScriptValueParams
+              |> (Option.defaultWith (fun () -> Compute.Jomini.getScriptValueParamsEntity e))))
+         |> Seq.collect id
+         |> Seq.toArray)
+
+    let scriptValueParams =
+        { key = "script_value_params"
+          description = "Script value parameter"
+          values = scriptValueKeys
+          valuesWithRange = scriptValueKeys |> Array.map (fun x -> x, None) }
+
+    let scriptValueParamsD =
+        { key = "script_value_params_dollar"
+          description = "Script value parameter"
+          values = scriptValueKeys |> Array.map (fun k -> sprintf "$%s$" k)
+          valuesWithRange = scriptValueKeys |> Array.map (fun k -> sprintf "$%s$" k, None) }
+
     lookup.enumDefs <-
         lookup.enumDefs
         |> Map.add scriptedEffectParmas.key (scriptedEffectParmas.description, scriptedEffectParmas.valuesWithRange)
         |> Map.add scriptedEffectParmasD.key (scriptedEffectParmasD.description, scriptedEffectParmasD.valuesWithRange)
+        |> Map.add scriptValueParams.key (scriptValueParams.description, scriptValueParams.valuesWithRange)
+        |> Map.add scriptValueParamsD.key (scriptValueParamsD.description, scriptValueParamsD.valuesWithRange)
         |> Map.add modifierEnums.key (modifierEnums.description, modifierEnums.valuesWithRange)
 
 let refreshConfigAfterVarDefHook (addScriptFormulaScope: bool) (lookup: Lookup) _ (embedded: EmbeddedSettings) =
