@@ -998,9 +998,16 @@ type CompletionService
     //        | false, false, true -> 50
     //        | false, false, false -> 1
 
-    let complete (pos: pos) (entity: Entity) (scopeContext: ScopeContext option) =
+    let complete (pos: pos) (entity: Entity) (scopeContext: ScopeContext option) (extraGlobalVars: string list option) =
         let scopeContext = Option.defaultValue defaultContext scopeContext
         let path = getRulePath pos [] entity.entity |> List.rev
+        
+        // Combine initialization-time globalScriptVariables with runtime-provided extraGlobalVars
+        let effectiveGlobalVars = 
+            match extraGlobalVars with
+            | Some vars -> vars @ globalScriptVariables
+            | None -> globalScriptVariables
+        
         //        log (sprintf "%A" path)
 
         // log "%A" typedefs
@@ -1018,7 +1025,7 @@ type CompletionService
             |> List.filter (fun t -> FieldValidatorsHelper.CheckPathDir(t.pathOptions, entity.logicalpath))
 
         let allUsedKeys =
-            getAllKeysInFile entity.entity @ globalScriptVariables |> Set.ofList
+            getAllKeysInFile entity.entity @ effectiveGlobalVars |> Set.ofList
 
         let scoreFunction = scoreFunction allUsedKeys
 
@@ -1064,10 +1071,15 @@ type CompletionService
         let items =
             match path |> List.tryLast, path.Length with
             | Some(_, count, Some x, _, _), _ when x.Length > 0 && x.StartsWith("@" + magicCharString) ->
-                let staticVars =
+                // Get local variables from current file
+                let localVars =
                     CWTools.Validation.Stellaris.STLValidation.getDefinedVariables entity.entity
 
-                staticVars |> List.map (fun s -> CompletionResponse.CreateSimple s)
+                // Combine global variables (from scripted_variables files) with local variables
+                // Use effectiveGlobalVars which includes runtime-provided variables
+                let allVars = effectiveGlobalVars @ localVars
+                // Remove duplicates and return as completion items
+                allVars |> List.distinct |> List.map (fun s -> CompletionResponse.CreateSimple s)
             | Some(_, _, _, CompletionContext.NodeLHS, _), 1 -> []
             | _ ->
                 pathFilteredTypes
@@ -1109,5 +1121,5 @@ type CompletionService
 
 
 
-    member _.Complete(pos: pos, entity: Entity, scopeContext) = complete pos entity scopeContext
+    member _.Complete(pos: pos, entity: Entity, scopeContext, extraGlobalVars) = complete pos entity scopeContext extraGlobalVars
     member _.LocalisationComplete(pos: pos, filetext: string) = locComplete pos filetext

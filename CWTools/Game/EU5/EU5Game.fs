@@ -238,6 +238,7 @@ type EU5Game(setupSettings: EU5Settings) =
 
         member _.ScriptedTriggers() = lookup.triggers
         member _.ScriptedEffects() = lookup.effects
+        member _.ScriptedVariables() = lookup.scriptedVariables
         member _.StaticModifiers() = [||] //lookup.staticModifiers
         member _.UpdateFile shallow file text = game.UpdateFile shallow file text
         member _.AllEntities() = resources.AllEntities()

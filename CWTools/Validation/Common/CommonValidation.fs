@@ -109,6 +109,92 @@ module CommonValidation =
         //    |> List.map (fun td, ts -> )
         )
 
+    // Helper function to get global scripted variables from file system
+    let getGlobalScriptVarsFromFS (currentFilepath: string) =
+        try
+            let currentDir = System.IO.Path.GetDirectoryName(currentFilepath)
+            let rec findModRoot dir =
+                if System.String.IsNullOrEmpty(dir) then None
+                else
+                    let dirName = System.IO.Path.GetFileName(dir)
+                    if dirName = "common" || dirName = "events" || dirName = "interface" then
+                        Some(System.IO.Path.GetDirectoryName(dir))
+                    else
+                        findModRoot (System.IO.Path.GetDirectoryName(dir))
+            match findModRoot currentDir with
+            | None -> []
+            | Some modRoot ->
+                let svPath = System.IO.Path.Combine(modRoot, "common", "scripted_variables")
+                if not (System.IO.Directory.Exists(svPath)) then
+                    let gameRoot = System.IO.Path.GetDirectoryName(modRoot)
+                    if System.String.IsNullOrEmpty(gameRoot) then []
+                    else
+                        let modDir = System.IO.Path.Combine(gameRoot, "mod")
+                        if not (System.IO.Directory.Exists(modDir)) then []
+                        else
+                            System.IO.Directory.GetDirectories(modDir)
+                            |> Array.collect (fun modFolder ->
+                                let modSVPath = System.IO.Path.Combine(modFolder, "common", "scripted_variables")
+                                if System.IO.Directory.Exists(modSVPath) then
+                                    System.IO.Directory.GetFiles(modSVPath, "*.txt", System.IO.SearchOption.AllDirectories)
+                                else [||])
+                            |> Array.collect (fun file ->
+                                try
+                                    let content = System.IO.File.ReadAllText(file)
+                                    let pattern = System.Text.RegularExpressions.Regex(@"^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\n\r#]+)", System.Text.RegularExpressions.RegexOptions.Multiline)
+                                    [| for m in pattern.Matches(content) -> m.Groups.[1].Value.Trim() |]
+                                with _ -> [||])
+                            |> Array.toList
+                else
+                    System.IO.Directory.GetFiles(svPath, "*.txt", System.IO.SearchOption.AllDirectories)
+                    |> Array.collect (fun file ->
+                        try
+                            let content = System.IO.File.ReadAllText(file)
+                            let pattern = System.Text.RegularExpressions.Regex(@"^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\n\r#]+)", System.Text.RegularExpressions.RegexOptions.Multiline)
+                            [| for m in pattern.Matches(content) -> m.Groups.[1].Value.Trim() |]
+                        with _ -> [||])
+                    |> Array.toList
+        with _ -> []
+
+    // Common function to validate @variables after parameter substitution
+    // Used by both valScriptedEffectParams and valScriptValueParams
+    let validateVariablesInExpandedNode (currentFilePath: string) (n: Node) callSite =
+        try
+            let rec collectVars (node: Node) acc =
+                let acc =
+                    if node.Key.StartsWith("@") && not (node.Key.Contains("$")) then
+                        (node.Key, node.Position) :: acc
+                    else
+                        acc
+                let acc =
+                    node.Leaves
+                    |> Seq.fold (fun a leaf ->
+                        let valText = leaf.Value.ToString()
+                        if valText.StartsWith("@") && not (valText.Contains("$")) then
+                            (valText, leaf.Position) :: a
+                        else
+                            a) acc
+                node.All
+                |> Seq.choose (function
+                    | NodeC child -> Some child
+                    | _ -> None)
+                |> Seq.fold (fun a child -> collectVars child a) acc
+            let allVarsWithPos = collectVars n []
+            // Get global vars from file system directly
+            let globalVars = getGlobalScriptVarsFromFS currentFilePath
+            allVarsWithPos
+            |> List.choose (fun (v, pos) ->
+                if globalVars |> List.contains v then
+                    None
+                else
+                    Some(invManual (ErrorCodes.UndefinedVariable v) pos v None))
+            |> (function
+                | [] -> OK
+                | errors -> Invalid(System.Guid.NewGuid(), errors))
+        with ex ->
+            // If validation fails, return OK to not break the entire validation pipeline
+            OK
+
     let valScriptedEffectParams<'T when 'T :> ComputedData> : CWTools.Games.LookupFileValidator<'T> =
         (fun fileManager rulesValidator lu res es ->
             let res = res.AllEntities()
@@ -243,23 +329,34 @@ module CommonValidation =
                     | Some seps -> foldOverNode (stringReplace seps) newNode
                     | None -> ()
                     // eprintfn "%A %A" (CKPrinter.api.prettyPrintStatements newNode.ToRaw) (seParams)
-                    let res = rv.ManualRuleValidate(logicalpath, rootNode)
+                    // Validate variables after parameter substitution
+                    let varValidation = validateVariablesInExpandedNode logicalpath newNode callSite
+                    let ruleRes = rv.ManualRuleValidate(logicalpath, rootNode)
                     // eprintfn "%A %A" logicalpath res
                     let message =
                         { location = callSite
                           message = sprintf "This call of scripted effect %s results in an error" name }
 
-                    res
-                    |> (function
-                    | OK -> OK
-                    | Invalid(_, inv) ->
-                        Invalid(
-                            System.Guid.NewGuid(),
-                            inv
-                            |> List.map (fun e ->
-                                { e with
-                                    relatedErrors = Some [ message ] })
-                        ))
+                    let combined =
+                        match varValidation, ruleRes with
+                        | OK, OK -> OK
+                        | OK, Invalid(_, inv) ->
+                            Invalid(
+                                System.Guid.NewGuid(),
+                                inv |> List.map (fun e -> { e with relatedErrors = Some [ message ] })
+                            )
+                        | Invalid(_, varInv), OK ->
+                            Invalid(
+                                System.Guid.NewGuid(),
+                                varInv |> List.map (fun e -> { e with relatedErrors = Some [ message ] })
+                            )
+                        | Invalid(_, varInv), Invalid(_, resInv) ->
+                            Invalid(
+                                System.Guid.NewGuid(),
+                                (varInv @ resInv) |> List.map (fun e -> { e with relatedErrors = Some [ message ] })
+                            )
+
+                    combined
 
                 let memoizeValidation =
                     let keyFun = (fun (_, _, node: Node, _, seParams) -> (node.Position, seParams))
@@ -429,24 +526,36 @@ module CommonValidation =
                     match seParams with
                     | Some seps -> foldOverNode (stringReplace seps) newNode
                     | None -> ()
+
+                    // Validate variables after parameter substitution
+                    let varValidation = validateVariablesInExpandedNode logicalpath newNode callSite
                     //                    logInfo (sprintf "vsvp d %A %A" (CKPrinter.api.prettyPrintStatement newNode.ToRaw) (seParams))
-                    let res = rv.ManualRuleValidate(logicalpath, rootNode)
+                    let ruleRes = rv.ManualRuleValidate(logicalpath, rootNode)
                     // eprintfn "%A %A" logicalpath res
                     let message =
                         { location = callSite
                           message = sprintf "This call of scripted value %s results in an error" name }
 
-                    res
-                    |> (function
-                    | OK -> OK
-                    | Invalid(_, inv) ->
-                        Invalid(
-                            System.Guid.NewGuid(),
-                            inv
-                            |> List.map (fun e ->
-                                { e with
-                                    relatedErrors = Some [ message ] })
-                        ))
+                    let combined =
+                        match varValidation, ruleRes with
+                        | OK, OK -> OK
+                        | OK, Invalid(_, inv) ->
+                            Invalid(
+                                System.Guid.NewGuid(),
+                                inv |> List.map (fun e -> { e with relatedErrors = Some [ message ] })
+                            )
+                        | Invalid(_, varInv), OK ->
+                            Invalid(
+                                System.Guid.NewGuid(),
+                                varInv |> List.map (fun e -> { e with relatedErrors = Some [ message ] })
+                            )
+                        | Invalid(_, varInv), Invalid(_, resInv) ->
+                            Invalid(
+                                System.Guid.NewGuid(),
+                                (varInv @ resInv) |> List.map (fun e -> { e with relatedErrors = Some [ message ] })
+                            )
+
+                    combined
                 //                            | Invalid (_, inv) -> Invalid (System.Guid.NewGuid(), inv |> List.map (fun e -> { e with relatedErrors = Some message })))
                 let memoizeValidation =
                     let keyFun = (fun (_, _, node: Node, _, seParams) -> (node.Position, seParams))

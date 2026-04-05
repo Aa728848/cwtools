@@ -31,6 +31,34 @@ module STLValidation =
 
         node |> (foldNode7 fNode)
 
+    /// Convert a parameterized variable name pattern to a regex pattern
+    /// e.g., "@ra_fleet_base_$RESOURCE$_cost_$COUNTRY_TYPE$_country" -> "^@ra_fleet_base_[^_$@ ]+_cost_[^_$@ ]+_country$"
+    let varPatternToRegex (pattern: string) =
+        let parts = pattern.Split('$')
+        let processed =
+            parts
+            |> Array.mapi (fun i part ->
+                if i % 2 = 0 then
+                    // Literal part - escape it
+                    System.Text.RegularExpressions.Regex.Escape(part)
+                else
+                    // Parameter name - replace with wildcard that matches typical parameter values
+                    "[^_$@ ]+")
+            |> Array.filter (fun s -> s <> "")
+        "^" + (String.Concat(processed)) + "$"
+
+    /// Check if a used variable matches any defined variable (including parameterized patterns)
+    let matchesAnyDefined (usedVar: string) (definedVars: string list) =
+        // Direct match
+        if definedVars |> List.contains usedVar then
+            true
+        elif usedVar.Contains("$") then
+            // Used variable contains parameters (still a template)
+            // Skip validation - it will be validated when parameters are passed in
+            true
+        else
+            false
+
     let checkUsedVariables (node: Node) (variables: string list) =
         let fNode =
             (fun (x: Node) children ->
@@ -48,7 +76,11 @@ module STLValidation =
                     |> List.map (
                         (fun f -> f, f.Value.ToString())
                         >> (fun (l, v) ->
-                            if variables |> List.contains v then
+                            // If variable still contains $PARAM$ placeholders, skip validation
+                            // Parameters will be substituted when the scripted effect is called
+                            if v.Contains("$") then
+                                OK
+                            elif variables |> List.contains v then
                                 OK
                             else
                                 Invalid(Guid.NewGuid(), [ inv (ErrorCodes.UndefinedVariable v) l ]))

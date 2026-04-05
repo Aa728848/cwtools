@@ -8,6 +8,7 @@ open CWTools.Utilities.Utils
 open CWTools.Process
 open CWTools.Rules
 open CWTools.Common
+open CWTools.Parser
 
 module LanguageFeatures =
 
@@ -742,18 +743,32 @@ module LanguageFeatures =
                                     // 在该行的末尾位置获取上下文
                                     let callerPos = mkPos (inlineScriptLine + 1) (lines.[inlineScriptLine].Length)
                                     
+                                    // 收集全局变量
+                                    let globalVars = 
+                                        try
+                                            resourceManager.Api.AllEntities()
+                                            |> Seq.choose (fun struct (e, _) ->
+                                                if e.filepath.Contains("common/scripted_variables") then
+                                                    Some e.entity
+                                                else
+                                                    None)
+                                            |> Seq.collect CWTools.Validation.Stellaris.STLValidation.getDefinedVariables
+                                            |> Seq.distinct
+                                            |> Seq.toList
+                                        with _ -> []
+
                                     match infoService with
                                     | Some info ->
                                         match info.GetInfo(callerPos, callerEntity) with
                                         | Some(ctx, _) ->
                                             match completionService with
-                                            | Some completion -> 
+                                            | Some completion ->
                                                 // 使用调用者实体和它的上下文进行补全
-                                                completion.Complete(callerPos, callerEntity, Some ctx)
+                                                completion.Complete(callerPos, callerEntity, Some ctx, Some globalVars)
                                             | None -> []
                                         | None ->
                                             match completionService with
-                                            | Some completion -> completion.Complete(callerPos, callerEntity, None)
+                                            | Some completion -> completion.Complete(callerPos, callerEntity, None, Some globalVars)
                                             | None -> []
                                     | None -> []
                                 else
@@ -778,6 +793,79 @@ module LanguageFeatures =
                         log "completion: missing required info for inline_script"
                         []
                 else
+                    // 辅助函数:动态收集全局 scripted variables
+                    // 直接从文件系统读取 scripted_variables 文件
+                    let getGlobalScriptVars () =
+                        try
+                            // 从当前文件路径推断出 mod/游戏根目录
+                            let currentDir = System.IO.Path.GetDirectoryName(filepath)
+                            
+                            // 向上查找 common 目录的父目录(即 mod 根目录)
+                            let rec findModRoot dir =
+                                if System.String.IsNullOrEmpty(dir) then None
+                                else
+                                    let dirName = System.IO.Path.GetFileName(dir)
+                                    if dirName = "common" || dirName = "events" || dirName = "interface" then
+                                        Some(System.IO.Path.GetDirectoryName(dir))
+                                    else
+                                        findModRoot (System.IO.Path.GetDirectoryName(dir))
+                            
+                            match findModRoot currentDir with
+                            | None -> []
+                            | Some modRoot ->
+                                // 搜索 mod 根目录下的 common/scripted_variables
+                                let svPath = System.IO.Path.Combine(modRoot, "common", "scripted_variables")
+                                
+                                if not (System.IO.Directory.Exists(svPath)) then
+                                    // 可能在游戏本体或其他 mod 中
+                                    let gameRoot = System.IO.Path.GetDirectoryName(modRoot)
+                                    if System.String.IsNullOrEmpty(gameRoot) then
+                                        []
+                                    else
+                                        let modDir = System.IO.Path.Combine(gameRoot, "mod")
+                                        if not (System.IO.Directory.Exists(modDir)) then
+                                            []
+                                        else
+                                            let mutable allVars = []
+                                            let modFolders = System.IO.Directory.GetDirectories(modDir)
+                                            
+                                            for modFolder in modFolders do
+                                                let modSVPath = System.IO.Path.Combine(modFolder, "common", "scripted_variables")
+                                                if System.IO.Directory.Exists(modSVPath) then
+                                                    let files = System.IO.Directory.GetFiles(modSVPath, "*.txt", System.IO.SearchOption.AllDirectories)
+                                                    
+                                                    for file in files do
+                                                        try
+                                                            // 使用 FileManager 创建 EntityResourceInput
+                                                            let input = makeEntityResourceInput fileManager file (System.IO.File.ReadAllText(file))
+                                                            match resourceManager.ManualProcessResource input with
+                                                            | Some entity ->
+                                                                let vars = CWTools.Validation.Stellaris.STLValidation.getDefinedVariables entity.entity
+                                                                allVars <- vars @ allVars
+                                                            | _ -> ()
+                                                        with _ -> ()
+                                            
+                                            allVars |> List.distinct
+                                else
+                                    let files = System.IO.Directory.GetFiles(svPath, "*.txt", System.IO.SearchOption.AllDirectories)
+                                    
+                                    files
+                                    |> Array.map (fun file ->
+                                        try
+                                            let input = makeEntityResourceInput fileManager file (System.IO.File.ReadAllText(file))
+                                            match resourceManager.ManualProcessResource input with
+                                            | Some entity ->
+                                                CWTools.Validation.Stellaris.STLValidation.getDefinedVariables entity.entity
+                                            | _ -> []
+                                        with _ -> [])
+                                    |> Array.toList
+                                    |> List.collect id
+                                    |> List.distinct
+                        with ex -> 
+                            []
+                    
+                    let globalVars = getGlobalScriptVars ()
+                    
                     // 使用常规补全逻辑
                     match
                         Path.GetExtension filepath, resourceManager.ManualProcessResource resource, completionService, infoService
@@ -787,9 +875,9 @@ module LanguageFeatures =
                         log (sprintf "completion %s %s" (fileManager.ConvertPathToLogicalPath filepath) filepath)
 
                         match info.GetInfo(pos, e) with
-                        | Some(ctx, _) -> completion.Complete(pos, e, Some ctx)
-                        | None -> completion.Complete(pos, e, None)
-                    | _, Some e, Some completion, None -> completion.Complete(pos, e, None)
+                        | Some(ctx, _) -> completion.Complete(pos, e, Some ctx, Some globalVars)
+                        | None -> completion.Complete(pos, e, None, Some globalVars)
+                    | _, Some e, Some completion, None -> completion.Complete(pos, e, None, Some globalVars)
                     | _, _, _, _ -> []
 
 
