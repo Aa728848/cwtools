@@ -69,7 +69,7 @@ module LanguageFeatures =
         (filetext: string)
         =
         let split = filetext.Split('\n')
-        
+
         // 获取当前行（注意 pos.Line 是 1-based）
         let currentLineIdx = pos.Line - 1
         let currentLine = if currentLineIdx >= 0 && currentLineIdx < split.Length then split.[currentLineIdx] else ""
@@ -87,6 +87,414 @@ module LanguageFeatures =
             |> String.concat "\n"
 
         let resource = makeEntityResourceInput fileManager filepath filetext
+
+        // 检测当前文件是否是 inline_script 文件
+        let isInlineScriptFile =
+            filepath.Contains("common/inline_scripts", StringComparison.OrdinalIgnoreCase) ||
+            filepath.Contains("common\\inline_scripts", StringComparison.OrdinalIgnoreCase)
+
+        // 特殊处理：inline_script 补全
+        let tryInlineScriptCompletion () =
+            // 先检查是否是注释行（以 # 开头的行）
+            if currentLineIdx >= 0 && currentLineIdx < split.Length then
+                let line = split.[currentLineIdx]
+                let trimmedLine = line.TrimStart()
+
+                log (sprintf "tryInlineScriptCompletion: lineIdx=%d, line='%s'" currentLineIdx line)
+
+                // 如果是注释行，跳过 inline_script 补全
+                if trimmedLine.StartsWith("#") then
+                    log "tryInlineScriptCompletion: skipping comment line"
+                    None
+                else
+                    let col = pos.Column
+                    let searchEnd = min col line.Length
+
+                    if searchEnd > 0 then
+                        let textBeforeCursor =
+                            if searchEnd <= line.Length then line.Substring(0, searchEnd)
+                            else line
+
+                        log (sprintf "tryInlineScriptCompletion: textBeforeCursor='%s'" textBeforeCursor)
+
+                        // 检测是否在 inline_script 块内
+                        // 向上查找 inline_script 关键字
+                        let rec findInlineScriptContext lineIdx =
+                            if lineIdx < 0 then 
+                                log "tryInlineScriptCompletion: no inline_script context found"
+                                None
+                            else
+                                let l = split.[lineIdx].Trim()
+                                if l.StartsWith("inline_script") || l.Contains("inline_script =") then
+                                    log (sprintf "tryInlineScriptCompletion: found inline_script context at line %d" lineIdx)
+                                    Some lineIdx
+                                elif lineIdx < currentLineIdx && (l.StartsWith("}") || l.EndsWith("}")) && lineIdx > 0 then
+                                    // 如果在当前行之前遇到了闭合括号，可能需要进一步判断
+                                    findInlineScriptContext (lineIdx - 1)
+                                else
+                                    findInlineScriptContext (lineIdx - 1)
+
+                        match findInlineScriptContext currentLineIdx with
+                        | Some _ ->
+                            // 在 inline_script 块内，判断是脚本名、参数名还是参数值补全
+
+                            // 1. 脚本名补全：inline_script = { script = |
+                            let scriptNamePattern = System.Text.RegularExpressions.Regex(@"inline_script\s*=\s*\{[^}]*script\s*=\s*([^|\s]*)$")
+                            let scriptNameMatch = scriptNamePattern.Match(textBeforeCursor)
+
+                            if scriptNameMatch.Success then
+                                log (sprintf "tryInlineScriptCompletion: script name completion pattern matched, scriptName='%s'" scriptNameMatch.Groups.[1].Value)
+                                // 直接从 ResourceManager 的所有实体中获取 inline_scripts 目录下的脚本
+                                let allEntities = resourceManager.Api.AllEntities()
+                                let inlineScriptNames =
+                                    allEntities
+                                    |> Seq.filter (fun struct (e, _) ->
+                                        let path = e.logicalpath
+                                        path.Contains("common/inline_scripts", StringComparison.OrdinalIgnoreCase) ||
+                                        path.Contains("common\\inline_scripts", StringComparison.OrdinalIgnoreCase))
+                                    |> Seq.map (fun struct (e, _) ->
+                                        // 提取脚本名：common/inline_scripts/script_name.txt -> script_name
+                                        let path = e.logicalpath
+                                        let fileName = Path.GetFileNameWithoutExtension(path)
+                                        fileName)
+                                    |> Seq.distinct
+                                    |> Seq.toArray
+
+                                log (sprintf "tryInlineScriptCompletion: found %d inline scripts" inlineScriptNames.Length)
+
+                                if inlineScriptNames.Length > 0 then
+                                    log (sprintf "Inline script name completion: %A" inlineScriptNames)
+                                    let completionItems =
+                                        inlineScriptNames
+                                        |> Array.map (fun name ->
+                                            CompletionResponse.Detailed(
+                                                name,
+                                                Some($"Inline script: {name}"),
+                                                None,
+                                                CompletionCategory.Link))
+                                        |> Array.toList
+                                    Some completionItems
+                                else
+                                    None
+                            else
+                                // 2. 参数名或参数值补全
+                                // 查找 script = xxx 行，获取脚本名（从当前行向上搜索）
+                                let rec findScriptName lineIdx =
+                                    if lineIdx < 0 then 
+                                        log "tryInlineScriptCompletion: no script name found"
+                                        None
+                                    else
+                                        let l = split.[lineIdx].Trim()
+                                        let scriptPattern = System.Text.RegularExpressions.Regex(@"script\s*=\s*([^\s}]+)")
+                                        let m = scriptPattern.Match(l)
+                                        if m.Success then
+                                            let rawScriptName = m.Groups.[1].Value
+                                            log (sprintf "tryInlineScriptCompletion: found script name '%s' at line %d (length=%d)" rawScriptName lineIdx rawScriptName.Length)
+                                            
+                                            // 判断脚本名是否完整：
+                                            // 只有在脚本名所在行才检查是否不完整
+                                            // 如果脚本名在上一行，说明已经完成输入
+                                            let isIncomplete = 
+                                                if lineIdx = currentLineIdx then
+                                                    // 在当前行，检查是否还在输入中
+                                                    let lineLength = split.[lineIdx].TrimEnd().Length
+                                                    let isAtLineEnd = col >= lineLength
+                                                    let containsPathSeparator = rawScriptName.Contains("/") || rawScriptName.Contains("\\")
+                                                    let hasFullExtension = rawScriptName.EndsWith(".txt")
+                                                    isAtLineEnd || (containsPathSeparator && not hasFullExtension)
+                                                else
+                                                    // 在上一行，说明脚本名已完成
+                                                    false
+                                            
+                                            log (sprintf "tryInlineScriptCompletion: isIncomplete check - lineIdx=%d, currentLineIdx=%d, isIncomplete=%b"
+                                                lineIdx currentLineIdx isIncomplete)
+
+                                            Some(rawScriptName, isIncomplete, lineIdx)
+                                        else 
+                                            findScriptName (lineIdx - 1)
+
+                                match findScriptName currentLineIdx with
+                                | Some(scriptName, isIncomplete, scriptLineIdx) ->
+                                    log (sprintf "tryInlineScriptCompletion: match result - scriptName='%s', isIncomplete=%b, scriptLineIdx=%d" scriptName isIncomplete scriptLineIdx)
+                                    // 如果脚本名不完整，说明用户正在输入，应该提供脚本名补全
+                                    if isIncomplete then
+                                        log (sprintf "tryInlineScriptCompletion: script name is incomplete '%s', providing name completion" scriptName)
+                                        let allEntities = resourceManager.Api.AllEntities()
+                                        let inlineScriptNames =
+                                            allEntities
+                                            |> Seq.filter (fun struct (e, _) ->
+                                                let path = e.logicalpath
+                                                path.Contains("common/inline_scripts", StringComparison.OrdinalIgnoreCase) ||
+                                                path.Contains("common\\inline_scripts", StringComparison.OrdinalIgnoreCase))
+                                            |> Seq.filter (fun struct (e, _) ->
+                                                // 使用逻辑路径匹配，因为用户输入的可能包含子路径
+                                                let path = e.logicalpath
+                                                // 从路径中提取inline_scripts之后的部分
+                                                let pathLower = path.ToLowerInvariant()
+                                                let inlineIdx = 
+                                                    let idx1 = pathLower.IndexOf("common/inline_scripts/")
+                                                    let idx2 = pathLower.IndexOf("common\\inline_scripts\\")
+                                                    if idx1 >= 0 then idx1 + "common/inline_scripts/".Length
+                                                    elif idx2 >= 0 then idx2 + "common\\inline_scripts\\".Length
+                                                    else -1
+                                                
+                                                if inlineIdx >= 0 && inlineIdx < path.Length then
+                                                    let scriptPath = path.Substring(inlineIdx).Replace(".txt", "")
+                                                    scriptPath.StartsWith(scriptName, StringComparison.OrdinalIgnoreCase)
+                                                else
+                                                    false)
+                                            |> Seq.map (fun struct (e, _) ->
+                                                let path = e.logicalpath
+                                                let pathLower = path.ToLowerInvariant()
+                                                let inlineIdx = 
+                                                    let idx1 = pathLower.IndexOf("common/inline_scripts/")
+                                                    let idx2 = pathLower.IndexOf("common\\inline_scripts\\")
+                                                    if idx1 >= 0 then idx1 + "common/inline_scripts/".Length
+                                                    elif idx2 >= 0 then idx2 + "common\\inline_scripts\\".Length
+                                                    else -1
+                                                if inlineIdx >= 0 && inlineIdx < path.Length then
+                                                    path.Substring(inlineIdx).Replace(".txt", "")
+                                                else
+                                                    Path.GetFileNameWithoutExtension(path))
+                                            |> Seq.distinct
+                                            |> Seq.toArray
+
+                                        if inlineScriptNames.Length > 0 then
+                                            log (sprintf "tryInlineScriptCompletion: found %d matching scripts" inlineScriptNames.Length)
+                                            let completionItems =
+                                                inlineScriptNames
+                                                |> Array.map (fun name ->
+                                                    CompletionResponse.Detailed(
+                                                        name,
+                                                        Some($"Inline script: {name}"),
+                                                        None,
+                                                        CompletionCategory.Link))
+                                                |> Array.toList
+                                            Some completionItems
+                                        else
+                                            None
+                                    else
+                                        // 脚本名已完成，查找脚本定义并提供参数补全
+                                        // 使用前缀匹配支持各种路径格式
+                                        let allEntities = resourceManager.Api.AllEntities()
+                                        let scriptNodeOpt =
+                                            allEntities
+                                            |> Seq.tryFind (fun struct (e, _) ->
+                                                let path = e.logicalpath
+                                                let pathLower = path.ToLowerInvariant()
+                                                let inlineIdx = 
+                                                    let idx1 = pathLower.IndexOf("common/inline_scripts/")
+                                                    let idx2 = pathLower.IndexOf("common\\inline_scripts\\")
+                                                    if idx1 >= 0 then idx1 + "common/inline_scripts/".Length
+                                                    elif idx2 >= 0 then idx2 + "common\\inline_scripts\\".Length
+                                                    else -1
+                                                
+                                                if inlineIdx >= 0 && inlineIdx < path.Length then
+                                                    let scriptPath = path.Substring(inlineIdx).Replace(".txt", "")
+                                                    // 前缀匹配
+                                                    scriptPath.StartsWith(scriptName, StringComparison.OrdinalIgnoreCase) ||
+                                                    scriptName.StartsWith(scriptPath, StringComparison.OrdinalIgnoreCase)
+                                                else
+                                                    false)
+                                            |> Option.map (fun struct (e, _) -> e.entity)
+
+                                        match scriptNodeOpt with
+                                        | Some scriptNode ->
+                                            // 直接从脚本文件内容提取参数（$PARAM$ 形式）
+                                            // 找到匹配的 inline_scripts 实体并读取文件
+                                            let allEntities = resourceManager.Api.AllEntities()
+                                            let matchingScript =
+                                                allEntities
+                                                |> Seq.tryPick (fun struct (e, _) ->
+                                                    let path = e.logicalpath
+                                                    let pathLower = path.ToLowerInvariant()
+                                                    let inlineIdx = 
+                                                        let idx1 = pathLower.IndexOf("common/inline_scripts/")
+                                                        let idx2 = pathLower.IndexOf("common\\inline_scripts\\")
+                                                        if idx1 >= 0 then idx1 + "common/inline_scripts/".Length
+                                                        elif idx2 >= 0 then idx2 + "common\\inline_scripts\\".Length
+                                                        else -1
+                                                    
+                                                    if inlineIdx >= 0 && inlineIdx < path.Length then
+                                                        let scriptPath = path.Substring(inlineIdx).Replace(".txt", "")
+                                                        if scriptPath.StartsWith(scriptName, StringComparison.OrdinalIgnoreCase) ||
+                                                           scriptName.StartsWith(scriptPath, StringComparison.OrdinalIgnoreCase) then
+                                                            Some e.filepath
+                                                        else
+                                                            None
+                                                    else
+                                                        None)
+                                            
+                                            let params =
+                                                match matchingScript with
+                                                | Some filepath ->
+                                                    try
+                                                        let fileContent = System.IO.File.ReadAllText(filepath)
+                                                        let regex = System.Text.RegularExpressions.Regex(@"\$([A-Za-z_][A-Za-z0-9_]*)\$")
+                                                        let matches = regex.Matches(fileContent)
+                                                        [ for m in matches -> m.Groups.[1].Value ] |> List.distinct
+                                                    with _ -> []
+                                                | None -> []
+                                            log (sprintf "tryInlineScriptCompletion: extracted params: %A" params)
+                                            log (sprintf "tryInlineScriptCompletion: params count: %d" params.Length)
+
+                                            if params.Length > 0 then
+                                                // 判断当前是参数名位置还是参数值位置
+                                                let currentLineText =
+                                                    if currentLineIdx >= 0 && currentLineIdx < split.Length then
+                                                        split.[currentLineIdx]
+                                                    else ""
+
+                                                let isInValuePosition =
+                                                    let trimmedCurrent = currentLineText.Trim()
+                                                    let valuePattern = System.Text.RegularExpressions.Regex(@"^[A-Za-z_][A-Za-z0-9_]*\s*=")
+                                                    valuePattern.IsMatch(trimmedCurrent)
+
+                                                // 获取当前输入的前缀用于过滤
+                                                let prefixSoFar =
+                                                    let trimmedCurrent = currentLineText.Trim()
+                                                    let eqIdx = trimmedCurrent.IndexOf('=')
+                                                    if eqIdx >= 0 then
+                                                        // 在 = 之后，是值位置
+                                                        trimmedCurrent.Substring(eqIdx + 1).Trim().Split([|' '; '\t'|]) |> Array.tryLast
+                                                    else
+                                                        // 在 = 之前，是参数名位置
+                                                        trimmedCurrent.Split([|' '; '\t'|]) |> Array.tryLast
+
+                                                match prefixSoFar with
+                                                | Some prefix when prefix.Length > 0 ->
+                                                    // 用户正在输入，过滤匹配的参数
+                                                    let filteredParams =
+                                                        params |> List.filter (fun p -> p.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                                                    if filteredParams.Length > 0 then
+                                                        // 排序：完全匹配优先，然后是前缀匹配
+                                                        let sortedParams =
+                                                            filteredParams |> List.sortBy (fun p ->
+                                                                if p = prefix then 0
+                                                                elif p.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) then 1
+                                                                else 2)
+                                                        let completionItems =
+                                                            sortedParams
+                                                            |> List.mapi (fun i p ->
+                                                                CompletionResponse.Detailed(
+                                                                    p,
+                                                                    Some($"Parameter: {p}"),
+                                                                    Some (i + 1),
+                                                                    CompletionCategory.Variable))
+                                                            |> List.ofSeq
+                                                        Some completionItems
+                                                    else
+                                                        // 没有匹配的参数，返回常规补全
+                                                        None
+                                                | _ ->
+                                                    // 没有前缀，显示所有参数
+                                                    // 排序：常用参数优先（根据在脚本中出现的频率）
+                                                    let completionItems =
+                                                        params
+                                                        |> List.mapi (fun i p ->
+                                                            CompletionResponse.Detailed(
+                                                                p,
+                                                                Some($"Parameter: {p}"),
+                                                                Some (i + 1),
+                                                                CompletionCategory.Variable))
+                                                        |> List.ofSeq
+                                                    Some completionItems
+                                            else
+                                                // 没有找到参数，返回 None 让常规补全接管
+                                                None
+                                        | None ->
+                                            // 找不到精确匹配的脚本定义，尝试查找路径前缀匹配的脚本
+                                            let currentLineText =
+                                                if currentLineIdx >= 0 && currentLineIdx < split.Length then
+                                                    split.[currentLineIdx].Trim()
+                                                else ""
+
+                                            let inlineScripts =
+                                                allEntities
+                                                |> Seq.filter (fun struct (e, _) ->
+                                                    let path = e.logicalpath
+                                                    path.Contains("common/inline_scripts", StringComparison.OrdinalIgnoreCase) ||
+                                                    path.Contains("common\\inline_scripts", StringComparison.OrdinalIgnoreCase))
+                                                |> Seq.choose (fun struct (e, _) ->
+                                                    let path = e.logicalpath
+                                                    let pathLower = path.ToLowerInvariant()
+                                                    let inlineIdx =
+                                                        let idx1 = pathLower.IndexOf("common/inline_scripts/")
+                                                        let idx2 = pathLower.IndexOf("common\\inline_scripts\\")
+                                                        if idx1 >= 0 then idx1 + "common/inline_scripts/".Length
+                                                        elif idx2 >= 0 then idx2 + "common\\inline_scripts\\".Length
+                                                        else -1
+
+                                                    if inlineIdx >= 0 && inlineIdx < path.Length then
+                                                        let scriptPath = path.Substring(inlineIdx).Replace(".txt", "")
+                                                        if scriptPath.StartsWith(scriptName, StringComparison.OrdinalIgnoreCase) then
+                                                            Some e
+                                                        else
+                                                            None
+                                                    else
+                                                        None)
+                                                |> Seq.toList
+
+                                            match inlineScripts with
+                                            | [] -> None
+                                            | firstScript :: _ ->
+                                                let params =
+                                                    try
+                                                        let fileContent = System.IO.File.ReadAllText(firstScript.filepath)
+                                                        let regex = System.Text.RegularExpressions.Regex(@"\$([A-Za-z_][A-Za-z0-9_]*)\$")
+                                                        let matches = regex.Matches(fileContent)
+                                                        [ for m in matches -> m.Groups.[1].Value ] |> List.distinct
+                                                    with _ -> []
+
+                                                if params.Length > 0 then
+                                                    let prefixSoFar =
+                                                        let trimmedCurrent = currentLineText.Trim()
+                                                        let eqIdx = trimmedCurrent.IndexOf('=')
+                                                        if eqIdx >= 0 then
+                                                            trimmedCurrent.Substring(eqIdx + 1).Trim().Split([|' '; '\t'|]) |> Array.tryLast
+                                                        else
+                                                            trimmedCurrent.Split([|' '; '\t'|]) |> Array.tryLast
+
+                                                    match prefixSoFar with
+                                                    | Some prefix when prefix.Length > 0 ->
+                                                        let filteredParams =
+                                                            params |> List.filter (fun p -> p.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                                                        if filteredParams.Length > 0 then
+                                                            let sortedParams =
+                                                                filteredParams |> List.sortBy (fun p ->
+                                                                    if p = prefix then 0
+                                                                    elif p.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) then 1
+                                                                    else 2)
+                                                            let completionItems =
+                                                                sortedParams
+                                                                |> List.mapi (fun i p ->
+                                                                    CompletionResponse.Detailed(
+                                                                        p,
+                                                                        Some($"Parameter: {p}"),
+                                                                        Some (i + 1),
+                                                                        CompletionCategory.Variable))
+                                                                |> List.ofSeq
+                                                            Some completionItems
+                                                        else
+                                                            None
+                                                    | _ ->
+                                                        let completionItems =
+                                                            params
+                                                            |> List.mapi (fun i p ->
+                                                                CompletionResponse.Detailed(
+                                                                    p,
+                                                                    Some($"Parameter: {p}"),
+                                                                    Some (i + 1),
+                                                                    CompletionCategory.Variable))
+                                                            |> List.ofSeq
+                                                        Some completionItems
+                                                else
+                                                    None
+                        | None -> None
+                    else
+                        None
+            else
+                None
 
         // 特殊处理：value:script_value|param| 语法的参数补全
         let tryScriptValueCompletion () =
@@ -234,26 +642,155 @@ module LanguageFeatures =
             else
                 None
 
-        // 先尝试 script_value 参数补全
-        let svResult = tryScriptValueCompletion()
-        match svResult with
-        | Some items -> 
-            log (sprintf "ScriptValue completion returning %d items" items.Length)
+        // 先尝试 inline_script 补全
+        let inlineResult = tryInlineScriptCompletion()
+        match inlineResult with
+        | Some items ->
+            log (sprintf "Inline script completion returning %d items" items.Length)
             items
         | None ->
-            // 使用常规补全逻辑
-            match
-                Path.GetExtension filepath, resourceManager.ManualProcessResource resource, completionService, infoService
-            with
-            | ".yml", _, Some completion, _ -> completion.LocalisationComplete(pos, filetext) |> List.ofArray
-            | _, Some e, Some completion, Some info ->
-                log (sprintf "completion %s %s" (fileManager.ConvertPathToLogicalPath filepath) filepath)
+            // 再尝试 script_value 参数补全
+            let svResult = tryScriptValueCompletion()
+            match svResult with
+            | Some items ->
+                log (sprintf "ScriptValue completion returning %d items" items.Length)
+                items
+            | None ->
+                // 如果是 inline_script 文件，需要找到调用者的上下文
+                if isInlineScriptFile then
+                    log (sprintf "completion: processing inline_script file, looking for caller context")
+                    
+                    // 从路径中提取inline_script名称
+                    let inlineScriptNameOpt =
+                        let pathLower = filepath.ToLowerInvariant()
+                        let inlineIdx =
+                            let idx1 = pathLower.IndexOf("common/inline_scripts/")
+                            let idx2 = pathLower.IndexOf("common\\inline_scripts\\")
+                            if idx1 >= 0 then idx1 + "common/inline_scripts/".Length
+                            elif idx2 >= 0 then idx2 + "common\\inline_scripts\\".Length
+                            else -1
+                        
+                        if inlineIdx >= 0 && inlineIdx < filepath.Length then
+                            let scriptPath = filepath.Substring(inlineIdx).Replace(".txt", "")
+                            Some scriptPath
+                        else
+                            None
+                    
+                    match inlineScriptNameOpt, resourceManager.ManualProcessResource resource with
+                    | Some scriptName, Some inlineEntity ->
+                        // 提取脚本的文件名部分(最后一部分)用于搜索
+                        let scriptFileName = 
+                            scriptName.Split([| '/'; '\\' |]) 
+                            |> Array.last
+                        
+                        // 遍历所有非inline_scripts的实体,找到调用者
+                        let allEntities = resourceManager.Api.AllEntities()
+                        
+                        // 优先查找component_templates目录下的文件
+                        let callerEntityOpt =
+                            allEntities
+                            |> Seq.filter (fun struct (e, _) ->
+                                // 排除inline_scripts目录
+                                let callerPath = e.logicalpath
+                                not (callerPath.Contains("common/inline_scripts", StringComparison.OrdinalIgnoreCase) ||
+                                     callerPath.Contains("common\\inline_scripts", StringComparison.OrdinalIgnoreCase)))
+                            |> Seq.filter (fun struct (e, _) ->
+                                // 只查找component_templates目录
+                                e.logicalpath.Contains("common/component_templates", StringComparison.OrdinalIgnoreCase) ||
+                                e.logicalpath.Contains("common\\component_templates", StringComparison.OrdinalIgnoreCase))
+                            |> Seq.tryPick (fun struct (e, _) ->
+                                try
+                                    let fileContent = System.IO.File.ReadAllText(e.filepath)
+                                    // 检查是否包含脚本文件名
+                                    if fileContent.Contains(scriptFileName, StringComparison.OrdinalIgnoreCase) then
+                                        Some e
+                                    else
+                                        None
+                                with _ -> None)
+                            |> function
+                               | Some e -> Some e
+                               | None ->
+                                   // 如果component_templates中没找到,扩展搜索所有文件
+                                   allEntities
+                                   |> Seq.filter (fun struct (e, _) ->
+                                       let callerPath = e.logicalpath
+                                       not (callerPath.Contains("common/inline_scripts", StringComparison.OrdinalIgnoreCase) ||
+                                            callerPath.Contains("common\\inline_scripts", StringComparison.OrdinalIgnoreCase)))
+                                   |> Seq.tryPick (fun struct (e, _) ->
+                                       try
+                                           let fileContent = System.IO.File.ReadAllText(e.filepath)
+                                           if fileContent.Contains(scriptFileName, StringComparison.OrdinalIgnoreCase) then
+                                               Some e
+                                           else
+                                               None
+                                       with _ -> None)
+                        
+                        match callerEntityOpt with
+                        | Some callerEntity ->
+                            // 找到调用者文件中inline_script引用的位置
+                            try
+                                let callerFileContent = System.IO.File.ReadAllText(callerEntity.filepath)
+                                let lines = callerFileContent.Split([| '\n'; '\r' |], StringSplitOptions.RemoveEmptyEntries)
+                                
+                                // 找到包含script = scriptName的行
+                                let mutable inlineScriptLine = -1
+                                for i = 0 to lines.Length - 1 do
+                                    if inlineScriptLine = -1 && lines.[i].Contains(scriptFileName, StringComparison.OrdinalIgnoreCase) then
+                                        inlineScriptLine <- i
+                                
+                                if inlineScriptLine >= 0 then
+                                    // 在该行的末尾位置获取上下文
+                                    let callerPos = mkPos (inlineScriptLine + 1) (lines.[inlineScriptLine].Length)
+                                    
+                                    match infoService with
+                                    | Some info ->
+                                        match info.GetInfo(callerPos, callerEntity) with
+                                        | Some(ctx, _) ->
+                                            match completionService with
+                                            | Some completion -> 
+                                                // 使用调用者实体和它的上下文进行补全
+                                                completion.Complete(callerPos, callerEntity, Some ctx)
+                                            | None -> []
+                                        | None ->
+                                            match completionService with
+                                            | Some completion -> completion.Complete(callerPos, callerEntity, None)
+                                            | None -> []
+                                    | None -> []
+                                else
+                                    []
+                            with _ ->
+                                []
+                        | None ->
+                            log "completion: no caller found, providing basic parameter completion"
+                            // 如果找不到调用者,提供参数名补全
+                            try
+                                let fileContent = System.IO.File.ReadAllText(filepath)
+                                let regex = System.Text.RegularExpressions.Regex(@"\$([A-Za-z_][A-Za-z0-9_]*)\$")
+                                let matches = regex.Matches(fileContent)
+                                let allParams = [ for m in matches -> m.Groups.[1].Value ] |> List.distinct |> List.toArray
+                                log (sprintf "completion: found %d params" allParams.Length)
+                                allParams
+                                |> Array.map (fun param ->
+                                    CompletionResponse.Detailed(param, Some($"Parameter: {param}"), None, CompletionCategory.Variable))
+                                |> Array.toList
+                            with ex -> []
+                    | _ ->
+                        log "completion: missing required info for inline_script"
+                        []
+                else
+                    // 使用常规补全逻辑
+                    match
+                        Path.GetExtension filepath, resourceManager.ManualProcessResource resource, completionService, infoService
+                    with
+                    | ".yml", _, Some completion, _ -> completion.LocalisationComplete(pos, filetext) |> List.ofArray
+                    | _, Some e, Some completion, Some info ->
+                        log (sprintf "completion %s %s" (fileManager.ConvertPathToLogicalPath filepath) filepath)
 
-                match info.GetInfo(pos, e) with
-                | Some(ctx, _) -> completion.Complete(pos, e, Some ctx)
-                | None -> completion.Complete(pos, e, None)
-            | _, Some e, Some completion, None -> completion.Complete(pos, e, None)
-            | _, _, _, _ -> []
+                        match info.GetInfo(pos, e) with
+                        | Some(ctx, _) -> completion.Complete(pos, e, Some ctx)
+                        | None -> completion.Complete(pos, e, None)
+                    | _, Some e, Some completion, None -> completion.Complete(pos, e, None)
+                    | _, _, _, _ -> []
 
 
     let getInfoAtPos

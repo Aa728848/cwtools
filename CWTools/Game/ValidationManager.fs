@@ -88,10 +88,12 @@ type ErrorCache() =
                     for pair in oldErrors do
                         let targetFile, errors = pair.Key, pair.Value
                         impactedFiles.Add targetFile |> ignore
-                        let bag = targetToErrors.[targetFile]
-
-                        for error in errors do
-                            bag.Remove error |> ignore
+                        // 安全地访问 targetToErrors，确保键存在
+                        match targetToErrors.TryGetValue targetFile with
+                        | true, bag ->
+                            for error in errors do
+                                bag.Remove error |> ignore
+                        | false, _ -> () // 键不存在，跳过
                 | _ -> ()
 
             // Add new errors
@@ -101,6 +103,8 @@ type ErrorCache() =
 
             for targetFile, cwErrors in groupedErrors do
                 if fromEntity.filepath = targetFile then
+                    // 使用 TryAdd 或索引器安全地更新字典
+                    let _ = selfErrors.TryGetValue(targetFile)
                     selfErrors.[targetFile] <- new HashSet<CWError>(cwErrors)
                 else
                     impactedFiles.Add targetFile |> ignore
