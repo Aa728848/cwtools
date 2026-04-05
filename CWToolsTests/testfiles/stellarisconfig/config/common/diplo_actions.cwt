@@ -1,6 +1,18 @@
 types = {
 	type[diplomatic_action] = {
 		path = "game/common/diplomatic_actions"
+		localisation = {
+			## optional
+			Name = "$_TITLE"
+			## optional
+			Description = "$_DESC"
+			## optional
+			"Long desc" = "$_LONG_DESC"
+			## optional
+			Type = "$_TYPE"
+			## optional
+			"Type desc" = "$_TYPE_DESC"
+		}
 	}
 }
 
@@ -8,9 +20,20 @@ types = {
 #TODO Document
 diplomatic_action = {
 	## cardinality = 0..1
+	icon = <sprite>
+	## cardinality = 0..1
+	action_type = enum[action_types]
+	## cardinality = 0..1
+	require_envoy = yes
+	## cardinality = 0..1
+	envoy_assignment = localisation
+	## cardinality = 0..1
 	###decides if this diplomactic action type is listed in diplomatic view.
 	is_listed = bool
-	
+
+	## cardinality = 0..1
+	should_remove_response_message_when_not_possible = bool
+
 	## cardinality = 0..1
 	###the technologies required to enable the player to send this diplomatic action.
 	prerequisites = {
@@ -21,10 +44,10 @@ diplomatic_action = {
 	## cardinality = 0..1
 	###will require the actor to be at peace for this action to pass the possible check.
 	requires_actor_peace = bool
-	
+
 	## cardinality = 0..1
 	show_to_alliance_members = bool
-	
+
 	## cardinality = 0..1
 	###will require the alliance of the actor to vote for this action before passing it on to the recipient.
 	requires_alliance_vote = bool
@@ -71,6 +94,9 @@ diplomatic_action = {
 	should_open_auto_accept_message_recipient = bool
 
 	## cardinality = 0..1
+	should_notify_auto_recipient_on_vote_fail = bool
+
+	## cardinality = 0..1
 	###decides if the actor gets a reply showing the diplomatic action.
 	should_show_auto_accept_message_actor = bool
 
@@ -87,6 +113,8 @@ diplomatic_action = {
 	## cardinality = 0..1
 	AI_acceptance_base_value = int
 
+	## cardinality = 0..1
+	sound = <sound_effect>
 
 	## cardinality = 0..1
 	## replace_scope = { root = country this = country from = country }
@@ -110,4 +138,18 @@ diplomatic_action = {
 	## cardinality = 0..1
 	## replace_scope = { root = country this = country from = country }
 	on_decline = { alias_name[effect] = alias_match_left[effect] }
+
+	## cardinality = 0..1
+	## replace_scope = { root = country this = country from = country }
+	###weight field where you can define AI reasons to accept or reject the proposal. root is recipient, from is actor. Does not overwrite hardcoded reasons, and only using add and subtract is recommended, since multiplication won't affect reasons outside the ai_acceptance field
+	ai_acceptance = {
+		alias_name[modifier_rule] = alias_match_left[modifier_rule]
+	}
+
+	## cardinality = 0..1
+	## replace_scope = { root = country this = country from = country }
+	###weight field where you can define AI reasons to propose the proposal. root is actor, from is recipient.
+	should_ai_propose = {
+		alias_name[modifier_rule] = alias_match_left[modifier_rule]
+	}
 }

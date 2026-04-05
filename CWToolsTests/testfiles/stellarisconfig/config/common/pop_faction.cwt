@@ -1,6 +1,12 @@
 types = {
 	type[pop_faction] = {
 		path = "game/common/pop_faction_types"
+		localisation = {
+			## required
+			Name = "pft_$"
+			## required
+			Description = "pft_$_desc"
+		}
 	}
 }
 
@@ -8,11 +14,11 @@ types = {
 enums = {
 	complex_enum[pop_faction_parameters] = {
 		path = "game/common/pop_faction_types"
-			name = {
-				parameters = {
-					enum_name = {}
-				}
+		name = {
+			parameters = {
+				enum_name = {}
 			}
+		}
 	}
 }
 
@@ -20,11 +26,11 @@ enums = {
 enums = {
 	complex_enum[pop_faction_actions] = {
 		path = "game/common/pop_faction_types"
-			name = {
-				actions = {
-					enum_name = {}
-				}
+		name = {
+			actions = {
+				enum_name = {}
 			}
+		}
 	}
 }
 
@@ -42,11 +48,22 @@ pop_faction = {
 	guiding_ethic = <ethos>
 
 	## cardinality = 0..1
+	visual_ethic = localisation
+
+	## cardinality = 0..1
+	use_guiding_ethic_as_pop_filter = bool
+	
+	## cardinality = 0..1
+	persistent_faction = bool
+	## cardinality = 0..1
+	can_rename = bool
+
+	## cardinality = 0..1
 	### UI color for candidate header
 	election_header =  <sprite>
 
 	## cardinality = 0..1
-	### This = Country. Existance requirements for this faction
+	### This = Country. Existence requirements for this faction
 	is_potential = {
 		alias_name[trigger] = alias_match_left[trigger]
 	}
@@ -57,7 +74,7 @@ pop_faction = {
 		## cardinality = 0..1
 		scalar = {
 			## cardinality = 1..1
-			type = enum[basic_scopes]
+			type = enum[scope_type_tokens]
 			## cardinality = 0..1
 			valid_objects = {
 				alias_name[trigger] = alias_match_left[trigger]
@@ -66,7 +83,7 @@ pop_faction = {
 	}
 
 	## cardinality = 0..1
-	### This = Pop faction. Existance requirements for defined parameter
+	### This = Pop faction. Existence requirements for defined parameter
 	valid = {
 		## cardinality = 0..1
 		alias_name[trigger] = alias_match_left[trigger]
@@ -79,7 +96,13 @@ pop_faction = {
 		}
 	}
 
-	### This = Pop. Determines, which pops are able to join this faction
+	## cardinality = 0..1
+	### This = Pop. Determines which pops are able to join this faction. Only uses certain simple triggers.
+	can_join_pre_triggers = {
+		alias_name[pop_pre_trigger] = alias_match_left[pop_pre_trigger]
+	}
+
+	### This = Pop. Determines which pops are able to join this faction
 	can_join_faction = {
 		alias_name[trigger] = alias_match_left[trigger]
 	}
@@ -87,28 +110,13 @@ pop_faction = {
 	## cardinality = 0..1
 	### This = Pop. Pop's willingness weight to join this faction
 	attraction = {
-
-		## cardinality = 1..1
-		### Basic faction attraction weight
-		base = float
-
-		## cardinality = 0..1
-		alias_name[modifier_rule_add_factor] = alias_match_left[modifier_rule_add_factor]
-		## cardinality = 0..1
-		alias_name[scaled_modifier_rule] = alias_match_left[scaled_modifier_rule]
-
+		alias_name[modifier_rule] = alias_match_left[modifier_rule]
 	}
 
 	## cardinality = 0..1
 	### This = Leader. Pop's willingness weight to join this faction
 	leader = {
-
-		## cardinality = 0..1
-		### Basic weight for leader
-		base = float
-
-		## cardinality = 0..1
-		alias_name[modifier_rule_add_factor] = alias_match_left[modifier_rule_add_factor]
+		alias_name[modifier_rule] = alias_match_left[modifier_rule]
 
 	}
 
@@ -153,6 +161,10 @@ pop_faction = {
 		## cardinality = 0..1
 		### Negative happiness effect on faction, if demand is not satisfied
 		unfulfilled_effect = float
+		
+		## cardinality = 0..1
+		### Council Demand
+		council_demand = bool
 
 		## cardinality = 0..1
 		### This = Pop faction.
@@ -205,11 +217,6 @@ pop_faction = {
 			## cardinality = 0..1
 			### This = Pop faction.
 			ai_weight = {
-				## cardinality = 0..1
-				base = float
-				## cardinality = 0..1
-				factor = float
-				## cardinality = 0..1
 				alias_name[modifier_rule] = alias_match_left[modifier_rule]
 			}
 
@@ -217,8 +224,37 @@ pop_faction = {
 
 	}
 	resources = {
-		category = pop_factions
+		category = <economic_category>
 		alias_name[economic_template] = alias_match_left[economic_template]
 	}
+	
+	## cardinality = 0..1
+	extortion_resource = {
+		category = <economic_category>
+		alias_name[economic_template] = alias_match_left[economic_template]
+	}
+}
 
+# # Note every pop faction file in game is in error and Dayshine does not respond.  Had to hard code using enums to work with has_country_flag in triggers file.
+enums = {
+	enum[pop_faction_inline_flag_enum] = {
+		galcom_resolution_passed_anti_imperialist
+		galcom_resolution_passed_pro_imperialist
+		galcom_resolution_passed_anti_isolationist
+		galcom_resolution_passed_pro_isolationist
+		galcom_resolution_passed_anti_traditionalist
+		galcom_resolution_passed_pro_traditionalist
+		galcom_resolution_passed_anti_progressive
+		galcom_resolution_passed_pro_progressive
+		galcom_resolution_passed_anti_prosperity
+		galcom_resolution_passed_pro_prosperity
+		galcom_resolution_passed_anti_supremacist
+		galcom_resolution_passed_pro_supremacist
+		galcom_resolution_passed_anti_technologist
+		galcom_resolution_passed_pro_technologist
+		galcom_resolution_passed_anti_totalitarian
+		galcom_resolution_passed_pro_totalitarian
+		galcom_resolution_passed_anti_xenoist
+		galcom_resolution_passed_pro_xenoist
+	}
 }

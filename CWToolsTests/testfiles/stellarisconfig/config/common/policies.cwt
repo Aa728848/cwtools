@@ -7,6 +7,12 @@ types = {
 		subtype[policy_option] = {
 
 		}
+		localisation = {
+			## required
+			Name = "policy_$"
+			## required
+			Description = "policy_$_desc"
+		}
 	}
 }
 
@@ -35,6 +41,7 @@ enums = {
 }
 
 policy = {
+	## cardinality = 0..1
 	potential = {
 		alias_name[trigger] = alias_match_left[trigger]
 	}
@@ -44,9 +51,32 @@ policy = {
 		alias_name[trigger] = alias_match_left[trigger]
 	}
 
-	## cardinality = 2..20
+	## cardinality = 0..1
+	###Fires when the policy group first becomes available
+	on_activate = {
+		alias_name[effect] = alias_match_left[effect]
+	}
+
+	## cardinality = 1..20
 	option = {
 		name = localisation
+		## cardinality = 0..1
+		icon = <sprite>
+		## cardinality = 0..1
+		pre_sapient_purge = <purge_type>
+
+		## cardinality = 0..inf
+		in_breach_of = {
+			## cardinality = 0..inf
+			{
+				## cardinality = 0..1
+				## replace_scope = { this = country root = country }
+				trigger = {
+					alias_name[trigger] = alias_match_left[trigger]
+				}
+				key = <resolution>
+			}
+		}
 
 		## cardinality = 0..1
 		policy_flags = {
@@ -86,10 +116,6 @@ policy = {
 
 		## cardinality = 0..1
 		AI_weight = {
-			## cardinality = 0..1
-			factor = float
-			## cardinality = 0..1
-			weight = float
 			alias_name[modifier_rule] = alias_match_left[modifier_rule]
 		}
 	}

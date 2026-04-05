@@ -3,16 +3,25 @@ types = {
 	type[country_type] = {
 		path = "game/common/country_types"
 	}
+	type[ownership_limit] = {
+		path = "game/common/country_limits/ownership_limits"
+	}
+	type[ship_of_size_limit] = {
+		path = "game/common/country_limits/ship_of_size_limits"
+	}
 }
 
 country_type = {
-
 	## cardinality = 0..1
 	has_pulse_events = bool
 	## cardinality = 0..1
 	can_use_invalid_technology = bool
-
-
+	## cardinality = 0..1
+	can_receive_envoys = bool
+	## cardinality = 0..1
+	ownership_limits = <ownership_limit>
+	## cardinality = 0..1
+	do_critters_age = bool
 	## cardinality = 0..1
 	can_own_empty_planets = bool
 	## cardinality = 0..1
@@ -84,6 +93,8 @@ country_type = {
 	## cardinality = 0..1
 	end_game_crisis = bool
 	## cardinality = 0..1
+	anti_end_game_crisis = bool
+	## cardinality = 0..1
 	custom_diplomacy = bool
 	## cardinality = 0..1
 	custom_opinion = bool
@@ -93,6 +104,8 @@ country_type = {
 	destroys_starbases = bool
 	## cardinality = 0..1
 	is_space_critter = bool #this might be a subtype
+	## cardinality = 0..1
+	ignore_ftl_inhibitors = bool
 	## cardinality = 0..1
 	blocks_pirate = bool
 	## cardinality = 0..1
@@ -112,6 +125,10 @@ country_type = {
 	## cardinality = 0..1
 	has_difficulty_bonuses = bool
 	## cardinality = 0..1
+	has_deficits = yes
+	## cardinality = 0..1
+	is_mercenary = yes
+	## cardinality = 0..1
 	pop_growth = bool
 	## cardinality = 0..1
 	share_survey_data = bool
@@ -123,6 +140,14 @@ country_type = {
 	pre_communications_fleet_name = localisation
 	## cardinality = 0..1
 	observable = bool
+	## cardinality = 0..1
+	has_plural_name = bool
+	## cardinality = 0..1
+	uses_origins = bool
+	## cardinality = 0..1
+	always_valid_target_aggressive = bool
+	## cardinality = 0..1
+	prevent_automatic_genocidal_hostilities = bool
 	## cardinality = 0..1
 	faction = {
 		## cardinality = 0..1
@@ -142,7 +167,7 @@ country_type = {
 		## cardinality = 0..1
 		primitive = bool
 		## cardinality = 0..1
-		primitive_age = localisation
+		primitive_age = <pre_ftl_age>
 		## cardinality = 0..1
 		hostile_when_attacked = bool
 		## cardinality = 0..1
@@ -151,6 +176,9 @@ country_type = {
 		pirate = bool
 		## cardinality = 0..1
 		space_creatures = bool
+		## cardinality = 0..1
+		###Determines whether their planets are surveyable by others (should be "yes" for e.g. primitives)
+		intel_effects_surveyed = bool
 	}
 
 	ai = {
@@ -178,96 +206,58 @@ country_type = {
 		## cardinality = 0..1
 		traditions = bool
 		## cardinality = 0..1
+		ascension_perks = bool
+		## cardinality = 0..1
 		follow = bool
 		## cardinality = 0..1
 		starbase_upgrade = bool
 		## cardinality = 0..1
 		limited_construction = bool
-
+		## cardinality = 0..1
+		diplomacy = bool
 		## cardinality = 0..1
 		can_use_market = bool
-		
 		## cardinality = 0..1
-		ship_data = {
-			## cardinality = 0..inf
-			#this should be tied to the ship_sizes file, for verification. If you can add a blue warning - the AI will not build a ship if its not defined under country_type
-			#TODO Add validator for undefined ship sizes
-			<ship_size> = {
-				## cardinality = 0..1
-				min = int
-				## cardinality = 0..1
-				max = int
-				## cardinality = 0..1
-				system_mult = float
-				## cardinality = 0..1
-				planet_mult = float
-				## cardinality = 0..inf
-				#TODO Check if this can be replaced with modifier_rule alias
-				fraction = {
-					## cardinality = 0..1
-					base = int[0..100] #max 100!, its fractions from a whole - 100% being the total ship production of said country
-					## cardinality = 0..1
-					#yes - this one is weird, see the army_data for an example (in the file)
-					factor = int
-					## replace_scope = { this = country root = country }
-					## cardinality = 0..inf
-					modifier = {
-						## cardinality = 0..1
-						add = int
-						## cardinality = 0..1
-						factor = float
-						## cardinality = 0..inf
-						alias_name[trigger] = alias_match_left[trigger]
-					}
-				}
-			}
-		}
+		espionage = bool
 		## cardinality = 0..1
-		army_data = {
-			## cardinality = 0..inf
-			#this should be tied to the army file, for verification. If you can add a blue warning - the AI will not build an army if its not defined under country_type
-			#TODO Add validator for undefined armies
-			<army> = {
-				## cardinality = 0..1
-				min = int
-				## cardinality = 0..1
-				max = int
-				## cardinality = 0..1
-				system_mult = float
-				## cardinality = 0..inf
-				#TODO Check if can be replaced with modifier_rule alias
-				fraction = {
-					## cardinality = 0..1
-					base = int[0..100] #max 100!, its fractions from a whole - 100% being the total ship production of said country
-					## cardinality = 0..1
-					factor = int #yes - this one is weird, see the army_data for an example (in the file)
-					## replace_scope = { this = country root = country }
-					## cardinality = 0..inf
-					modifier = {
-						## cardinality = 0..1
-						add = int
-						## cardinality = 0..1
-						factor = float
-						## cardinality = 0..inf
-						alias_name[trigger] = alias_match_left[trigger]
-					}
-				}
-			}
-		}
-		#TODO Check if this even works as a rule, maybe replace with enum
+		limited_military_construction = bool
+		## cardinality = 0..1
+		limited_leaders = bool
 		## cardinality = 0..1
 		modules = {
 			## cardinality = 0..inf
 			enum[country_type_module]
 		}
 	}
+
+	### used with enclave_mercenary
+	## cardinality = 0..1
+	fleet_manager = {
+		on_contract_started = {
+			## cardinality = 0..1
+			alias_name[effect] = alias_match_left[effect]
+		}
+		on_contract_expired = {
+			## cardinality = 0..1
+			alias_name[effect] = alias_match_left[effect]
+		}
+		on_contract_cancelled = {
+			## cardinality = 0..1
+			alias_name[effect] = alias_match_left[effect]
+		}
+		on_contract_broken = {
+			## cardinality = 0..1
+			alias_name[effect] = alias_match_left[effect]
+		}
+	}
+
 	### used with extradimensional invaders
 	## cardinality = 0..1
 	targets = {
 		## cardinality = 0..inf
 		<country_type>
 	}
-	
+
 	## cardinality = 0..1
 	replace_scope = { this = country root = country }
 	## cardinality = 0..1
@@ -284,7 +274,10 @@ country_type = {
 		## cardinality = 0..1
 		standard_leader_module = {}
 		## cardinality = 0..1
-		standard_diplomacy_module = {}
+		standard_diplomacy_module = {
+			## cardinality = 0..1
+			contact_rule = enum[contact_rules]
+		}
 		## cardinality = 0..1
 		standard_technology_module = {}
 		## cardinality = 0..1
@@ -296,20 +289,26 @@ country_type = {
 		## cardinality = 0..1
 		standard_species_rights_module = {}
 		## cardinality = 0..1
+		standard_grand_archive_module = {}
+		## cardinality = 0..1
+		standard_shroud_module = {}
+		## cardinality = 0..1
 		exclusive_diplomacy_module = {
 			## cardinality = 0..1
-			contact_rule = always
-			## cardinality = 0..1
-			contact_rule = script_only
+			contact_rule = enum[contact_rules]
 			## cardinality = 0..1
 			can_receive = {
 				## cardinality = 0..inf
 				<diplomatic_action>
+				## cardinality = 0..inf
+				enum[exclusive_diplomacy_ask]
 			}
 			## cardinality = 0..1
 			can_send = {
 				## cardinality = 0..inf
 				<diplomatic_action>
+				## cardinality = 0..inf
+				enum[exclusive_diplomacy_demand]
 			}
 		}
 		## cardinality = 0..1
@@ -334,21 +333,71 @@ country_type = {
 	}
 }
 
+
+### Note for overwriting: ownership_limits are extendable/additive. So if you make a second "default" and
+### add a single ship_of_size_limit inside it, it will apply both the limits described here, and the one
+### that you specified.
+### To do a full overwrite, you need to overwrite 00_ownership_limits.txt instead.
+ownership_limit = {
+	## cardinality = 0..1
+	ship_of_size_limits = {
+		## cardinality = 1..inf
+		<ship_of_size_limit>
+	}
+}
+
+### Defines the shared capacity of the specified ships that country is allowed to own
+### capacity = min( max, base + naval_cap_fraction * current_naval_cap )
+### where current_naval_cap is current naval capacity of the country
+ship_of_size_limit = {
+	### list of keys to ship_sizes database, these ship_sizes will share the calculated capacity
+	ship_types = {
+		## cardinality = 1..inf
+		<ship_size>
+	}
+	### Base (minimal) shared capacity of ships
+	base = int[0..inf]
+	## cardinality = 0..1
+	### Maximal shared capacity of ships
+	max = int[0..inf]
+	## cardinality = 0..1
+	### Fraction of current naval capacity of the country
+	naval_cap_fraction = float[0.0..1.0]
+	### Trigger that defines if tooltip for naval capacity icon on the top bar should be shown
+	### Recommended to include "is_scope_valid = yes" as the first line
+	## replace_scope = { this = country root = country from = federation }
+	show = {
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+}
+
 enums = {
 	enum[country_type_module] = {
-			military_minister_module
-			foreign_minister_module
-			interior_minister_module
-			horde_interior_minister_module
-			horde_military_minister_module
-			space_monsters_module
-			anti_crisis_military_minister_module
-			invaders_military_minister_module
-			invaders_interior_minister_module
-			swarm_interior_minister_module
-			swarm_military_minister_module
-			machine_interior_minister_module
-			machine_military_minister_module
-			berserk_military_minister_module
+		anti_crisis_military_minister_module
+		berserk_military_minister_module
+		enclave_founder_minister_module
+		enclave_mercenary_military_minister_module
+		enclave_mercenary_seller_minister_module
+		foreign_minister_module
+		formless_military_minister_module
+		galactic_community_patrol_military_minister_module
+		horde_interior_minister_module
+		horde_military_minister_module
+		interior_minister_module
+		invaders_interior_minister_module
+		invaders_military_minister_module
+		machine_interior_minister_module
+		machine_military_minister_module
+		mercenary_buyer_minister_module
+		military_minister_module
+		space_monsters_module
+		space_monsters_modules
+		standard_grand_archive_module
+		standard_species_rights_module
+		swarm_interior_minister_module
+		swarm_military_minister_module
+		synth_queen_interior_minister_module
+		synth_queen_military_minister_module
+		voidworms_module
 	}
 }

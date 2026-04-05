@@ -16,6 +16,7 @@ types = {
 		severity = warning
 
 	}
+	## type_key_filter <> { progressbartype PieChartType }
 	type[sprite] = { #these are links that start with the GFX_ prefix in vanilla
 		name_field = name
 		path = "game/interface"
@@ -47,7 +48,9 @@ progressbartype = {
 	textureFile1 = filepath
 	## cardinality = 0..1
 	textureFile2 = filepath
-
+	## cardinality = 0..1
+	flipdirection = bool
+	
 	effectFile = filepath #shader file
 
 	color = {
@@ -58,7 +61,8 @@ progressbartype = {
 		## cardinality = 3..3
 		float
 	}
-	size = { x = int y = int }
+	## cardinality = 0..1
+	size = { x = float y = float }
 	## cardinality = 0..1
 	horizontal = bool
 }
@@ -74,9 +78,15 @@ sprite = {
 	## cardinality = 0..1
 	alwaysTransparent = bool
 	## cardinality = 0..1
+	parent = <sprite>
+	## cardinality = 0..1
+	upper_left = { x = int y = int }
+	## cardinality = 0..1
+    lower_right = { x = int y = int }
+	## cardinality = 0..1
 	transParencecheck = bool
 	## cardinality = 0..1
-	borderSize = { x = int y = int }
+	borderSize = { x = float y = float }
 	## cardinality = 0..1
 	hitbox_margin = { x = int y = int }
 	## cardinality = 0..1
@@ -91,8 +101,16 @@ sprite = {
 	clicksound = <sound_effect>
 	## cardinality = 0..1
 	loadType = scalar
-	## cardinality = 0..1
+	## cardinality = 0..inf
 	legacy_lazy_load = bool
+	## cardinality = 0..inf
+	alternate_configurations = {
+			holographic
+	}
+	## cardinality = 0..1
+	close_up = bool
+	## cardinality = 0..1
+	mid_close_up = yes
 	## cardinality = 0..inf
 	animation = {
 		## cardinality = 0..1
@@ -123,16 +141,20 @@ sprite = {
 	}
 	#flag_sprite only!
 	## cardinality = 0..1
-	bg_position = { x = int y = int }
+	bg_position = { x = float y = float }
 	## cardinality = 0..1
 	bg_size = { width = int height = int }
 	## cardinality = 0..1
-	symbol_position = { x = int y = int }
+	symbol_position = { x = float y = float }
 	## cardinality = 0..1
-	symbol_size = { width = int height = int }
+	symbol_size = { width = float height = float }
 	## cardinality = 0..1
 	texture_size = enum[texture_size]
-
+	## cardinality = 0..1
+	mask_offset = { x = float y = float }
+	## cardinality = 0..1
+	mask_size = { width = int height = int }
+	
 	#framed_animated_sprite only!
 	## cardinality = 0..1
 	play_on_show = bool
@@ -140,6 +162,11 @@ sprite = {
 	animation_rate_fps = int
 	## cardinality = 0..1
 	looping = bool
+
+	## cardinality = 0..1
+	sprite_sheet_sprite_type = <sprite>
+	## cardinality = 0..1
+	default_frame = int
 
 	#cornered_tile_sprite
 	## cardinality = 0..1
@@ -152,6 +179,16 @@ sprite = {
 piechart = {
 	name = scalar
 	size = int
+	## cardinality = 0..1
+	is_hover = bool
+	## cardinality = 0..1
+	colors = {
+		## cardinality = 0..1
+		rgb = { 
+			## cardinality = 3..3
+			int 
+		}
+	}
 }
 
 enums = {
@@ -168,9 +205,12 @@ enums = {
 	rotating_cw
   }
   enum[sprite_type] = {
-  	planet
-	room
 	character
+	character_large
+	character_without_room
+	empty_room
+	room
+  	planet
   }
   enum[texture_size] = {
   	small

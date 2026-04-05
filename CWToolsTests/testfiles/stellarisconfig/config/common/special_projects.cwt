@@ -1,10 +1,17 @@
 types = {
+	## graph_related_types = { event anomaly_category }
 	type[special_project] = {
 		name_field = "key"
 		path = "game/common/special_projects"
 
 		subtype[cost] = {
 			cost = int[1..9999999]
+		}
+		localisation = {
+			## required
+			Name = "$"
+			## optional
+			Description = "$_DESC"
 		}
 	}
 }
@@ -16,8 +23,7 @@ special_project = {
 	cost = int
 	## cardinality = 0..1
 	cost = {
-		base = int
-		alias_name[scaled_modifier_rule] = alias_match_left[scaled_modifier_rule]
+		alias_name[modifier_rule] = alias_match_left[modifier_rule]
 	}
 	## cardinality = 0..1
 	timelimit = int
@@ -27,7 +33,20 @@ special_project = {
 	location = bool
 	## cardinality = 0..1
 	icon = filepath
+	## cardinality = 0..1
+	remove_when_completed = bool
+	## cardinality = 0..1
+	project_type = project_type_research
+	## cardinality = 0..1
+	project_type = project_type_bombardment
 
+	## cardinality = 0..inf
+	desc = {
+		text = localisation
+		trigger = {	
+			alias_name[trigger] = alias_match_left[trigger]
+		}
+	}
 
 	subtype[cost] = {
 		tech_department = enum[tech_departments]
@@ -45,6 +64,9 @@ special_project = {
 
 	## cardinality = 0..1
 	event_chain = <event_chain>
+	
+	## cardinality = 0..1
+	<resource> = int
 
 	## cardinality = 0..1
 	same_option_group_as = {
@@ -53,12 +75,18 @@ special_project = {
 	}
 
 	## cardinality = 0..1
-	sound = no
+	sound = bool
 
 	## cardinality = 0..1
 	AI_wait_days = {
-		weight = int
 		alias_name[modifier_rule] = alias_match_left[modifier_rule]
+	}
+	
+	## push_scope = country
+	## cardinality = 0..1
+	###this = country (project owner); from = event scope (planet or ship, MIGHT NOT EXIST); fromfrom = project creation scope (usually equals location)
+	fail_trigger = {
+		alias_name[trigger] = alias_match_left[trigger]
 	}
 
 	## cardinality = 0..1
@@ -95,12 +123,21 @@ special_project = {
 		skill = int[1..10]
 
 		## cardinality = 0..1
-		fleet_power > int
+		fleet_power = int
 
 		## cardinality = 0..1
 		is_founder_species = bool
 		## cardinality = 0..1
 		has_trait = <trait.leader_trait>
+		## cardinality = 0..1
+		size_requirement = {
+			ship_size = <ship_size>
+			count = int
+		}
+		## cardinality = 0..1
+		has_technology = <technology>
+		## cardinality = 0..1
+		handled_by_event_tooltip = localisation
 	}
 
 	## push_scope = country
@@ -110,6 +147,7 @@ special_project = {
 		alias_name[trigger] = alias_match_left[trigger]
 	}
 
+	## cardinality = 0..1
 	###this = event scope (ship or planet); from = project creation scope (usually equals location)
 	on_success = {
 		alias_name[effect] = alias_match_left[effect]
@@ -160,5 +198,6 @@ enums = {
 	enum[sp_event_scopes] = {
 		ship_event
 		planet_event
+		country_event
 	}
 }

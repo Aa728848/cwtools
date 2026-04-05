@@ -13,6 +13,25 @@ types = {
 			## cardinality = 0..1
 			colonizable = yes
 		}
+		subtype[unhabitable_ringworld] = {
+			ringworld = yes
+			colonizable = no
+		}
+		localisation = {
+			## required
+			Name = "$"
+			## required
+			Description = "$_desc"
+			subtype[habitable_planet] = {
+				## required
+				Habitability = "mod_$_habitability"
+				## required
+				"Preference trait" = "trait_$_preference"
+				## required
+				"Preference trait description" = "trait_$_preference_desc"
+			}
+		}
+
 	}
 	## type_key_filter = random_list
 	type[planet_class_random_list] = {
@@ -31,7 +50,11 @@ planet_class = {
 	atmosphere_intensity = float
 	## cardinality = 0..1
 	atmosphere_width = float
-	entity = scalar #TODO: entity somehow
+	entity = scalar   #TODO: entity somehow
+	## cardinality = 0..1
+	synaptic_lathe = bool
+	## cardinality = 0..1
+	preview_entity = scalar   #TODO: entity somehow
 	## cardinality = 0..1
 	overlay_entity = scalar
 	## cardinality = 0..1
@@ -41,9 +64,10 @@ planet_class = {
 	## cardinality = 0..1
 	fixed_entity_scale = bool
 	## cardinality = 0..1
-	icon_frame = int
+	icon = <sprite>
+	icon_large = <sprite>
 	subtype[planet] = {
-		icon_frame = int
+		icon = <sprite>
 		## cardinality = 0..1
 		habitat = bool
 		## cardinality = 0..1
@@ -84,9 +108,6 @@ planet_class = {
 		min = int
 		max = int
 	}
-	#only for planets defined as colonizable!
-	## cardinality = 0..1
-	climate = localisation
 	## cardinality = 0..1
 	enable_tilt = bool
 	## cardinality = 0..1
@@ -94,13 +115,7 @@ planet_class = {
 	## cardinality = 0..1
 	entity_face_object = bool
 	## cardinality = 0..1
-	colonizable = bool
-	## cardinality = 0..1
-	habitat = bool
-	## cardinality = 0..1
-	starting_planet = bool
-	## cardinality = 0..1
-	can_be_moon = bool #this should be checked against solar system initializers - only planets defined as can_be_mmon can be spawned as moons there!
+	can_be_moon = bool #this should be checked against solar system initializers - only planets defined as can_be_moon can be spawned as moons there!
 	## cardinality = 0..1
 	space_monster_target = bool
 	## cardinality = 0..1
@@ -110,11 +125,8 @@ planet_class = {
 	## cardinality = 0..1
 	ringworld = bool
 	## cardinality = 0..1
-	show_city = bool
-	## cardinality = 0..1
-	show_health_bar_in_planet_view = bool
-	## cardinality = 0..1
-	ideal = bool
+	### (default: no)
+	can_have_no_pop_colony = bool
 	## cardinality = 0..1
 	can_be_invaded = bool
 	## cardinality = 0..1
@@ -144,10 +156,75 @@ planet_class = {
 		<species_archetype>
 	}
 	## cardinality = 0..1
+	### (default: no)
 	uses_alternative_skies_for_moons = bool
+	## cardinality = 0..1
+	uses_alternative_skies_if_has_orbital_ring = bool
 
 	## cardinality = 0..1
 	fixed_city_level = int
+
+	## cardinality = 0..1
+	is_artificial_planet = bool
+
+	## cardinality = 0..1
+	colonizable = bool
+
+	subtype[habitable_planet] = {
+		## severity = warning
+		district_set = enum[district_sets]
+		## cardinality = 0..1
+		climate = localisation
+		## cardinality = 0..1
+		habitat = bool
+		## cardinality = 0..1
+		starting_planet = bool
+		## cardinality = 0..1
+		show_city = bool
+		## cardinality = 0..1
+		ideal = bool
+
+		## cardinality = 0..1
+		initial = yes
+		## cardinality = 0..1
+		potential = {
+			alias_name[trigger] = alias_match_left[trigger]
+		}
+		## cardinality = 0..1
+		auto_trait_prio = {
+			<trait>
+		}
+		## cardinality = 0..1
+		starting_district = <district>
+		## cardinality = 0..1
+		carry_cap_per_free_district = float
+	}
+	subtype[unhabitable_ringworld] = {
+		## severity = warning
+		## cardinality = 0..1
+		district_set = enum[district_sets]
+	}
+	## cardinality = 0..1
+	colonizable_by_event = bool
+	## cardinality = 0..1
+	show_health_bar_in_planet_view = bool
+
+	## cardinality = 0..1
+	starting_planet = no
+	## cardinality = 0..1
+	show_city = no
+	## cardinality = 0..1
+	default_planet_selection = bool
+	## cardinality = 0..1
+	inherit_country_building_modifiers = bool
+	## cardinality = 0..1
+	planet_custom_label_offset = float
+	## cardinality = 0..1
+	astral_rift_gfx = yes
+	## cardinality = 0..1
+	astral_scar = yes
+	## cardinality = 0..1
+	ideal = yes
 }
 
 planet_class_random_list = {
@@ -155,5 +232,14 @@ planet_class_random_list = {
 	planets = {
 		## cardinality = 1..inf
 		<planet_class>
+	}
+}
+
+enums = {
+	complex_enum[district_sets] = {
+		path = "game/common/planet_classes"
+		name = {
+			district_set = enum_name
+		}
 	}
 }
