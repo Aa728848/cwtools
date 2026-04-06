@@ -119,23 +119,35 @@ module LanguageFeatures =
                         log (sprintf "tryInlineScriptCompletion: textBeforeCursor='%s'" textBeforeCursor)
 
                         // 检测是否在 inline_script 块内
-                        // 向上查找 inline_script 关键字
-                        let rec findInlineScriptContext lineIdx =
-                            if lineIdx < 0 then 
-                                log "tryInlineScriptCompletion: no inline_script context found"
+                        // 使用括号计数的方式向上查找，确保能正确处理嵌套括号
+                        let rec findInlineScriptContext lineIdx braceDepth =
+                            if lineIdx < 0 then
+                                log (sprintf "tryInlineScriptCompletion: no inline_script context found (final braceDepth=%d)" braceDepth)
                                 None
                             else
                                 let l = split.[lineIdx].Trim()
-                                if l.StartsWith("inline_script") || l.Contains("inline_script =") then
-                                    log (sprintf "tryInlineScriptCompletion: found inline_script context at line %d" lineIdx)
+                                
+                                // 计算当前行的括号变化
+                                let openBraces = l.ToCharArray() |> Array.filter (fun c -> c = '{') |> Array.length
+                                let closeBraces = l.ToCharArray() |> Array.filter (fun c -> c = '}') |> Array.length
+                                let braceDelta = openBraces - closeBraces
+                                
+                                // 如果遇到 inline_script 关键字，且括号深度允许（braceDepth >= 0），说明找到了上下文
+                                if (l.StartsWith("inline_script") || l.Contains("inline_script =")) && braceDepth >= 0 then
+                                    log (sprintf "tryInlineScriptCompletion: found inline_script context at line %d (braceDepth=%d)" lineIdx braceDepth)
                                     Some lineIdx
-                                elif lineIdx < currentLineIdx && (l.StartsWith("}") || l.EndsWith("}")) && lineIdx > 0 then
-                                    // 如果在当前行之前遇到了闭合括号，可能需要进一步判断
-                                    findInlineScriptContext (lineIdx - 1)
                                 else
-                                    findInlineScriptContext (lineIdx - 1)
+                                    // 更新括号深度，继续向上搜索
+                                    let newDepth = braceDepth + braceDelta
+                                    // 如果深度变成很大的正数，说明已经离开了最外层的 inline_script 块
+                                    if newDepth > 100 then
+                                        log (sprintf "tryInlineScriptCompletion: exited inline_script block (braceDepth=%d)" newDepth)
+                                        None
+                                    else
+                                        findInlineScriptContext (lineIdx - 1) newDepth
 
-                        match findInlineScriptContext currentLineIdx with
+                        // 从当前行开始搜索，初始括号深度为 0
+                        match findInlineScriptContext currentLineIdx 0 with
                         | Some _ ->
                             // 在 inline_script 块内，判断是脚本名、参数名还是参数值补全
 

@@ -72,11 +72,18 @@ module STLProcess =
         combinedScopes |> List.fold Set.intersect (scopeManager.AllScopes |> Set.ofList)
     //combinedScopes |> List.fold (fun a b -> Set.intersect (Set.ofList a) (Set.ofList b) |> Set.toList) allScopes
 
-    let findAllUsedEventTargets (event: Node) =
+    /// Substitute parameters in a string. Parameters are in the form $PARAM$
+    let substituteParams (paramList: (string * string) list) (text: string) : string =
+        paramList |> List.fold (fun (acc: string) ((param: string), (value: string)) ->
+            acc.Replace("$" + param + "$", value)
+        ) text
+
+    let findAllUsedEventTargetsWithParams (parameters: (string * string) list) (event: Node) =
         let fNode =
-            (fun (x: Node) children ->
+            (fun (x: Node) (children: string list) ->
                 let targetFromString (k: string) =
-                    k.AsSpan().Slice(13).SplitFirst('.').ToString()
+                    let raw = k.AsSpan().Slice(13).SplitFirst('.').ToString()
+                    substituteParams parameters raw
 
                 let inner (leaf: Leaf) =
                     let value = leaf.Value.ToRawString()
@@ -94,39 +101,50 @@ module STLProcess =
             )
 
         let fCombine = (@)
-        event |> (foldNode2 fNode fCombine []) |> Set.ofList
+        event |> (foldNode2 fNode fCombine ([] : string list)) |> Set.ofList
 
-    let findAllSavedEventTargets (event: Node) =
+    let findAllUsedEventTargets (event: Node) =
+        findAllUsedEventTargetsWithParams [] event
+
+    let findAllSavedEventTargetsWithParams (parameters: (string * string) list) (event: Node) =
         let fNode =
-            (fun (x: Node) children ->
+            (fun (x: Node) (children: string list) ->
                 let inner (leaf: Leaf) =
                     if leaf.Key == "save_event_target_as" then
-                        Some(leaf.Value.ToRawString())
+                        let value = leaf.Value.ToRawString()
+                        Some(substituteParams parameters value)
                     else
                         None
 
                 (x.Values |> List.choose inner) @ children)
 
         let fCombine = (@)
-        event |> (foldNode2 fNode fCombine []) |> Set.ofList
+        event |> (foldNode2 fNode fCombine ([] : string list)) |> Set.ofList
 
-    let findAllExistsEventTargets (event: Node) =
+    let findAllSavedEventTargets (event: Node) =
+        findAllSavedEventTargetsWithParams [] event
+
+    let findAllExistsEventTargetsWithParams (parameters: (string * string) list) (event: Node) =
         let fNode =
-            (fun (x: Node) children ->
+            (fun (x: Node) (children: string list) ->
                 let inner (leaf: Leaf) =
                     let value = leaf.Value.ToRawString()
                     if
                         leaf.Key == "exists"
                         && value.StartsWith("event_target:", StringComparison.OrdinalIgnoreCase)
                     then
-                        Some(value.Substring(13).Split('.').[0])
+                        let raw = value.Substring(13).Split('.').[0]
+                        Some(substituteParams parameters raw)
                     else
                         None
 
                 (x.Values |> List.choose inner) @ children)
 
         let fCombine = (@)
-        event |> (foldNode2 fNode fCombine []) |> Set.ofList
+        event |> (foldNode2 fNode fCombine ([] : string list)) |> Set.ofList
+
+    let findAllExistsEventTargets (event: Node) =
+        findAllExistsEventTargetsWithParams [] event
 
     let findAllSavedGlobalEventTargets (event: Node) =
         let fNode =

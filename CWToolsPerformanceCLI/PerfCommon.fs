@@ -56,7 +56,8 @@ let emptyStellarisSettings rootDirectory =
       scriptFolders = None
       excludeGlobPatterns = None
       maxFileSize = None
-      debugSettings = DebugSettings.Default }
+      debugSettings = DebugSettings.Default
+      vanillaPath = None }
 
 // Config file helpers
 let enumerateConfigFiles basePath extensions =

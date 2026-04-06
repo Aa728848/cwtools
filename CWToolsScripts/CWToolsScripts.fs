@@ -270,7 +270,8 @@ module CWToolsScripts =
           scriptFolders = None
           excludeGlobPatterns = None
           maxFileSize = None
-          debugSettings = DebugSettings.Default }
+          debugSettings = DebugSettings.Default
+          vanillaPath = None }
 
     let emptyHOI4Settings (rootDirectory) =
         { CWTools.Games.GameSetupSettings.rootDirectories = [| WD { name = "test"; path = rootDirectory } |]
@@ -284,7 +285,8 @@ module CWToolsScripts =
           scriptFolders = None
           excludeGlobPatterns = None
           maxFileSize = None
-          debugSettings = DebugSettings.Default }
+          debugSettings = DebugSettings.Default
+          vanillaPath = None }
 
     let rec getAllFolders dirs =
         if Seq.isEmpty dirs then

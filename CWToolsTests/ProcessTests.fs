@@ -38,7 +38,8 @@ let emptyStellarisSettings rootDirectory =
       scriptFolders = None
       excludeGlobPatterns = None
       maxFileSize = None
-      debugSettings = DebugSettings.Default }
+      debugSettings = DebugSettings.Default
+      vanillaPath = None }
 
 let emptyEmbeddedSettings =
     { triggers = []
@@ -718,7 +719,7 @@ let testsv =
                   let pos = mkPos 3 8
 
                   let suggestions =
-                      comp.Complete(pos, entity, None)
+                      comp.Complete(pos, entity, None, None)
                       |> Seq.map (function
                           | CompletionResponse.Simple(c, _, _) -> c
                           | Snippet(l, _, _, _, _) -> l
@@ -774,7 +775,7 @@ let testsv =
                   let pos = mkPos 3 3
 
                   let suggestions =
-                      comp.Complete(pos, entity, None)
+                      comp.Complete(pos, entity, None, None)
                       |> Seq.map (function
                           | Simple(c, _, _) -> c
                           | Snippet(l, _, _, _, _) -> l
@@ -846,7 +847,7 @@ let testsv =
                       )
 
                   let suggestions =
-                      comp.Complete(pos, entity, None)
+                      comp.Complete(pos, entity, None, None)
                       |> Seq.map (function
                           | Simple(c, _, _) -> c
                           | Snippet(l, _, _, _, _) -> l
@@ -953,7 +954,7 @@ let testsv =
                           validateLocalisationLazy.Value
                       )
 
-                  let res = comp.Complete(pos, entity, None)
+                  let res = comp.Complete(pos, entity, None, None)
                   // eprintfn "res4 %A" res
                   let suggestions =
                       res

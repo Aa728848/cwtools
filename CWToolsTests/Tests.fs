@@ -66,7 +66,8 @@ let emptyStellarisSettings rootDirectory =
       scriptFolders = None
       excludeGlobPatterns = None
       maxFileSize = None
-      debugSettings = DebugSettings.Default }
+      debugSettings = DebugSettings.Default
+      vanillaPath = None }
 
 let emptyImperatorSettings rootDirectory =
     { rootDirectories = [| WD { name = "test"; path = rootDirectory } |]
@@ -80,7 +81,8 @@ let emptyImperatorSettings rootDirectory =
       scriptFolders = None
       excludeGlobPatterns = None
       maxFileSize = None
-      debugSettings = DebugSettings.Default }
+      debugSettings = DebugSettings.Default
+      vanillaPath = None }
 
 let emptyVictoriaSettings rootDirectory =
     { rootDirectories = [| WD { name = "test"; path = rootDirectory } |]
@@ -94,7 +96,8 @@ let emptyVictoriaSettings rootDirectory =
       scriptFolders = None
       excludeGlobPatterns = None
       maxFileSize = None
-      debugSettings = DebugSettings.Default }
+      debugSettings = DebugSettings.Default
+      vanillaPath = None }
 
 let getAllTestLocs node =
     let fNode =

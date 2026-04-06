@@ -152,7 +152,8 @@ let buildStlSettings rootDir configPath useManual useCached cachePath earlyStopM
           maxFileSize = None
           debugSettings =
             { DebugSettings.Default with
-                EarlyStop = earlyStopMode } }
+                EarlyStop = earlyStopMode }
+          vanillaPath = None }
     else
         { emptyStellarisSettings rootDir with
             embedded = embedded
@@ -203,7 +204,8 @@ let buildEu4Settings rootDir configPath useCache cachePath earlyStopMode =
       maxFileSize = None
       debugSettings =
         { DebugSettings.Default with
-            EarlyStop = earlyStopMode } }
+            EarlyStop = earlyStopMode }
+      vanillaPath = None }
 
 // CK3 settings builder with parameterized paths
 let buildCk3Settings rootDir configPath useCache cachePath earlyStopMode =
@@ -237,7 +239,8 @@ let buildCk3Settings rootDir configPath useCache cachePath earlyStopMode =
       maxFileSize = None
       debugSettings =
         { DebugSettings.Default with
-            EarlyStop = earlyStopMode } }
+            EarlyStop = earlyStopMode }
+      vanillaPath = None }
 
 /// HOI4 settings builder with parameterized paths
 let buildHoi4Settings rootDir configPath useCache cachePath earlyStopMode =
@@ -268,7 +271,8 @@ let buildHoi4Settings rootDir configPath useCache cachePath earlyStopMode =
       maxFileSize = None
       debugSettings =
         { DebugSettings.Default with
-            EarlyStop = earlyStopMode } }
+            EarlyStop = earlyStopMode }
+      vanillaPath = None }
 
 // Unified Stellaris performance test runner
 let perfStellaris
@@ -489,7 +493,8 @@ let buildEu5Settings rootDir configPath useCache cachePath earlyStopMode =
       maxFileSize = None
       debugSettings =
         { DebugSettings.Default with
-            EarlyStop = earlyStopMode } }
+            EarlyStop = earlyStopMode }
+      vanillaPath = None }
 
 // Unified EU5 performance test runner (uses EU4 defaults for convenience)
 let perfEU5

@@ -99,12 +99,20 @@ module STLEventValidation =
         //log "%s proj targets %A" (event.ID) projectTargets
         directCalls @ projectTargets
 
-    let findAllUsedEventTargets (event: Node) =
-        let fNode =
-            (fun (x: Node) children ->
-                let targetFromString (k: string) = k.Substring(13).Split('.').[0]
+    /// Substitute parameters in a string. Parameters are in the form $PARAM$ or $PARAM|default$
+    let substituteParams (paramList: (string * string) list) (text: string) : string =
+        paramList |> List.fold (fun (acc: string) ((param: string), (value: string)) ->
+            acc.Replace("$" + param + "$", value)
+        ) text
 
-                let inner children (leaf: Leaf) =
+    let findAllUsedEventTargetsWithParams (parameters: (string * string) list) (event: Node) =
+        let fNode =
+            (fun (x: Node) (children: string list) ->
+                let targetFromString (k: string) = 
+                    let raw = k.Substring(13).Split('.').[0]
+                    substituteParams parameters raw
+
+                let inner (children: string list) (leaf: Leaf) =
                     let value = leaf.Value.ToRawString()
 
                     if value.StartsWith("event_target:", StringComparison.OrdinalIgnoreCase) then
@@ -116,45 +124,53 @@ module STLEventValidation =
 
                 match x.Key with
                 | k when k.StartsWith("event_target:", StringComparison.OrdinalIgnoreCase) ->
-                    (targetFromString k) :: innerValues //((x.Values |> List.choose inner) @ children)
+                    (targetFromString k) :: innerValues
                 | _ -> innerValues
-            // ((x.Values |> List.choose inner) @ children)
-
             )
-        //let fCombine = (@)
         event |> (foldNode7 fNode) |> Set.ofList
 
-    let findAllSavedEventTargets (event: Node) =
+    let findAllUsedEventTargets (event: Node) =
+        findAllUsedEventTargetsWithParams [] event
+
+    let findAllSavedEventTargetsWithParams (parameters: (string * string) list) (event: Node) =
         let fNode =
-            (fun (x: Node) children ->
+            (fun (x: Node) (children: string list) ->
                 let inner (leaf: Leaf) =
                     if leaf.Key == "save_event_target_as" then
-                        Some(leaf.Value.ToRawString())
+                        let value = leaf.Value.ToRawString()
+                        Some(substituteParams parameters value)
                     else
                         None
 
                 (x.Values |> List.choose inner) @ children)
 
         let fCombine = (@)
-        event |> (foldNode2 fNode fCombine []) |> Set.ofList
+        event |> (foldNode2 fNode fCombine ([] : string list)) |> Set.ofList
 
-    let findAllExistsEventTargets (event: Node) =
+    let findAllSavedEventTargets (event: Node) =
+        findAllSavedEventTargetsWithParams [] event
+
+    let findAllExistsEventTargetsWithParams (parameters: (string * string) list) (event: Node) =
         let fNode =
-            (fun (x: Node) children ->
+            (fun (x: Node) (children: string list) ->
                 let inner (leaf: Leaf) =
                     let value = leaf.Value.ToRawString()
                     if
                         leaf.Key == "exists"
                         && value.StartsWith("event_target:", StringComparison.OrdinalIgnoreCase)
                     then
-                        Some(value.Substring(13).Split('.').[0])
+                        let raw = value.Substring(13).Split('.').[0]
+                        Some(substituteParams parameters raw)
                     else
                         None
 
                 (x.Values |> List.choose inner) @ children)
 
         let fCombine = (@)
-        event |> (foldNode2 fNode fCombine []) |> Set.ofList
+        event |> (foldNode2 fNode fCombine ([] : string list)) |> Set.ofList
+
+    let findAllExistsEventTargets (event: Node) =
+        findAllExistsEventTargetsWithParams [] event
 
     let findAllSavedGlobalEventTargets (event: Node) =
         let fNode =
@@ -174,20 +190,42 @@ module STLEventValidation =
         (effects: ScriptedEffect list)
         (((eid, e), s, u, r, x): (string * Node) * Set<string> * Set<string> * string list * Set<string>)
         =
+        // Helper to extract params from a scripted effect call node
+        let extractCallParams (callNode: Node) =
+            callNode.Values
+            |> List.map (fun l -> ("$" + l.Key + "$", l.ValueText))
+
         let fNode =
             (fun (x: Node) (s, u) ->
                 let inner (leaf: Leaf) =
                     effects
                     |> List.tryFind (fun e -> leaf.KeyId.lower = e.Name.lower)
-                    |> Option.map (fun e -> e.SavedEventTargets, e.UsedEventTargets)
+                    |> Option.map (fun e ->
+                        // Try to find the call node to extract params
+                        let callParams =
+                            x.Nodes
+                            |> Seq.tryFind (fun n -> n.KeyId.lower = leaf.KeyId.lower)
+                            |> Option.map extractCallParams
+                            |> Option.defaultValue []
+                        
+                        let savedTargets = 
+                            e.SavedEventTargets
+                            |> List.map (substituteParams callParams)
+                            |> Set.ofList
+                        let usedTargets =
+                            e.UsedEventTargets
+                            |> List.map (substituteParams callParams)
+                            |> Set.ofList
+                        (savedTargets, usedTargets))
 
                 x.Values
                 |> List.choose inner
-                |> List.fold (fun (s, u) (s2, u2) -> s @ s2, u @ u2) (s, u))
+                |> List.fold (fun (s, u) (s2, u2) -> 
+                    Set.union s s2, Set.union u u2) (s, u))
 
-        let fCombine = (fun (s, u) (s2, u2) -> s @ s2, u @ u2)
-        let s2, u2 = foldNode2 fNode fCombine (s |> Set.toList, u |> Set.toList) e
-        ((eid, e), s2 |> Set.ofList, u2 |> Set.ofList, r, x)
+        let fCombine = (fun (s, u) (s2, u2) -> Set.union s s2, Set.union u u2)
+        let s2, u2 = foldNode2 fNode fCombine (s, u) e
+        ((eid, e), s2, u2, r, x)
 
     let addSystemInitializer
         (sinits: Node list)
