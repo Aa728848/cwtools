@@ -76,9 +76,12 @@ module STLValidation =
                     |> List.map (
                         (fun f -> f, f.Value.ToString())
                         >> (fun (l, v) ->
+                            // Skip @[ array access syntax - this is not a scripted variable
+                            if v.StartsWith("@[") then
+                                OK
                             // If variable still contains $PARAM$ placeholders, skip validation
                             // Parameters will be substituted when the scripted effect is called
-                            if v.Contains("$") then
+                            elif v.Contains("$") then
                                 OK
                             elif variables |> List.contains v then
                                 OK

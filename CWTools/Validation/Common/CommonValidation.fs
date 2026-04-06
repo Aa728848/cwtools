@@ -184,7 +184,10 @@ module CommonValidation =
             let globalVars = getGlobalScriptVarsFromFS currentFilePath
             allVarsWithPos
             |> List.choose (fun (v, pos) ->
-                if globalVars |> List.contains v then
+                // Skip @[ array access syntax - this is not a scripted variable
+                if v.StartsWith("@[") then
+                    None
+                elif globalVars |> List.contains v then
                     None
                 else
                     Some(invManual (ErrorCodes.UndefinedVariable v) pos v None))
