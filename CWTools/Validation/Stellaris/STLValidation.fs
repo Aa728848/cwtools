@@ -15,8 +15,6 @@ open System
 module STLValidation =
     type S = Severity
 
-    // let validateShip : Validator<Ship>  = shipName <&> shipSize
-
     let getDefinedVariables (node: Node) =
         let fNode =
             (fun (x: Node) acc ->
@@ -95,19 +93,56 @@ module STLValidation =
 
 
 
+    let mutable vanillaScriptedVariablesPath: string option = None
+    let mutable fallbackPathsForValidation: string list = []
+
     let validateVariables: STLStructureValidator =
         fun os es ->
-            let globalVars =
+            let globalVarsFromEntities =
                 os.GlobMatch("**/common/scripted_variables/*.txt")
                 @ es.GlobMatch("**/common/scripted_variables/*.txt")
                 |> List.map getDefinedVariables
                 |> List.collect id
 
+            // Helper to extract vars from a directory
+            let extractFromDir path =
+                if System.IO.Directory.Exists(path) then
+                    try
+                        System.IO.Directory.GetFiles(path, "*.txt", System.IO.SearchOption.AllDirectories)
+                        |> Array.collect (fun file ->
+                            try
+                                let content = System.IO.File.ReadAllText(file)
+                                let pattern = System.Text.RegularExpressions.Regex(@"^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\n\r#]+)", System.Text.RegularExpressions.RegexOptions.Multiline)
+                                [| for m in pattern.Matches(content) -> m.Groups.[1].Value.Trim() |]
+                            with _ -> [||])
+                        |> List.ofArray
+                    with _ -> []
+                else []
+
+            let globalVarsFromFS =
+                match vanillaScriptedVariablesPath with
+                | Some svPath -> extractFromDir svPath
+                | _ -> []
+
+            let globalVarsFromFallbacks =
+                fallbackPathsForValidation
+                |> List.collect extractFromDir
+
+            // Default fallbacks if nothing else is configured
+            let defaultFallbackPaths =
+                [ @"C:\Program Files (x86)\Steam\steamapps\common\Stellaris\common\scripted_variables"
+                  @"C:\Program Files\Steam\steamapps\common\Stellaris\common\scripted_variables" ]
+            
+            let globalVarsFromDefaults =
+                if globalVarsFromFS.Length = 0 && globalVarsFromFallbacks.Length = 0 then
+                    defaultFallbackPaths |> List.collect extractFromDir
+                else
+                    []
+
+            let globalVars = (globalVarsFromEntities @ globalVarsFromFS @ globalVarsFromFallbacks @ globalVarsFromDefaults) |> List.distinct
+
             es.All
             <&!!&>
-            // let x =
-            //     es.All
-            //     |> List.map
             (fun node ->
                 let defined = getDefinedVariables node
                 let errors = checkUsedVariables node (defined @ globalVars)

@@ -415,14 +415,15 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let processLoc, validateLoc = settings.locFunctions lookup
 
         // Collect global scripted variables from all common/scripted_variables/*.txt files
-        // Use Seq.toList to force evaluation
         let allEntitiesList = resources.AllEntities() |> Seq.toList
-        eprintfn "DEBUG: Total entities: %d" allEntitiesList.Length
-        
+
         let globalScriptVariables =
             allEntitiesList
             |> Seq.choose (fun struct (e, _) ->
-                if e.filepath.Contains("common/scripted_variables") then
+                if e.filepath.Contains("common/scripted_variables") ||
+                   e.filepath.Contains("common\\scripted_variables") ||
+                   e.logicalpath.Contains("common/scripted_variables") ||
+                   e.logicalpath.Contains("common\\scripted_variables") then
                     Some e.entity
                 else
                     None)
@@ -435,7 +436,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         lookup.scriptedVariables <-
             allEntitiesList
             |> Seq.choose (fun struct (e, _) ->
-                if e.filepath.Contains("scripted_variables") || e.logicalpath.Contains("scripted_variables") then
+                if e.filepath.Contains("scripted_variables") ||
+                   e.logicalpath.Contains("scripted_variables") then
                     Some e.entity
                 else
                     None)

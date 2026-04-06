@@ -1071,14 +1071,10 @@ type CompletionService
         let items =
             match path |> List.tryLast, path.Length with
             | Some(_, count, Some x, _, _), _ when x.Length > 0 && x.StartsWith("@" + magicCharString) ->
-                // Get local variables from current file
                 let localVars =
                     CWTools.Validation.Stellaris.STLValidation.getDefinedVariables entity.entity
 
-                // Combine global variables (from scripted_variables files) with local variables
-                // Use effectiveGlobalVars which includes runtime-provided variables
                 let allVars = effectiveGlobalVars @ localVars
-                // Remove duplicates and return as completion items
                 allVars |> List.distinct |> List.map (fun s -> CompletionResponse.CreateSimple s)
             | Some(_, _, _, CompletionContext.NodeLHS, _), 1 -> []
             | _ ->

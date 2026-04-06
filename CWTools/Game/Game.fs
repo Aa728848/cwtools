@@ -55,7 +55,8 @@ type GameSetupSettings<'L> =
       excludeGlobPatterns: string array option
       modFilter: string option
       maxFileSize: int option
-      debugSettings: DebugSettings }
+      debugSettings: DebugSettings
+      vanillaPath: string option }
 
 [<Sealed>]
 type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>

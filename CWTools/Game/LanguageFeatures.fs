@@ -744,11 +744,14 @@ module LanguageFeatures =
                                     let callerPos = mkPos (inlineScriptLine + 1) (lines.[inlineScriptLine].Length)
                                     
                                     // 收集全局变量
-                                    let globalVars = 
+                                    let globalVars =
                                         try
                                             resourceManager.Api.AllEntities()
                                             |> Seq.choose (fun struct (e, _) ->
-                                                if e.filepath.Contains("common/scripted_variables") then
+                                                if e.filepath.Contains("common/scripted_variables") ||
+                                                   e.filepath.Contains("common\\scripted_variables") ||
+                                                   e.logicalpath.Contains("common/scripted_variables") ||
+                                                   e.logicalpath.Contains("common\\scripted_variables") then
                                                     Some e.entity
                                                 else
                                                     None)

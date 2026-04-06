@@ -1,4 +1,4 @@
-﻿module CWTools.Serializer
+module CWTools.Serializer
 
 open System.Collections.Concurrent
 open System.Collections.Generic
@@ -448,7 +448,8 @@ let loadGame<'T when 'T :> ComputedData>
           scriptFolders = None
           excludeGlobPatterns = None
           maxFileSize = None
-          debugSettings = DebugSettings.Default }
+          debugSettings = DebugSettings.Default
+          vanillaPath = None }
 
     let HOI4options: HOI4Settings =
         { rootDirectories = folders
@@ -468,8 +469,7 @@ let loadGame<'T when 'T :> ComputedData>
           excludeGlobPatterns = None
           maxFileSize = Some 8
           debugSettings = DebugSettings.Default
-
-        }
+          vanillaPath = None }
 
     let EU4options: EU4Settings =
         { rootDirectories = folders
@@ -488,7 +488,8 @@ let loadGame<'T when 'T :> ComputedData>
           scriptFolders = None
           excludeGlobPatterns = None
           maxFileSize = Some 8
-          debugSettings = DebugSettings.Default }
+          debugSettings = DebugSettings.Default
+          vanillaPath = None }
 
     let CK2options: CK2Settings =
         { rootDirectories = folders
@@ -507,7 +508,8 @@ let loadGame<'T when 'T :> ComputedData>
           scriptFolders = None
           excludeGlobPatterns = None
           maxFileSize = Some 8
-          debugSettings = DebugSettings.Default }
+          debugSettings = DebugSettings.Default
+          vanillaPath = None }
 
     let VIC2options: VIC2Settings =
         { rootDirectories = folders
@@ -526,7 +528,8 @@ let loadGame<'T when 'T :> ComputedData>
           scriptFolders = None
           excludeGlobPatterns = None
           maxFileSize = Some 8
-          debugSettings = DebugSettings.Default }
+          debugSettings = DebugSettings.Default
+          vanillaPath = None }
 
     let Customoptions: CustomSettings =
         { rootDirectories = folders
@@ -545,7 +548,8 @@ let loadGame<'T when 'T :> ComputedData>
           scriptFolders = None
           excludeGlobPatterns = None
           maxFileSize = Some 8
-          debugSettings = DebugSettings.Default }
+          debugSettings = DebugSettings.Default
+          vanillaPath = None }
 
     let IRoptions: IRSettings =
         { rootDirectories = folders
@@ -564,7 +568,8 @@ let loadGame<'T when 'T :> ComputedData>
           scriptFolders = None
           excludeGlobPatterns = None
           maxFileSize = Some 8
-          debugSettings = DebugSettings.Default }
+          debugSettings = DebugSettings.Default
+          vanillaPath = None }
 
     let CK3options: CK3Settings =
         { rootDirectories = folders
@@ -583,7 +588,8 @@ let loadGame<'T when 'T :> ComputedData>
           scriptFolders = None
           excludeGlobPatterns = None
           maxFileSize = Some 8
-          debugSettings = DebugSettings.Default }
+          debugSettings = DebugSettings.Default
+          vanillaPath = None }
 
     let VIC3options: VIC3Settings =
         { rootDirectories = folders
@@ -602,7 +608,8 @@ let loadGame<'T when 'T :> ComputedData>
           scriptFolders = None
           excludeGlobPatterns = None
           maxFileSize = Some 8
-          debugSettings = DebugSettings.Default }
+          debugSettings = DebugSettings.Default
+          vanillaPath = None }
 
     let game: IGame =
         match game with
@@ -660,3 +667,5 @@ let serializeMetadata (dir: string, scope: FilesScope, modFilter: string, config
 
     compressAndWrite pickle (filename)
     eprintfn "Metadata cache file created at %s, relative to CWD" filename
+
+
