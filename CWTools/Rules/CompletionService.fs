@@ -1073,7 +1073,7 @@ type CompletionService
             | Some(_, count, Some x, _, _), _ when x.Length > 0 && x.StartsWith("@" + magicCharString) ->
                 let localVars =
                     CWTools.Validation.Stellaris.STLValidation.getDefinedVariables entity.entity
-                    |> List.filter (fun v -> not (v.StartsWith("@[")))  // 过滤掉 @[ 表达式
+                    |> List.filter (fun v -> not (v.StartsWith("@[")) && not (v.StartsWith(@"@\[")))  // 过滤掉表达式
 
                 let allVars = effectiveGlobalVars @ localVars
                 allVars |> List.distinct |> List.map (fun s -> CompletionResponse.CreateSimple s)
@@ -1195,7 +1195,7 @@ type CompletionService
             match inlinePath |> List.tryLast, inlinePath.Length with
             | Some(_, count, Some x, _, _), _ when x.Length > 0 && x.StartsWith("@" + magicCharString) ->
                 let localVars = CWTools.Validation.Stellaris.STLValidation.getDefinedVariables inlineEntity.entity
-                                |> List.filter (fun v -> not (v.StartsWith("@[")))  // 过滤掉 @[ 表达式
+                                |> List.filter (fun v -> not (v.StartsWith("@[")) && not (v.StartsWith(@"@\[")))  // 过滤掉表达式
                 let allVars = effectiveGlobalVars @ localVars
                 allVars |> List.distinct |> List.map (fun s -> CompletionResponse.CreateSimple s)
             | Some(_, _, _, CompletionContext.NodeLHS, _), 1 -> []

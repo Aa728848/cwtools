@@ -140,7 +140,7 @@ module LanguageFeatures =
                                 try
                                     CWTools.Validation.Stellaris.STLValidation.getDefinedVariables e.entity
                                 with _ -> [])
-                            |> Seq.filter (fun varName -> not (varName.StartsWith("@["))) // 过滤掉 @[ 表达式
+                            |> Seq.filter (fun varName -> not (varName.StartsWith("@[")) && not (varName.StartsWith(@"@\["))) // 过滤掉表达式
                             |> Seq.distinct
                             |> Seq.toArray
 
@@ -833,7 +833,7 @@ module LanguageFeatures =
                                         else
                                             None)
                                     |> Seq.collect CWTools.Validation.Stellaris.STLValidation.getDefinedVariables
-                                    |> Seq.filter (fun varName -> not (varName.StartsWith("@["))) // 过滤掉 @[ 表达式
+                                    |> Seq.filter (fun varName -> not (varName.StartsWith("@[")) && not (varName.StartsWith(@"@\["))) // 过滤掉表达式
                                     |> Seq.distinct
                                     |> Seq.toList
                                 with _ -> []
@@ -939,7 +939,7 @@ module LanguageFeatures =
                                                             match resourceManager.ManualProcessResource input with
                                                             | Some entity ->
                                                                 let vars = CWTools.Validation.Stellaris.STLValidation.getDefinedVariables entity.entity
-                                                                            |> List.filter (fun v -> not (v.StartsWith("@[")))
+                                                                            |> List.filter (fun v -> not (v.StartsWith("@[")) && not (v.StartsWith(@"@\[")))
                                                                 allVars <- vars @ allVars
                                                             | _ -> ()
                                                         with _ -> ()
@@ -955,7 +955,7 @@ module LanguageFeatures =
                                             match resourceManager.ManualProcessResource input with
                                             | Some entity ->
                                                 CWTools.Validation.Stellaris.STLValidation.getDefinedVariables entity.entity
-                                                |> List.filter (fun v -> not (v.StartsWith("@[")))
+                                                |> List.filter (fun v -> not (v.StartsWith("@[")) && not (v.StartsWith(@"@\[")))
                                             | _ -> []
                                         with _ -> [])
                                     |> Array.toList
@@ -1196,7 +1196,7 @@ module LanguageFeatures =
                 |> Seq.collect (fun struct (e, _) ->
                     e.entity.Leaves
                     |> Seq.choose (fun leaf ->
-                        if leaf.Key.StartsWith("@") && not (leaf.Key.StartsWith("@[")) then
+                        if leaf.Key.StartsWith("@") && not (leaf.Key.StartsWith("@[")) && not (leaf.Key.StartsWith(@"@\[")) then
                             match System.Decimal.TryParse(leaf.Value.ToString(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture) with
                             | true, v -> Some (leaf.Key, v)
                             | _ -> None
@@ -1331,12 +1331,14 @@ module LanguageFeatures =
             let line = split.[lineIdx]
             let col = pos.Column
             let textBefore = if col <= line.Length then line.Substring(0, col) else line
-            let lastOpen = textBefore.LastIndexOf("@[")
+            let lastOpen = max (textBefore.LastIndexOf("@[")) (textBefore.LastIndexOf(@"@\["))
             let lastClose = textBefore.LastIndexOf("]")
             if lastOpen >= 0 && lastOpen > lastClose then
                 let closeIdx = line.IndexOf("]", lastOpen)
                 if closeIdx > lastOpen then
-                    let exprContent = line.Substring(lastOpen + 2, closeIdx - lastOpen - 2).Trim()
+                    // Determine prefix length (@[ = 2, @\[ = 3)
+                    let prefixLen = if line.Substring(lastOpen).StartsWith(@"@\[") then 3 else 2
+                    let exprContent = line.Substring(lastOpen + prefixLen, closeIdx - lastOpen - prefixLen).Trim()
 
                     // Check if expression contains $PARAM$ placeholders
                     let paramPattern = System.Text.RegularExpressions.Regex(@"\$([A-Za-z0-9_]+)\$")

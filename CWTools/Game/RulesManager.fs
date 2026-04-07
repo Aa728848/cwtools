@@ -429,7 +429,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     None)
             |> Seq.collect (fun entity ->
                 CWTools.Validation.Stellaris.STLValidation.getDefinedVariables entity)
-            |> Seq.filter (fun v -> not (v.StartsWith("@[")))  // 过滤掉 @[ 表达式
+            |> Seq.filter (fun v -> not (v.StartsWith("@[")) && not (v.StartsWith(@"@\[")))  // 过滤掉表达式
             |> Seq.distinct
             |> Seq.toList
 
@@ -448,7 +448,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     match child with
                     | CWTools.Process.NodeC node ->
                         // 过滤掉 @[ 表达式
-                        if node.Key.StartsWith("@[") then
+                        if node.Key.StartsWith("@[") || node.Key.StartsWith(@"@\[") then
                             None
                         else
                             match node.Leaves |> Seq.tryHead with

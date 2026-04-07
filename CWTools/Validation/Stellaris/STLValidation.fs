@@ -15,14 +15,17 @@ open System
 module STLValidation =
     type S = Severity
 
+    /// Check if a string is an arithmetic expression (@[ or @\[ syntax)
+    let isArithmeticExpr (s: string) =
+        s.StartsWith("@[") || s.StartsWith(@"@\[")
+
     let getDefinedVariables (node: Node) =
         let fNode =
             (fun (x: Node) acc ->
                 x.Leaves
                 |> Seq.fold
                     (fun a n ->
-                        // 只收集以 @ 开头但不是 @[ 表达式的变量定义
-                        if n.Key.StartsWith('@') && not (n.Key.StartsWith("@[")) then
+                        if n.Key.StartsWith('@') && not (isArithmeticExpr n.Key) then
                             n.Key :: a
                         else
                             a)
@@ -75,10 +78,11 @@ module STLValidation =
                     |> List.map (
                         (fun f -> f, f.Value.ToString())
                         >> (fun (l, v) ->
-                            // Handle @[ expression ] syntax - validate variables inside the expression
-                            if v.StartsWith("@[") && v.EndsWith("]") then
-                                // Extract expression content between @[ and ]
-                                let exprContent = v.Substring(2, v.Length - 3).Trim()
+                            // Handle @[ or @\[ expression ] syntax
+                            if isArithmeticExpr v && v.EndsWith("]") then
+                                // Extract expression content - skip @[ or @\[
+                                let prefixLen = if v.StartsWith(@"@\[") then 3 else 2
+                                let exprContent = v.Substring(prefixLen, v.Length - prefixLen - 1).Trim()
 
                                 // In @[ expr ], variables are written WITHOUT @ prefix
                                 // Pattern: identifier (letter/underscore start, may contain $PARAM$)

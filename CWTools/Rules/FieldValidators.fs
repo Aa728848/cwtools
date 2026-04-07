@@ -80,8 +80,8 @@ module internal FieldValidators =
         let key = getLowerKey ids
         let originalKey = getOriginalKey ids
 
-        // Check if it's a @[...] expression - treat as valid numeric value
-        if originalKey.StartsWith("@[") && originalKey.EndsWith("]") then
+        // Check if it's a @[...] or @\[...] expression - treat as valid numeric value
+        if (originalKey.StartsWith("@[") || originalKey.StartsWith(@"@\[")) && originalKey.EndsWith("]") then
             errors
         elif firstCharEqualsAmp ids.lower then
             errors
