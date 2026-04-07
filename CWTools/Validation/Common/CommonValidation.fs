@@ -162,7 +162,7 @@ module CommonValidation =
         try
             let rec collectVars (node: Node) acc =
                 let acc =
-                    if node.Key.StartsWith("@") && not (node.Key.Contains("$")) then
+                    if node.Key.StartsWith("@") && not (node.Key.StartsWith("@[")) && not (node.Key.Contains("$")) then
                         (node.Key, node.Position) :: acc
                     else
                         acc
@@ -170,7 +170,7 @@ module CommonValidation =
                     node.Leaves
                     |> Seq.fold (fun a leaf ->
                         let valText = leaf.Value.ToString()
-                        if valText.StartsWith("@") && not (valText.Contains("$")) then
+                        if valText.StartsWith("@") && not (valText.StartsWith("@[")) && not (valText.Contains("$")) then
                             (valText, leaf.Position) :: a
                         else
                             a) acc

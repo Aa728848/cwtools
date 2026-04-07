@@ -146,6 +146,13 @@ module internal SharedParsers =
     let escapedChar = (stringReturn "\\\"" "\"" <|> pstring "\\")
     let metaprogrammingCharSnippet = many1Satisfy (fun c -> c <> ']' && c <> '\\')
 
+    // Parser for @[ expression ] syntax (arithmetic expressions)
+    let arithmeticExpressionCharSnippet = manySatisfy (fun c -> c <> ']')
+    let arithmeticExpression =
+        pipe3 (pstring "@[") arithmeticExpressionCharSnippet (pchar ']') (fun a b c -> (a + b + string c))
+        |>> (fun x -> StringResource.stringManager.InternIdentifierToken x)
+        |>> String
+
     let getRange (start: FParsec.Position) (endp: FParsec.Position) =
         mkRange
             start.StreamName
@@ -269,6 +276,7 @@ module internal SharedParsers =
         let byP = attempt valueBYes <|> valueStr
         let bnP = attempt valueBNo <|> valueStr
         let mpP = metaprograming
+        let aeP = arithmeticExpression
 
         fun (stream: CharStream<_>) ->
             match stream.Peek() with
@@ -291,6 +299,7 @@ module internal SharedParsers =
                 | "yes", _ -> byP stream
                 | _, "no" -> bnP stream
                 | "@\\[", _ -> mpP stream
+                | _, "@[" -> aeP stream
                 | _ -> valueStr stream
 
     valueimpl.Value <- valueCustom <?> "value"

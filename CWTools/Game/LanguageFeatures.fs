@@ -1209,9 +1209,124 @@ module LanguageFeatures =
             let s = d.ToString("G29", System.Globalization.CultureInfo.InvariantCulture)
             s
 
-        // Check if cursor is on a @[ expression ] - provide expression info with evaluation
+        // Check if cursor is on an inline_script call - show evaluated expressions from the script
         let split = filetext.Split('\n')
         let lineIdx = pos.Line - 1
+
+        let tryGetInlineScriptInfo () =
+            if lineIdx >= 0 && lineIdx < split.Length then
+                // Search upward for inline_script block
+                let mutable foundScript = None
+                let mutable i = lineIdx
+                let mutable braceDepth = 0
+
+                // Count braces on current line up to cursor
+                let line = split.[lineIdx]
+                let col = pos.Column
+                let curLineUpToCursor = if col <= line.Length then line.Substring(0, col) else line
+                braceDepth <- curLineUpToCursor.ToCharArray() |> Array.filter (fun c -> c = '}') |> Array.length
+                braceDepth <- braceDepth - (curLineUpToCursor.ToCharArray() |> Array.filter (fun c -> c = '{') |> Array.length)
+
+                i <- lineIdx
+                while i >= 0 && foundScript.IsNone do
+                    let l = split.[i]
+                    let opens = l.ToCharArray() |> Array.filter (fun c -> c = '{') |> Array.length
+                    let closes = l.ToCharArray() |> Array.filter (fun c -> c = '}') |> Array.length
+                    braceDepth <- braceDepth + closes - opens
+
+                    if braceDepth <= 0 && l.Contains("inline_script") then
+                        // Found inline_script block, now collect parameters
+                        let mutable paramMap = Map.empty
+                        let mutable scriptPath = None
+                        let kvPattern = System.Text.RegularExpressions.Regex(@"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\s{}#]+)")
+
+                        for j = i to lineIdx do
+                            let m = kvPattern.Match(split.[j])
+                            if m.Success then
+                                let key = m.Groups.[1].Value
+                                let value = m.Groups.[2].Value
+                                if key = "script" then
+                                    scriptPath <- Some value
+                                else
+                                    paramMap <- paramMap |> Map.add key value
+
+                        match scriptPath with
+                        | Some path ->
+                            // Try to find and read the inline_script file
+                            try
+                                let scriptFilePath =
+                                    // Try common/inline_scripts/{path}.txt
+                                    let currentDir = System.IO.Path.GetDirectoryName(filepath)
+                                    let rec findModRoot dir =
+                                        if System.String.IsNullOrEmpty(dir) then None
+                                        else
+                                            let dirName = System.IO.Path.GetFileName(dir)
+                                            if dirName = "common" || dirName = "events" then
+                                                Some(System.IO.Path.GetDirectoryName(dir))
+                                            else
+                                                findModRoot (System.IO.Path.GetDirectoryName(dir))
+
+                                    match findModRoot currentDir with
+                                    | Some modRoot ->
+                                        let scriptFile = System.IO.Path.Combine(modRoot, "common", "inline_scripts", path + ".txt")
+                                        if System.IO.File.Exists(scriptFile) then Some scriptFile else None
+                                    | None -> None
+
+                                match scriptFilePath with
+                                | Some scriptFile ->
+                                    let scriptContent = System.IO.File.ReadAllText(scriptFile)
+                                    // Extract all @[...] expressions from the script
+                                    let exprPattern = System.Text.RegularExpressions.Regex(@"@\[([^\]]+)\]")
+                                    let exprMatches = exprPattern.Matches(scriptContent)
+
+                                    if exprMatches.Count > 0 then
+                                        let varValues = getVarValues()
+                                        let paramPattern = System.Text.RegularExpressions.Regex(@"\$([A-Za-z0-9_]+)\$")
+
+                                        let results =
+                                            exprMatches
+                                            |> Seq.cast<System.Text.RegularExpressions.Match>
+                                            |> Seq.choose (fun m ->
+                                                let exprContent = m.Groups.[1].Value.Trim()
+                                                // Substitute parameters
+                                                let instantiated =
+                                                    paramPattern.Matches(exprContent)
+                                                    |> Seq.cast<System.Text.RegularExpressions.Match>
+                                                    |> Seq.fold (fun (expr: string) pm ->
+                                                        let paramName = pm.Groups.[1].Value
+                                                        match paramMap |> Map.tryFind paramName with
+                                                        | Some value -> expr.Replace(pm.Value, value)
+                                                        | None -> expr) exprContent
+
+                                                match evalExpr instantiated varValues with
+                                                | Some v -> Some (exprContent, fmtDecimal v)
+                                                | None -> None)
+                                            |> Seq.toArray
+
+                                        if results.Length > 0 then
+                                            let resultStrs = results |> Array.map (fun (expr, res) -> sprintf "- `@[%s]` = **%s**" expr res)
+                                            let allResults = String.concat "\n\n" resultStrs
+                                            foundScript <- Some (path, allResults)
+                                | None -> ()
+                            with _ -> ()
+                        | None -> ()
+                    i <- i - 1
+
+                foundScript
+            else
+                None
+
+        match tryGetInlineScriptInfo() with
+        | Some (scriptPath, results) ->
+            Some
+                { name = sprintf "inline_script: %s" scriptPath
+                  typename = "inline_script"
+                  localisation = []
+                  ruleDescription = Some (sprintf "Evaluated expressions:\n\n%s" results)
+                  ruleRequiredScopes = [] }
+        | None ->
+
+        // Check if cursor is on a @[ expression ] - provide expression info with evaluation
         if lineIdx >= 0 && lineIdx < split.Length then
             let line = split.[lineIdx]
             let col = pos.Column
@@ -1229,6 +1344,47 @@ module LanguageFeatures =
 
                     let varValues = getVarValues()
 
+                    // Try to extract parameter values from the surrounding inline_script call context
+                    // e.g. inline_script = { script = path SIZE = 1 TIER = 2 }
+                    let tryGetInlineScriptParams () : Map<string, string> =
+                        // Search upward from current line for inline_script block
+                        // Collect all key = value pairs within the same brace level
+                        let mutable paramMap = Map.empty
+                        let mutable braceDepth = 0
+                        let mutable foundInlineScript = false
+                        let mutable i = lineIdx
+                        // First, count closing braces on current line up to cursor
+                        let curLineUpToCursor = if col <= line.Length then line.Substring(0, col) else line
+                        braceDepth <- curLineUpToCursor.ToCharArray() |> Array.filter (fun c -> c = '}') |> Array.length
+                        braceDepth <- braceDepth - (curLineUpToCursor.ToCharArray() |> Array.filter (fun c -> c = '{') |> Array.length)
+                        i <- lineIdx - 1
+                        while i >= 0 && not foundInlineScript do
+                            let l = split.[i]
+                            let opens = l.ToCharArray() |> Array.filter (fun c -> c = '{') |> Array.length
+                            let closes = l.ToCharArray() |> Array.filter (fun c -> c = '}') |> Array.length
+                            braceDepth <- braceDepth + closes - opens
+                            if braceDepth <= 0 then
+                                // We're at the opening brace level - check if this is inline_script
+                                if l.Contains("inline_script") then
+                                    foundInlineScript <- true
+                                else
+                                    // Not inline_script, stop searching
+                                    i <- -1
+                            i <- i - 1
+                        if foundInlineScript then
+                            // Now collect all key = value pairs between the inline_script braces
+                            // Re-scan from the inline_script line downward to current line
+                            let startLine = i + 2  // i was decremented one extra time
+                            let kvPattern = System.Text.RegularExpressions.Regex(@"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\s{}#]+)")
+                            for j = startLine to lineIdx do
+                                let l = split.[j].Trim()
+                                // Skip script = xxx line
+                                if not (l.StartsWith("script")) then
+                                    let m = kvPattern.Match(split.[j])
+                                    if m.Success then
+                                        paramMap <- paramMap |> Map.add m.Groups.[1].Value m.Groups.[2].Value
+                        paramMap
+
                     let resultText =
                         if paramMatches.Count = 0 then
                             // No parameters - evaluate directly
@@ -1236,57 +1392,38 @@ module LanguageFeatures =
                             | Some v -> sprintf " = %s" (fmtDecimal v)
                             | None -> " (could not evaluate)"
                         else
-                            // Has $PARAM$ placeholders
-                            // Strategy: find all variables matching the pattern and show results for each
-                            // e.g. expr = "wsg_armor_add * $SIZE$ * wsg_t$TIER$_mult"
-                            // Find variables like @wsg_t1_mult, @wsg_t2_mult, etc.
+                            // Has $PARAM$ placeholders - try to get actual values from call site
+                            let callSiteParams = tryGetInlineScriptParams()
 
-                            // Extract all variable names from expression (identifiers that are not params)
-                            let varNamePattern = System.Text.RegularExpressions.Regex(@"(?<![A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_]*\$[A-Za-z0-9_]+\$[A-Za-z0-9_]*)")
-                            let paramVarMatches = varNamePattern.Matches(exprContent)
-
-                            if paramVarMatches.Count > 0 then
-                                // Find the first parameterized variable pattern
-                                let firstParamVar = paramVarMatches.[0].Groups.[1].Value
-
-                                // Convert pattern to regex: wsg_t$TIER$_mult -> @wsg_t(.+?)_mult
-                                let varRegexStr = "@" + paramPattern.Replace(System.Text.RegularExpressions.Regex.Escape(firstParamVar), "(.+?)")
-                                let varRegex = System.Text.RegularExpressions.Regex("^" + varRegexStr + "$")
-
-                                // Find all matching variables in varValues
-                                let matchingVars =
-                                    varValues
-                                    |> Map.toSeq
-                                    |> Seq.choose (fun (varName, _) ->
-                                        let m = varRegex.Match(varName)
-                                        if m.Success && m.Groups.Count > 1 then
-                                            // Extract parameter value (e.g., "1" from "@wsg_t1_mult")
-                                            let paramValue = m.Groups.[1].Value
-                                            Some (paramValue, varName)
-                                        else None)
-                                    |> Seq.truncate 10
-                                    |> Seq.toArray
-
-                                if matchingVars.Length > 0 then
-                                    // Evaluate expression for each parameter value
-                                    let results =
-                                        matchingVars
-                                        |> Array.choose (fun (paramValue, _) ->
-                                            // Substitute $PARAM$ with actual value
-                                            let instantiated = paramPattern.Replace(exprContent, paramValue)
-                                            match evalExpr instantiated varValues with
-                                            | Some v -> Some (paramValue, fmtDecimal v)
-                                            | None -> None)
-
-                                    if results.Length > 0 then
-                                        let resultStrs = results |> Array.map (fun (pv, res) -> sprintf "%s=%s" pv res)
-                                        sprintf " = { %s }" (String.concat ", " resultStrs)
-                                    else
-                                        " (could not evaluate with parameters)"
-                                else
-                                    " (no matching variables found)"
+                            if callSiteParams.Count > 0 then
+                                // Substitute actual parameter values from call site
+                                let instantiated =
+                                    paramMatches
+                                    |> Seq.cast<System.Text.RegularExpressions.Match>
+                                    |> Seq.fold (fun (expr: string) m ->
+                                        let paramName = m.Groups.[1].Value
+                                        match callSiteParams |> Map.tryFind paramName with
+                                        | Some value -> expr.Replace(m.Value, value)
+                                        | None -> expr) exprContent
+                                match evalExpr instantiated varValues with
+                                | Some v -> sprintf " = %s" (fmtDecimal v)
+                                | None ->
+                                    // Show which params were substituted
+                                    let paramStrs =
+                                        callSiteParams
+                                        |> Map.toSeq
+                                        |> Seq.map (fun (k, v) -> sprintf "%s=%s" k v)
+                                        |> String.concat ", "
+                                    sprintf " (with %s, could not evaluate)" paramStrs
                             else
-                                " (could not parse parameterized expression)"
+                                // No call site params found - show template info
+                                let paramNames =
+                                    paramMatches
+                                    |> Seq.cast<System.Text.RegularExpressions.Match>
+                                    |> Seq.map (fun m -> m.Groups.[1].Value)
+                                    |> Seq.distinct
+                                    |> Seq.toArray
+                                sprintf " (parameters: %s)" (String.concat ", " paramNames)
 
                     Some
                         { name = sprintf "@[ %s ]%s" exprContent resultText
