@@ -1143,13 +1143,32 @@ module LanguageFeatures =
                         // Found inline_script block, now collect parameters
                         let mutable paramMap = Map.empty
                         let mutable scriptPath = None
-                        let kvPattern = System.Text.RegularExpressions.Regex(@"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\s{}#]+)")
 
-                        for j = i to lineIdx do
+                        // Find the end of this block
+                        let rec findBlockEnd lineIdx currentDepth =
+                            if lineIdx >= split.Length then lineIdx - 1
+                            else
+                                let lineText = split.[lineIdx]
+                                let opens = lineText.ToCharArray() |> Array.filter (fun c -> c = '{') |> Array.length
+                                let closes = lineText.ToCharArray() |> Array.filter (fun c -> c = '}') |> Array.length
+                                let newDepth = currentDepth + opens - closes
+                                if newDepth <= 0 then lineIdx
+                                else findBlockEnd (lineIdx + 1) newDepth
+                        
+                        let initialOpens = split.[i].ToCharArray() |> Array.filter (fun c -> c = '{') |> Array.length
+                        let endBlockIdx = if initialOpens > 0 then findBlockEnd (i + 1) initialOpens else i
+
+                        let kvPattern = System.Text.RegularExpressions.Regex(@"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("".*?""|[^\s{}#]+)")
+
+                        for j = i to endBlockIdx do
                             let m = kvPattern.Match(split.[j])
                             if m.Success then
                                 let key = m.Groups.[1].Value
-                                let value = m.Groups.[2].Value
+                                let mutable value = m.Groups.[2].Value
+                                // Strip quotes so math evaluation can work
+                                if value.StartsWith("\"") && value.EndsWith("\"") && value.Length >= 2 then
+                                    value <- value.Substring(1, value.Length - 2)
+
                                 if key = "script" then
                                     scriptPath <- Some value
                                 else
