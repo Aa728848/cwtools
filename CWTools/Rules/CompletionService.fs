@@ -1119,3 +1119,112 @@ type CompletionService
 
     member _.Complete(pos: pos, entity: Entity, scopeContext, extraGlobalVars) = complete pos entity scopeContext extraGlobalVars
     member _.LocalisationComplete(pos: pos, filetext: string) = locComplete pos filetext
+
+    /// Complete for inline_script files: uses the inline entity's AST path but prepends the caller's path prefix
+    /// so that type rules match correctly. pathPrefix is the path from the caller entity up to (but not including)
+    /// the inline_script block content.
+    member _.CompleteInlineScript
+        (pos: pos, inlineEntity: Entity, callerEntity: Entity, scopeContext: ScopeContext option, extraGlobalVars: string list option)
+        =
+        let scopeContext = Option.defaultValue defaultContext scopeContext
+        let effectiveGlobalVars =
+            match extraGlobalVars with
+            | Some vars -> vars @ globalScriptVariables
+            | None -> globalScriptVariables
+
+        // Get the path within the inline_script file at the current cursor position
+        let inlinePath = getRulePath pos [] inlineEntity.entity |> List.rev
+
+        // Filter types by the caller's logicalpath
+        let pathFilteredTypes =
+            typedefs
+            |> List.filter (fun t -> FieldValidatorsHelper.CheckPathDir(t.pathOptions, callerEntity.logicalpath))
+
+        let allUsedKeys =
+            getAllKeysInFile inlineEntity.entity @ effectiveGlobalVars |> Set.ofList
+
+        let scoreFunction = scoreFunction allUsedKeys
+
+        let skiprootkey (skipRootKey: SkipRootKey) (s: string) =
+            match skipRootKey with
+            | SpecificKey key -> s == key
+            | AnyKey -> true
+            | MultipleKeys(keys, shouldMatch) -> (keys |> List.exists ((==) s)) <> (not shouldMatch)
+
+        // For inline_script files, the content is the body of the type (inside the root key).
+        // We need to prepend the type's root key to the path so validateTypeSkipRoot works correctly.
+        let rec validateTypeSkipRootInline
+            (t: TypeDefinition)
+            (skipRootKeyStack: SkipRootKey list)
+            (path: (string * int * string option * CompletionContext * string option) list)
+            =
+            let typerules =
+                rootRules.TypeRules
+                |> Seq.choose (function
+                    | name, typerule when name == t.name -> Some typerule
+                    | _ -> None)
+                |> Seq.toArray
+
+            match skipRootKeyStack, t.type_per_file, path with
+            | _, false, [] ->
+                // At root of inline_script = inside the type body
+                // Prepend the type name to get completions for the type body
+                getCompletionFromPath scoreFunction typerules [ (t.name, 1, None, NodeRHS, None) ] scopeContext
+            | _, true, _ ->
+                // type_per_file: prepend type name
+                let fullPath =
+                    match path with
+                    | [] -> [ (t.name, 1, None, NodeRHS, None) ]
+                    | (head, c, b, nt, kp) :: tail -> (t.name, 1, None, NodeRHS, None) :: (head, c, b, nt, kp) :: tail
+                getCompletionFromPath scoreFunction typerules fullPath scopeContext
+            | [], false, (head, c, _, _, keyprefix) :: tail ->
+                // Prepend type name, then the inline path
+                getCompletionFromPath
+                    scoreFunction
+                    typerules
+                    ((t.name, 1, None, NodeRHS, None) :: (head, c, None, NodeRHS, keyprefix) :: tail)
+                    scopeContext
+            | head :: rest, false, (pathhead, _, _, _, _) :: pathtail ->
+                if skiprootkey head pathhead then
+                    validateTypeSkipRootInline t rest pathtail
+                else
+                    [||]
+
+        let items =
+            match inlinePath |> List.tryLast, inlinePath.Length with
+            | Some(_, count, Some x, _, _), _ when x.Length > 0 && x.StartsWith("@" + magicCharString) ->
+                let localVars = CWTools.Validation.Stellaris.STLValidation.getDefinedVariables inlineEntity.entity
+                let allVars = effectiveGlobalVars @ localVars
+                allVars |> List.distinct |> List.map (fun s -> CompletionResponse.CreateSimple s)
+            | Some(_, _, _, CompletionContext.NodeLHS, _), 1 -> []
+            | _ ->
+                pathFilteredTypes
+                |> Seq.collect (fun t -> validateTypeSkipRootInline t t.skipRootKey inlinePath)
+                |> Seq.toList
+
+        let createSnippetForType (typeDef: TypeDefinition) =
+            let rootSnippets =
+                match typeDef.typeKeyFilter with
+                | Some(keys: string list, false) -> keys
+                | _ -> [ typeDef.name ]
+            rootSnippets
+            @ (typeDef.subtypes
+               |> List.choose (fun st ->
+                   if st.typeKeyField.IsSome then Some st.typeKeyField.Value else None))
+            |> List.map (fun s -> createSnippetForClause (fun _ -> 1) [||] None s)
+
+        let rootTypeItems =
+            match inlinePath with
+            | [ (_, _, _, CompletionContext.NodeLHS, _) ] -> pathFilteredTypes |> List.collect createSnippetForType
+            | y when y.Length = 0 -> pathFilteredTypes |> List.collect createSnippetForType
+            | _ -> []
+
+        let scoreForLabel (label: string) =
+            if allUsedKeys |> Set.contains label then 10 else 1
+
+        (items @ rootTypeItems)
+        |> List.map (function
+            | Simple(label, None, kind) -> Simple(label, Some(scoreForLabel label), kind)
+            | Detailed(label, desc, None, kind) -> Detailed(label, desc, Some(scoreForLabel label), kind)
+            | Snippet(label, snippet, desc, None, kind) -> Snippet(label, snippet, desc, Some(scoreForLabel label), kind)
+            | x -> x)

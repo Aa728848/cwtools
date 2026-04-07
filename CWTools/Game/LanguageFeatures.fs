@@ -740,56 +740,58 @@ module LanguageFeatures =
                         
                         match callerEntityOpt with
                         | Some callerEntity ->
-                            // 找到调用者文件中inline_script引用的位置
-                            try
-                                let callerFileContent = System.IO.File.ReadAllText(callerEntity.filepath)
-                                let lines = callerFileContent.Split([| '\n'; '\r' |], StringSplitOptions.RemoveEmptyEntries)
-                                
-                                // 找到包含script = scriptName的行
-                                let mutable inlineScriptLine = -1
-                                for i = 0 to lines.Length - 1 do
-                                    if inlineScriptLine = -1 && lines.[i].Contains(scriptFileName, StringComparison.OrdinalIgnoreCase) then
-                                        inlineScriptLine <- i
-                                
-                                if inlineScriptLine >= 0 then
-                                    // 在该行的末尾位置获取上下文
-                                    let callerPos = mkPos (inlineScriptLine + 1) (lines.[inlineScriptLine].Length)
-                                    
-                                    // 收集全局变量
-                                    let globalVars =
-                                        try
-                                            resourceManager.Api.AllEntities()
-                                            |> Seq.choose (fun struct (e, _) ->
-                                                if e.filepath.Contains("common/scripted_variables") ||
-                                                   e.filepath.Contains("common\\scripted_variables") ||
-                                                   e.logicalpath.Contains("common/scripted_variables") ||
-                                                   e.logicalpath.Contains("common\\scripted_variables") then
-                                                    Some e.entity
-                                                else
-                                                    None)
-                                            |> Seq.collect CWTools.Validation.Stellaris.STLValidation.getDefinedVariables
-                                            |> Seq.distinct
-                                            |> Seq.toList
-                                        with _ -> []
+                            // 收集全局变量
+                            let globalVars =
+                                try
+                                    resourceManager.Api.AllEntities()
+                                    |> Seq.choose (fun struct (e, _) ->
+                                        if e.filepath.Contains("common/scripted_variables") ||
+                                           e.filepath.Contains("common\\scripted_variables") ||
+                                           e.logicalpath.Contains("common/scripted_variables") ||
+                                           e.logicalpath.Contains("common\\scripted_variables") then
+                                            Some e.entity
+                                        else
+                                            None)
+                                    |> Seq.collect CWTools.Validation.Stellaris.STLValidation.getDefinedVariables
+                                    |> Seq.distinct
+                                    |> Seq.toList
+                                with _ -> []
 
-                                    match infoService with
-                                    | Some info ->
-                                        match info.GetInfo(callerPos, callerEntity) with
-                                        | Some(ctx, _) ->
-                                            match completionService with
-                                            | Some completion ->
-                                                // 使用调用者实体和它的上下文进行补全
-                                                completion.Complete(callerPos, callerEntity, Some ctx, Some globalVars)
-                                            | None -> []
-                                        | None ->
-                                            match completionService with
-                                            | Some completion -> completion.Complete(callerPos, callerEntity, None, Some globalVars)
-                                            | None -> []
-                                    | None -> []
-                                else
-                                    []
-                            with _ ->
-                                []
+                            // 关键修复：使用专用的 CompleteInlineScript 方法
+                            // 该方法使用 inline_script 实体的 AST 确定当前光标深度，
+                            // 同时使用调用者的 logicalpath 匹配类型规则，
+                            // 从而正确处理根层和子层的补全
+
+                            match infoService with
+                            | Some info ->
+                                // 使用调用者实体获取 scope 上下文（从调用者的 inline_script 引用位置）
+                                let callerScopeCtxOpt =
+                                    try
+                                        let callerFileContent = System.IO.File.ReadAllText(callerEntity.filepath)
+                                        let callerLines = callerFileContent.Split([| '\n'; '\r' |], StringSplitOptions.RemoveEmptyEntries)
+                                        let mutable inlineScriptLine = -1
+                                        for i = 0 to callerLines.Length - 1 do
+                                            if inlineScriptLine = -1 && callerLines.[i].Contains(scriptFileName, StringComparison.OrdinalIgnoreCase) then
+                                                inlineScriptLine <- i
+                                        if inlineScriptLine >= 0 then
+                                            let callerPos = mkPos (inlineScriptLine + 1) (callerLines.[inlineScriptLine].Length)
+                                            info.GetInfo(callerPos, callerEntity) |> Option.map fst
+                                        else
+                                            None
+                                    with _ -> None
+                                match completionService with
+                                | Some completion ->
+                                    // 使用专用的 CompleteInlineScript 方法：
+                                    // - 使用 inline_script 实体的 AST 确定当前光标深度
+                                    // - 使用调用者的 logicalpath 匹配类型规则
+                                    // - 正确处理根层和子层的补全
+                                    completion.CompleteInlineScript(pos, inlineEntity, callerEntity, callerScopeCtxOpt, Some globalVars)
+                                | None -> []
+                            | None ->
+                                match completionService with
+                                | Some completion ->
+                                    completion.CompleteInlineScript(pos, inlineEntity, callerEntity, None, Some globalVars)
+                                | None -> []
                         | None ->
                             log "completion: no caller found, providing basic parameter completion"
                             // 如果找不到调用者,提供参数名补全
