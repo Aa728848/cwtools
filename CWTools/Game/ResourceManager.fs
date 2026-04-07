@@ -594,6 +594,21 @@ type ResourceManager<'T when 'T :> ComputedData>
             |> Seq.map (fun e -> ((e.logicalpath.Substring inlinePathLength).Replace(".txt", ""), e.rawEntity))
             |> Map.ofSeq
 
+        // Helper: try exact match first, then suffix match for path flexibility
+        let tryFindInlineScript (scriptName: string) =
+            match inlineScriptsMap |> Map.tryFind scriptName with
+            | Some _ as result -> result
+            | None ->
+                // Try suffix matching: if scriptName is "a/b/c", try matching keys ending with "/b/c" or "b/c"
+                let normalizedName = scriptName.Replace('\\', '/')
+                inlineScriptsMap
+                |> Map.tryPick (fun key value ->
+                    let normalizedKey = key.Replace('\\', '/')
+                    if normalizedKey.EndsWith("/" + normalizedName) || normalizedName.EndsWith("/" + normalizedKey) then
+                        Some value
+                    else
+                        None)
+
         let keyId = StringResource.stringManager.InternIdentifierToken "inline_script"
 
         let folder (node: Node) (acc: Child list) =
@@ -640,23 +655,31 @@ type ResourceManager<'T when 'T :> ComputedData>
                                 let res = stringReplacer (token.GetString())
                                 StringResource.stringManager.InternIdentifierToken res
 
+                            let replaceValue (v: Value) =
+                                match v with
+                                | Value.String s -> String(stringTokenReplace s)
+                                | Value.QString s -> QString(stringTokenReplace s)
+                                | Value.Bool _ | Value.Int _ | Value.Float _ ->
+                                    // For non-string values, convert to string, attempt replacement,
+                                    // then re-parse if the replacement changed anything.
+                                    // This handles cases like script paths containing $PARAM$
+                                    // that were parsed as identifiers.
+                                    let raw = v.ToRawString()
+                                    let replaced = stringReplacer raw
+                                    if raw <> replaced then
+                                        String(StringResource.stringManager.InternIdentifierToken replaced)
+                                    else
+                                        v
+                                | _ -> v
+
                             node.Leaves
                             |> Seq.iter (fun (l: Leaf) ->
                                 l.Key <- stringReplacer l.Key
-
-                                l.Value
-                                |> (function
-                                | Value.String s -> l.Value <- String(stringTokenReplace s)
-                                | Value.QString s -> l.Value <- QString(stringTokenReplace s)
-                                | _ -> ()))
+                                l.Value <- replaceValue l.Value)
 
                             node.LeafValues
                             |> Seq.iter (fun (l: LeafValue) ->
-                                l.Value
-                                |> (function
-                                | Value.String s -> l.Value <- String(stringTokenReplace s)
-                                | Value.QString s -> l.Value <- QString(stringTokenReplace s)
-                                | _ -> ()))
+                                l.Value <- replaceValue l.Value)
 
                             node.Nodes |> Seq.iter (foldOverNode stringReplacer)
 
@@ -674,7 +697,7 @@ type ResourceManager<'T when 'T :> ComputedData>
                                 // 这样 wg_crisis$CURRENT$.100 当 CURRENT 为空时能正确解析为 wg_crisis.100
                                 |> Seq.where (fun (k, v) -> k.Length > 0)
 
-                            match inlineScriptsMap |> Map.tryFind scriptName with
+                            match tryFindInlineScript scriptName with
                             | Some scriptNode ->
                                 let newScriptNode = STLProcess.cloneNode scriptNode
                                 foldOverNode (stringReplace values) newScriptNode
@@ -707,7 +730,7 @@ type ResourceManager<'T when 'T :> ComputedData>
                         then
                             let scriptName = l.ValueText
 
-                            match inlineScriptsMap |> Map.tryFind scriptName with
+                            match tryFindInlineScript scriptName with
                             | Some scriptNode ->
                                 let newScriptNode = STLProcess.cloneNode scriptNode
 
