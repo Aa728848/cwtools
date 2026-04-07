@@ -94,6 +94,78 @@ module LanguageFeatures =
             filepath.Contains("common/inline_scripts", StringComparison.OrdinalIgnoreCase) ||
             filepath.Contains("common\\inline_scripts", StringComparison.OrdinalIgnoreCase)
 
+        // 特殊处理：@[ expression ] 内部的 scripted_variable 补全
+        let tryExpressionCompletion () =
+            if currentLineIdx >= 0 && currentLineIdx < split.Length then
+                let line = split.[currentLineIdx]
+                let col = pos.Column
+
+                // 检查光标是否在 @[...] 表达式内部
+                let textBeforeCursor = if col <= line.Length then line.Substring(0, col) else line
+                let textAfterCursor = if col < line.Length then line.Substring(col) else ""
+
+                // 查找最近的 @[ 和 ]
+                let lastOpenBracket = textBeforeCursor.LastIndexOf("@[")
+                let lastCloseBracket = textBeforeCursor.LastIndexOf("]")
+                let nextCloseBracket = textAfterCursor.IndexOf("]")
+
+                // 如果在 @[...] 内部（最近的 @[ 在最近的 ] 之后，且后面还有 ]）
+                if lastOpenBracket >= 0 && lastOpenBracket > lastCloseBracket && nextCloseBracket >= 0 then
+                    log (sprintf "tryExpressionCompletion: inside @[ expression ]")
+
+                    // 提取表达式内容
+                    let exprStart = lastOpenBracket + 2
+                    let exprContent = textBeforeCursor.Substring(exprStart)
+
+                    // 检查当前是否在输入变量名
+                    // 在表达式内部，变量名没有 @ 前缀，直接是 wsg_armor_add 这样的形式
+                    // 匹配模式：操作符或空格后的标识符，或者表达式开头的标识符
+                    let varPattern = System.Text.RegularExpressions.Regex(@"(?:^|[\s\+\-\*/\(])\s*([A-Za-z_][A-Za-z0-9_$]*)$")
+                    let varMatch = varPattern.Match(exprContent)
+
+                    // 如果正在输入变量名，或者刚输入了操作符/空格
+                    if varMatch.Success || System.Text.RegularExpressions.Regex(@"[\s\+\-\*/\(\[]$").IsMatch(exprContent) then
+                        log (sprintf "tryExpressionCompletion: completing scripted_variable (match: %b, content: '%s')" varMatch.Success exprContent)
+
+                        // 获取所有 scripted_variables
+                        let allEntities = resourceManager.Api.AllEntities()
+                        let scriptedVars =
+                            allEntities
+                            |> Seq.filter (fun struct (e, _) ->
+                                e.filepath.Contains("common/scripted_variables") ||
+                                e.filepath.Contains("common\\scripted_variables") ||
+                                e.logicalpath.Contains("common/scripted_variables") ||
+                                e.logicalpath.Contains("common\\scripted_variables"))
+                            |> Seq.collect (fun struct (e, _) ->
+                                try
+                                    CWTools.Validation.Stellaris.STLValidation.getDefinedVariables e.entity
+                                with _ -> [])
+                            |> Seq.filter (fun varName -> not (varName.StartsWith("@["))) // 过滤掉 @[ 表达式
+                            |> Seq.distinct
+                            |> Seq.toArray
+
+                        if scriptedVars.Length > 0 then
+                            let completionItems =
+                                scriptedVars
+                                // 移除 @ 前缀，因为表达式内部变量名不需要 @
+                                |> Array.map (fun varName ->
+                                    let displayName = if varName.StartsWith("@") then varName.Substring(1) else varName
+                                    CompletionResponse.Detailed(
+                                        displayName,
+                                        Some($"Scripted variable: {varName}"),
+                                        None,
+                                        CompletionCategory.Variable))
+                                |> Array.toList
+                            Some completionItems
+                        else
+                            None
+                    else
+                        None
+                else
+                    None
+            else
+                None
+
         // 特殊处理：inline_script 补全
         let tryInlineScriptCompletion () =
             // 先检查是否是注释行（以 # 开头的行）
@@ -655,7 +727,15 @@ module LanguageFeatures =
             else
                 None
 
-        // 先尝试 inline_script 补全
+        // 先尝试 @[ expression ] 内部的 scripted_variable 补全
+        let exprResult = tryExpressionCompletion()
+        match exprResult with
+        | Some items ->
+            log (sprintf "Expression scripted_variable completion returning %d items" items.Length)
+            items
+        | None ->
+
+        // 再尝试 inline_script 补全
         let inlineResult = tryInlineScriptCompletion()
         match inlineResult with
         | Some items ->
@@ -753,6 +833,7 @@ module LanguageFeatures =
                                         else
                                             None)
                                     |> Seq.collect CWTools.Validation.Stellaris.STLValidation.getDefinedVariables
+                                    |> Seq.filter (fun varName -> not (varName.StartsWith("@["))) // 过滤掉 @[ 表达式
                                     |> Seq.distinct
                                     |> Seq.toList
                                 with _ -> []
@@ -858,6 +939,7 @@ module LanguageFeatures =
                                                             match resourceManager.ManualProcessResource input with
                                                             | Some entity ->
                                                                 let vars = CWTools.Validation.Stellaris.STLValidation.getDefinedVariables entity.entity
+                                                                            |> List.filter (fun v -> not (v.StartsWith("@[")))
                                                                 allVars <- vars @ allVars
                                                             | _ -> ()
                                                         with _ -> ()
@@ -873,6 +955,7 @@ module LanguageFeatures =
                                             match resourceManager.ManualProcessResource input with
                                             | Some entity ->
                                                 CWTools.Validation.Stellaris.STLValidation.getDefinedVariables entity.entity
+                                                |> List.filter (fun v -> not (v.StartsWith("@[")))
                                             | _ -> []
                                         with _ -> [])
                                     |> Array.toList
@@ -1018,6 +1101,205 @@ module LanguageFeatures =
         (filetext: string)
         : SymbolInformation option =
         let resource = makeEntityResourceInput fileManager filepath filetext
+
+        // Simple recursive descent evaluator for @[ expr ] expressions
+        // Supports: +, -, *, /, unary minus, parentheses, decimal literals, @varName
+        let evalExpr (expr: string) (varValues: Map<string, decimal>) : decimal option =
+            let mutable pos2 = 0
+            let s = expr.Trim()
+            let len = s.Length
+
+            let skipWs () =
+                while pos2 < len && s.[pos2] = ' ' do pos2 <- pos2 + 1
+
+            let rec parseExpr () =
+                skipWs()
+                parseAddSub()
+
+            and parseAddSub () =
+                let mutable left = parseMulDiv()
+                skipWs()
+                while pos2 < len && (s.[pos2] = '+' || s.[pos2] = '-') do
+                    let op = s.[pos2]
+                    pos2 <- pos2 + 1
+                    let right = parseMulDiv()
+                    left <-
+                        match left, right with
+                        | Some l, Some r -> Some (if op = '+' then l + r else l - r)
+                        | _ -> None
+                    skipWs()
+                left
+
+            and parseMulDiv () =
+                let mutable left = parseUnary()
+                skipWs()
+                while pos2 < len && (s.[pos2] = '*' || s.[pos2] = '/') do
+                    let op = s.[pos2]
+                    pos2 <- pos2 + 1
+                    let right = parseUnary()
+                    left <-
+                        match left, right with
+                        | Some l, Some r ->
+                            if op = '/' && r = 0m then None
+                            else Some (if op = '*' then l * r else l / r)
+                        | _ -> None
+                    skipWs()
+                left
+
+            and parseUnary () =
+                skipWs()
+                if pos2 < len && s.[pos2] = '-' then
+                    pos2 <- pos2 + 1
+                    parsePrimary() |> Option.map (fun v -> -v)
+                else
+                    parsePrimary()
+
+            and parsePrimary () =
+                skipWs()
+                if pos2 >= len then None
+                elif s.[pos2] = '(' then
+                    pos2 <- pos2 + 1
+                    let v = parseExpr()
+                    skipWs()
+                    if pos2 < len && s.[pos2] = ')' then pos2 <- pos2 + 1
+                    v
+                elif System.Char.IsLetter(s.[pos2]) || s.[pos2] = '_' then
+                    // variable reference without @: varName (in @[ expr ], variables don't have @ prefix)
+                    let start = pos2
+                    while pos2 < len && (System.Char.IsLetterOrDigit(s.[pos2]) || s.[pos2] = '_' || s.[pos2] = '$') do
+                        pos2 <- pos2 + 1
+                    let varName = "@" + s.Substring(start, pos2 - start)  // Add @ when looking up
+                    varValues |> Map.tryFind varName
+                else
+                    // number
+                    let start = pos2
+                    while pos2 < len && (System.Char.IsDigit(s.[pos2]) || s.[pos2] = '.') do
+                        pos2 <- pos2 + 1
+                    if pos2 > start then
+                        match System.Decimal.TryParse(s.Substring(start, pos2 - start), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture) with
+                        | true, v -> Some v
+                        | _ -> None
+                    else
+                        pos2 <- pos2 + 1; None
+
+            parseExpr()
+
+        // Collect all scripted variable values from the resource manager
+        let getVarValues () : Map<string, decimal> =
+            try
+                resourceManager.Api.AllEntities()
+                |> Seq.filter (fun struct (e, _) ->
+                    e.filepath.Contains("common/scripted_variables") ||
+                    e.filepath.Contains("common\\scripted_variables") ||
+                    e.logicalpath.Contains("common/scripted_variables") ||
+                    e.logicalpath.Contains("common\\scripted_variables"))
+                |> Seq.collect (fun struct (e, _) ->
+                    e.entity.Leaves
+                    |> Seq.choose (fun leaf ->
+                        if leaf.Key.StartsWith("@") && not (leaf.Key.StartsWith("@[")) then
+                            match System.Decimal.TryParse(leaf.Value.ToString(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture) with
+                            | true, v -> Some (leaf.Key, v)
+                            | _ -> None
+                        else None))
+                |> Map.ofSeq
+            with _ -> Map.empty
+
+        // Format decimal: remove trailing zeros
+        let fmtDecimal (d: decimal) =
+            let s = d.ToString("G29", System.Globalization.CultureInfo.InvariantCulture)
+            s
+
+        // Check if cursor is on a @[ expression ] - provide expression info with evaluation
+        let split = filetext.Split('\n')
+        let lineIdx = pos.Line - 1
+        if lineIdx >= 0 && lineIdx < split.Length then
+            let line = split.[lineIdx]
+            let col = pos.Column
+            let textBefore = if col <= line.Length then line.Substring(0, col) else line
+            let lastOpen = textBefore.LastIndexOf("@[")
+            let lastClose = textBefore.LastIndexOf("]")
+            if lastOpen >= 0 && lastOpen > lastClose then
+                let closeIdx = line.IndexOf("]", lastOpen)
+                if closeIdx > lastOpen then
+                    let exprContent = line.Substring(lastOpen + 2, closeIdx - lastOpen - 2).Trim()
+
+                    // Check if expression contains $PARAM$ placeholders
+                    let paramPattern = System.Text.RegularExpressions.Regex(@"\$([A-Za-z0-9_]+)\$")
+                    let paramMatches = paramPattern.Matches(exprContent)
+
+                    let varValues = getVarValues()
+
+                    let resultText =
+                        if paramMatches.Count = 0 then
+                            // No parameters - evaluate directly
+                            match evalExpr exprContent varValues with
+                            | Some v -> sprintf " = %s" (fmtDecimal v)
+                            | None -> " (could not evaluate)"
+                        else
+                            // Has $PARAM$ placeholders
+                            // Strategy: find all variables matching the pattern and show results for each
+                            // e.g. expr = "wsg_armor_add * $SIZE$ * wsg_t$TIER$_mult"
+                            // Find variables like @wsg_t1_mult, @wsg_t2_mult, etc.
+
+                            // Extract all variable names from expression (identifiers that are not params)
+                            let varNamePattern = System.Text.RegularExpressions.Regex(@"(?<![A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_]*\$[A-Za-z0-9_]+\$[A-Za-z0-9_]*)")
+                            let paramVarMatches = varNamePattern.Matches(exprContent)
+
+                            if paramVarMatches.Count > 0 then
+                                // Find the first parameterized variable pattern
+                                let firstParamVar = paramVarMatches.[0].Groups.[1].Value
+
+                                // Convert pattern to regex: wsg_t$TIER$_mult -> @wsg_t(.+?)_mult
+                                let varRegexStr = "@" + paramPattern.Replace(System.Text.RegularExpressions.Regex.Escape(firstParamVar), "(.+?)")
+                                let varRegex = System.Text.RegularExpressions.Regex("^" + varRegexStr + "$")
+
+                                // Find all matching variables in varValues
+                                let matchingVars =
+                                    varValues
+                                    |> Map.toSeq
+                                    |> Seq.choose (fun (varName, _) ->
+                                        let m = varRegex.Match(varName)
+                                        if m.Success && m.Groups.Count > 1 then
+                                            // Extract parameter value (e.g., "1" from "@wsg_t1_mult")
+                                            let paramValue = m.Groups.[1].Value
+                                            Some (paramValue, varName)
+                                        else None)
+                                    |> Seq.truncate 10
+                                    |> Seq.toArray
+
+                                if matchingVars.Length > 0 then
+                                    // Evaluate expression for each parameter value
+                                    let results =
+                                        matchingVars
+                                        |> Array.choose (fun (paramValue, _) ->
+                                            // Substitute $PARAM$ with actual value
+                                            let instantiated = paramPattern.Replace(exprContent, paramValue)
+                                            match evalExpr instantiated varValues with
+                                            | Some v -> Some (paramValue, fmtDecimal v)
+                                            | None -> None)
+
+                                    if results.Length > 0 then
+                                        let resultStrs = results |> Array.map (fun (pv, res) -> sprintf "%s=%s" pv res)
+                                        sprintf " = { %s }" (String.concat ", " resultStrs)
+                                    else
+                                        " (could not evaluate with parameters)"
+                                else
+                                    " (no matching variables found)"
+                            else
+                                " (could not parse parameterized expression)"
+
+                    Some
+                        { name = sprintf "@[ %s ]%s" exprContent resultText
+                          typename = "expression"
+                          localisation = []
+                          ruleDescription = Some (sprintf "Arithmetic expression: @[ %s ]%s" exprContent resultText)
+                          ruleRequiredScopes = [] }
+                else None
+            else None
+        else None
+        |> function
+        | Some info -> Some info
+        | None ->
 
         match resourceManager.ManualProcessResource resource, infoService with
         | Some e, Some info ->

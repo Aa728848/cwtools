@@ -1,38 +1,35 @@
-#Executor T3 2 1 4
-weapon_component_template = {
+utility_component_template = {
+	key = "SMALL_wsg_ship_part_wsg_ia"
+	size = small
+	icon = "GFX_wsg_ship_part_wsg_ia"
+	icon_frame = 1
+	power = -35
+
 	inline_script = {
-		script = kuat_utllities_component/kuat_component_weapon_artellarys
-		KEY = "ED_LARGE_HEAVY_TURBO_3_G"
-		ICON = "GFX_ship_part_sws_turbolaser_green_03"
-		SIZE = large
-		WEAPON_TYPE = instant
-		MULT = 4
-		WINDUP_MIN = 1
-		WINDUP_MAX = 19
-		TFT = 19
-		RANGE = 300
-        ACCURACY = 0.75
-        TRACKING = 0.50		
-		SET = "ED_HEAVY_TURBO_3_G"
-		WEAPON_PROJECTILE = "sws_turbolaser_large_green"
-
-		INLINE = kuat_artilleary_weapon_destroyed
-		kuat_weapon_damage_buff = 1
-		kuat_slot = l
-		kuat_energy = yes
-		kuat_kinetic = no
-		kuat_explosive = no
-		kuat_point_defense = no
-		kuat_strike_craft = no
-
-		kuat_on_hit_type = none
+		script = component/wsg_defender_utility_coponent
+		SIZE = 1 TIER = 1 ARMOR = yes HULL = yes SHIELD = yes
 	}
-	target_type = target_enemies
-	target_focus = spread
-	shield_penetration = 1
-	armor_penetration = 1
-	hidden = yes
-	tags = { weapon_type_energy l_slot weapon_type_kuat_artellarys_scale }
-	ai_tags = { weapon_role_anti_armor weapon_role_anti_shield }
-	ai_weight = { weight = 10000 }
+	
+	prerequisites = { "tech_wsg_ia" }
+	component_set = "wsg_ship_part_wsg_ia"
+	upgrades_to = "SMALL_wsg_ship_part_wsg_ia2"	
+	inline_script = {
+		script = component/wsg_component_weapon_cost/wsg_component_weapon_cost_sr_alpha
+		wsg_component_weapon_tier = 4
+		wsg_component_weapon_size = S
+	}
+	ai_weight = {
+		weight = 100
+		modifier = {
+			factor = 5
+			has_wg_authority = yes
+		}
+		modifier = {
+			factor = 0.0
+			OR = {
+				component_no_resource = { RESOURCE = sr_alpha MIN_REQUIREMENT = 100 }
+				component_no_resource = { RESOURCE = sr_neo MIN_REQUIREMENT = 250 }
+			}
+		}
+	}
 }

@@ -21,7 +21,8 @@ module STLValidation =
                 x.Leaves
                 |> Seq.fold
                     (fun a n ->
-                        if n.Key.StartsWith('@') then
+                        // 只收集以 @ 开头但不是 @[ 表达式的变量定义
+                        if n.Key.StartsWith('@') && not (n.Key.StartsWith("@[")) then
                             n.Key :: a
                         else
                             a)
@@ -74,9 +75,35 @@ module STLValidation =
                     |> List.map (
                         (fun f -> f, f.Value.ToString())
                         >> (fun (l, v) ->
-                            // Skip @[ array access syntax - this is not a scripted variable
-                            if v.StartsWith("@[") then
-                                OK
+                            // Handle @[ expression ] syntax - validate variables inside the expression
+                            if v.StartsWith("@[") && v.EndsWith("]") then
+                                // Extract expression content between @[ and ]
+                                let exprContent = v.Substring(2, v.Length - 3).Trim()
+
+                                // In @[ expr ], variables are written WITHOUT @ prefix
+                                // Pattern: identifier (letter/underscore start, may contain $PARAM$)
+                                let varPattern = System.Text.RegularExpressions.Regex(@"(?<![A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_$]*)(?![A-Za-z0-9_$])")
+                                let matches = varPattern.Matches(exprContent)
+
+                                let errors =
+                                    matches
+                                    |> Seq.cast<System.Text.RegularExpressions.Match>
+                                    |> Seq.map (fun m -> m.Groups.[1].Value)
+                                    |> Seq.filter (fun name ->
+                                        // Skip if it's a number-like token (shouldn't happen but be safe)
+                                        not (System.Char.IsDigit(name.[0])))
+                                    |> Seq.map (fun name -> "@" + name)  // Add @ for lookup
+                                    |> Seq.filter (fun varName ->
+                                        // Skip validation if variable contains $PARAM$ placeholders
+                                        if varName.Contains("$") then
+                                            false
+                                        else
+                                            not (variables |> List.contains varName))
+                                    |> Seq.map (fun varName ->
+                                        Invalid(Guid.NewGuid(), [ inv (ErrorCodes.UndefinedVariable varName) l ]))
+                                    |> Seq.fold (<&&>) OK
+
+                                errors <&&> children
                             // If variable still contains $PARAM$ placeholders, skip validation
                             // Parameters will be substituted when the scripted effect is called
                             elif v.Contains("$") then
