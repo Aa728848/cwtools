@@ -437,6 +437,20 @@ module internal FieldValidators =
                 value |> ValueOption.map values.Contains |> ValueOption.defaultValue false
         | ValueNone -> false
 
+    let checkMacroTemplateMatch (value: string) (values: PrefixOptimisedStringSet) =
+        values.StringValues |> Seq.exists (fun templateVar ->
+            let idx = templateVar.IndexOf('$')
+            if idx > 0 then
+                value.StartsWith(templateVar.Substring(0, idx), StringComparison.OrdinalIgnoreCase)
+            elif idx = 0 then
+                let lastIdx = templateVar.LastIndexOf('$')
+                if lastIdx < templateVar.Length - 1 && lastIdx >= 0 then
+                    value.EndsWith(templateVar.Substring(lastIdx + 1), StringComparison.OrdinalIgnoreCase)
+                else
+                    true
+            else
+                false)
+
     let checkVariableGetField
         (varMap: FrozenDictionary<_, PrefixOptimisedStringSet>)
         severity
@@ -458,6 +472,8 @@ module internal FieldValidators =
             else if value.Contains('@') && values.Contains(value.SplitFirst('@')) then
                 errors
             else if (let result = values.LongestPrefixMatch(value) in result <> null) then
+                errors
+            else if checkMacroTemplateMatch (value.ToString()) values then
                 errors
             else
                 inv
@@ -491,6 +507,7 @@ module internal FieldValidators =
                 values.Contains value
                 || (value.Contains('@') && values.Contains(value.SplitFirst('@')))
                 || (values.FindFirstByPrefix(value) <> null)
+                || checkMacroTemplateMatch (value.ToString()) values
         | None -> false
 
     let checkFilepathField

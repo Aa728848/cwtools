@@ -109,56 +109,9 @@ module CommonValidation =
         //    |> List.map (fun td, ts -> )
         )
 
-    // Helper function to get global scripted variables from file system
-    let getGlobalScriptVarsFromFS (currentFilepath: string) =
-        try
-            let currentDir = System.IO.Path.GetDirectoryName(currentFilepath)
-            let rec findModRoot dir =
-                if System.String.IsNullOrEmpty(dir) then None
-                else
-                    let dirName = System.IO.Path.GetFileName(dir)
-                    if dirName = "common" || dirName = "events" || dirName = "interface" then
-                        Some(System.IO.Path.GetDirectoryName(dir))
-                    else
-                        findModRoot (System.IO.Path.GetDirectoryName(dir))
-            match findModRoot currentDir with
-            | None -> []
-            | Some modRoot ->
-                let svPath = System.IO.Path.Combine(modRoot, "common", "scripted_variables")
-                if not (System.IO.Directory.Exists(svPath)) then
-                    let gameRoot = System.IO.Path.GetDirectoryName(modRoot)
-                    if System.String.IsNullOrEmpty(gameRoot) then []
-                    else
-                        let modDir = System.IO.Path.Combine(gameRoot, "mod")
-                        if not (System.IO.Directory.Exists(modDir)) then []
-                        else
-                            System.IO.Directory.GetDirectories(modDir)
-                            |> Array.collect (fun modFolder ->
-                                let modSVPath = System.IO.Path.Combine(modFolder, "common", "scripted_variables")
-                                if System.IO.Directory.Exists(modSVPath) then
-                                    System.IO.Directory.GetFiles(modSVPath, "*.txt", System.IO.SearchOption.AllDirectories)
-                                else [||])
-                            |> Array.collect (fun file ->
-                                try
-                                    let content = System.IO.File.ReadAllText(file)
-                                    let pattern = System.Text.RegularExpressions.Regex(@"^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\n\r#]+)", System.Text.RegularExpressions.RegexOptions.Multiline)
-                                    [| for m in pattern.Matches(content) -> m.Groups.[1].Value.Trim() |]
-                                with _ -> [||])
-                            |> Array.toList
-                else
-                    System.IO.Directory.GetFiles(svPath, "*.txt", System.IO.SearchOption.AllDirectories)
-                    |> Array.collect (fun file ->
-                        try
-                            let content = System.IO.File.ReadAllText(file)
-                            let pattern = System.Text.RegularExpressions.Regex(@"^\s*(@[A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\n\r#]+)", System.Text.RegularExpressions.RegexOptions.Multiline)
-                            [| for m in pattern.Matches(content) -> m.Groups.[1].Value.Trim() |]
-                        with _ -> [||])
-                    |> Array.toList
-        with _ -> []
-
     // Common function to validate @variables after parameter substitution
     // Used by both valScriptedEffectParams and valScriptValueParams
-    let validateVariablesInExpandedNode (currentFilePath: string) (n: Node) callSite =
+    let validateVariablesInExpandedNode (currentFilePath: string) (n: Node) callSite (globalVars: string list) =
         try
             let rec collectVars (node: Node) acc =
                 let acc =
@@ -180,8 +133,6 @@ module CommonValidation =
                     | _ -> None)
                 |> Seq.fold (fun a child -> collectVars child a) acc
             let allVarsWithPos = collectVars n []
-            // Get global vars from file system directly
-            let globalVars = getGlobalScriptVarsFromFS currentFilePath
             allVarsWithPos
             |> List.choose (fun (v, pos) ->
                 // Skip @[ array access syntax - this is not a scripted variable
@@ -333,7 +284,7 @@ module CommonValidation =
                     | None -> ()
                     // eprintfn "%A %A" (CKPrinter.api.prettyPrintStatements newNode.ToRaw) (seParams)
                     // Validate variables after parameter substitution
-                    let varValidation = validateVariablesInExpandedNode logicalpath newNode callSite
+                    let varValidation = validateVariablesInExpandedNode logicalpath newNode callSite (lu.scriptedVariables |> List.map fst)
                     let ruleRes = rv.ManualRuleValidate(logicalpath, rootNode)
                     // eprintfn "%A %A" logicalpath res
                     let message =
@@ -531,7 +482,7 @@ module CommonValidation =
                     | None -> ()
 
                     // Validate variables after parameter substitution
-                    let varValidation = validateVariablesInExpandedNode logicalpath newNode callSite
+                    let varValidation = validateVariablesInExpandedNode logicalpath newNode callSite (lu.scriptedVariables |> List.map fst)
                     //                    logInfo (sprintf "vsvp d %A %A" (CKPrinter.api.prettyPrintStatement newNode.ToRaw) (seParams))
                     let ruleRes = rv.ManualRuleValidate(logicalpath, rootNode)
                     // eprintfn "%A %A" logicalpath res

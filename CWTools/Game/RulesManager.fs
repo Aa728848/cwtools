@@ -435,27 +435,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
         // Store in lookup for later use
         lookup.scriptedVariables <-
-            allEntitiesList
-            |> Seq.choose (fun struct (e, _) ->
-                if e.filepath.Contains("scripted_variables") ||
-                   e.logicalpath.Contains("scripted_variables") then
-                    Some e.entity
-                else
-                    None)
-            |> Seq.collect (fun entity ->
-                entity.All
-                |> Seq.choose (fun child ->
-                    match child with
-                    | CWTools.Process.NodeC node ->
-                        // 过滤掉 @[ 表达式
-                        if node.Key.StartsWith("@[") || node.Key.StartsWith(@"@\[") then
-                            None
-                        else
-                            match node.Leaves |> Seq.tryHead with
-                            | Some leaf -> Some (node.Key, leaf.Value.ToString())
-                            | None -> None
-                    | _ -> None))
-            |> Seq.toList
+            globalScriptVariables
+            |> List.map (fun v -> (v, "1"))
 
         let completionService =
             CompletionService(
