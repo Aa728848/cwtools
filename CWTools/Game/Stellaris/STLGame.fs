@@ -570,16 +570,6 @@ type STLGame(setupSettings: StellarisSettings) =
     let resources = game.Resources
     let fileManager = game.FileManager
 
-    // Set vanilla scripted variables path for validation and hover
-    do
-        match setupSettings.vanillaPath with
-        | Some vp ->
-            let svPath = System.IO.Path.Combine(vp, "common", "scripted_variables")
-            CWTools.Validation.Stellaris.STLValidation.vanillaScriptedVariablesPath <- Some svPath
-            // Note: For hover, we need to set this in the Main module
-            // This is done by the caller after game initialization
-        | None -> ()
-
     let references =
         References<_>(resources, lookup, game.LocalisationManager.GetCleanLocalisationAPIs())
 
