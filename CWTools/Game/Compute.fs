@@ -83,8 +83,12 @@ module EU4 =
             (fun (x: Node) acc ->
                 let nodeRes = getDollarText x.Key acc
 
-                x.Leaves
-                |> Seq.fold (fun a n -> getDollarText n.Key (getDollarText (n.Value.ToRawString()) a)) nodeRes)
+                let leafRes =
+                    x.Leaves
+                    |> Seq.fold (fun a n -> getDollarText n.Key (getDollarText (n.Value.ToRawString()) a)) nodeRes
+
+                x.LeafValues
+                |> Seq.fold (fun a n -> getDollarText (n.ValueText) a) leafRes)
 
         node |> (foldNode7 fNode) |> List.ofSeq
 
@@ -106,8 +110,12 @@ module EU4 =
             (fun (x: Node) acc ->
                 let nodeRes = getDollarText x.Key acc
 
-                x.Leaves
-                |> Seq.fold (fun a n -> getDollarText n.Key (getDollarText (n.Value.ToRawString()) a)) nodeRes)
+                let leafRes =
+                    x.Leaves
+                    |> Seq.fold (fun a n -> getDollarText n.Key (getDollarText (n.Value.ToRawString()) a)) nodeRes
+
+                x.LeafValues
+                |> Seq.fold (fun a n -> getDollarText (n.ValueText) a) leafRes)
 
         node |> (foldNode7 fNode) |> List.ofSeq
 
@@ -296,8 +304,12 @@ module Jomini =
             (fun (x: Node) acc ->
                 let nodeRes = getDollarText x.Key acc
 
-                x.Leaves
-                |> Seq.fold (fun a n -> getDollarText n.Key (getDollarText (n.Value.ToRawString()) a)) nodeRes)
+                let leafRes =
+                    x.Leaves
+                    |> Seq.fold (fun a n -> getDollarText n.Key (getDollarText (n.Value.ToRawString()) a)) nodeRes
+
+                x.LeafValues
+                |> Seq.fold (fun a n -> getDollarText (n.ValueText) a) leafRes)
 
         node |> (foldNode7 fNode) |> List.ofSeq
 
@@ -319,8 +331,12 @@ module Jomini =
             (fun (x: Node) acc ->
                 let nodeRes = getDollarText x.Key acc
 
-                x.Leaves
-                |> Seq.fold (fun a n -> getDollarText n.Key (getDollarText (n.Value.ToRawString()) a)) nodeRes)
+                let leafRes =
+                    x.Leaves
+                    |> Seq.fold (fun a n -> getDollarText n.Key (getDollarText (n.Value.ToRawString()) a)) nodeRes
+
+                x.LeafValues
+                |> Seq.fold (fun a n -> getDollarText (n.ValueText) a) leafRes)
 
         node |> (foldNode7 fNode) |> List.ofSeq
 

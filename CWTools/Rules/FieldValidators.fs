@@ -647,7 +647,7 @@ module internal FieldValidators =
         let key = getOriginalKey(ids).AsSpan()
         let metadata = getStringMetadata ids.lower
 
-        if metadata.startsWithAmp then
+        if metadata.startsWithAmp || key.IndexOf('$') >= 0 then
             errors
         else
             let key =
@@ -699,11 +699,11 @@ module internal FieldValidators =
         =
         let scope = ctx.scopes
         let metadata = getStringMetadata ids.lower
+        let key = getOriginalKey(ids).AsSpan()
 
-        if metadata.startsWithAmp then
+        if metadata.startsWithAmp || key.IndexOf('$') >= 0 then
             true
         else
-            let key = getOriginalKey(ids).AsSpan()
 
             let key =
                 match metadata.containsQuestionMark, metadata.containsHat with
@@ -748,7 +748,7 @@ module internal FieldValidators =
             | _ -> key.AsSpan()
 
         match
-            firstCharEqualsAmp ids.lower,
+            firstCharEqualsAmp ids.lower || key.IndexOf('$') >= 0,
             TryParser.parseDecimalSpan key,
             TryParser.parseIntSpan key,
             changeScope.Invoke(false, true, linkMap, valueTriggerMap, wildcardLinks, varSet, key, scope)
@@ -794,7 +794,7 @@ module internal FieldValidators =
         let key = getOriginalKey ids
 
         match
-            firstCharEqualsAmp ids.lower,
+            firstCharEqualsAmp ids.lower || key.IndexOf('$') >= 0,
             TryParser.parseDecimal key,
             TryParser.parseInt key,
             changeScope.Invoke(false, true, linkMap, valueTriggerMap, wildcardLinks, varSet, key, scope)
@@ -933,7 +933,7 @@ module internal FieldValidators =
                             severity)
                         leafornode
                     <&&&> errors
-            | AliasField _
+            | AliasField _ -> errors
             | MarkerField _
             | SingleAliasField _
             | SubtypeField _

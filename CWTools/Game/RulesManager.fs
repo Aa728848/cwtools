@@ -419,14 +419,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
         let globalScriptVariables =
             allEntitiesList
-            |> Seq.choose (fun struct (e, _) ->
-                if e.filepath.Contains("common/scripted_variables") ||
-                   e.filepath.Contains("common\\scripted_variables") ||
-                   e.logicalpath.Contains("common/scripted_variables") ||
-                   e.logicalpath.Contains("common\\scripted_variables") then
-                    Some e.entity
-                else
-                    None)
+            |> Seq.choose (fun struct (e, _) -> Some e.entity)
             |> Seq.collect (fun entity ->
                 CWTools.Validation.Stellaris.STLValidation.getDefinedVariables entity)
             |> Seq.filter (fun v -> not (v.StartsWith("@[")) && not (v.StartsWith(@"@\[")))  // 过滤掉表达式

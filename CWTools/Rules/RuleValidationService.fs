@@ -258,12 +258,19 @@ type RuleValidationService
         let noderules, leafrules, leafvaluerules, valueclauserules, nodeSpecificDict, leafSpecificDict =
             memoizeRules rules ctx.subtypes
 
+        let hasMacro =
+            startNode.LeafValues |> Seq.exists (fun lv ->
+                let text = lv.ValueText
+                text.StartsWith("$") || text.StartsWith("\\[") || text.StartsWith("[[") ||
+                text = "=" || text = "<" || text = ">" || text = "<=" || text = ">=" || text = "!=" || text = "==" || text = "?="
+            )
+
         let inline valueFun innerErrors (leaf: Leaf) =
             let key = leaf.Key
             let keyIds = leaf.KeyId
 
             let inline createDefault () =
-                if enforceCardinality && (leaf.Key.[0] <> '@') then
+                if enforceCardinality && not hasMacro && (leaf.Key.[0] <> '@') then
                     inv
                         (ErrorCodes.ConfigRulesUnexpectedPropertyNode
                             $"%s{key} is unexpected in %s{startNode.Key}"
@@ -306,7 +313,7 @@ type RuleValidationService
             let keyIds = node.KeyId
 
             let createDefault () =
-                if enforceCardinality then
+                if enforceCardinality && not hasMacro then
                     inv
                         (ErrorCodes.ConfigRulesUnexpectedPropertyLeaf
                             $"%s{key} is unexpected in %s{startNode.Key}"
@@ -347,6 +354,7 @@ type RuleValidationService
             let createDefault () =
                 if
                     enforceCardinality
+                    && not hasMacro
                     && not (stringManager.GetMetadataForID leafvalue.ValueId.lower).startsWithSquareBracket
                 then
                     inv
@@ -374,7 +382,7 @@ type RuleValidationService
 
         let inline valueClauseFun innerErrors (valueclause: ValueClause) =
             let createDefault () =
-                if enforceCardinality then
+                if enforceCardinality && not hasMacro then
                     inv
                         (ErrorCodes.ConfigRulesUnexpectedPropertyValueClause
                             $"Unexpected clause in %s{startNode.Key}"
@@ -396,6 +404,12 @@ type RuleValidationService
                     true)
 
         let inline checkCardinality (clause: IClause) innerErrors (rule: NewRule) =
+            let hasMacro =
+                clause.LeafValues |> Seq.exists (fun lv ->
+                    let text = lv.ValueText
+                    text.StartsWith("$") || text.StartsWith("\\[") || text.StartsWith("[[") ||
+                    text = "=" || text = "<" || text = ">" || text = "<=" || text = ">=" || text = "!=" || text = "==" || text = "?="
+                )
             match rule with
             | NodeRule(SpecificField(SpecificValue key), _), opts
             | LeafRule(SpecificField(SpecificValue key), _), opts ->
@@ -409,7 +423,7 @@ type RuleValidationService
 
                 let total = leafcount + childcount
 
-                if opts.min > total then
+                if opts.min > total && not hasMacro then
                     let minSeverity =
                         if opts.strictMin then
                             (opts.severity |> Option.defaultValue severity)
@@ -443,7 +457,7 @@ type RuleValidationService
                         else
                             0)
 
-                if opts.min > total then
+                if opts.min > total && not hasMacro then
                     let minSeverity =
                         if opts.strictMin then
                             (opts.severity |> Option.defaultValue severity)
@@ -472,7 +486,7 @@ type RuleValidationService
                         else
                             0)
 
-                if opts.min > total then
+                if opts.min > total && not hasMacro then
                     let minSeverity =
                         if opts.strictMin then
                             (opts.severity |> Option.defaultValue severity)
@@ -501,7 +515,7 @@ type RuleValidationService
                         else
                             0)
 
-                if opts.min > total then
+                if opts.min > total && not hasMacro then
                     let minSeverity =
                         if opts.strictMin then
                             (opts.severity |> Option.defaultValue severity)
@@ -524,7 +538,7 @@ type RuleValidationService
             | ValueClauseRule _, opts ->
                 let total = clause.ValueClauses |> Seq.length
 
-                if opts.min > total then
+                if opts.min > total && not hasMacro then
                     let minSeverity =
                         if opts.strictMin then
                             (opts.severity |> Option.defaultValue severity)
