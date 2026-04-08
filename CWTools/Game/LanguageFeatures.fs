@@ -923,10 +923,11 @@ module LanguageFeatures =
                 let enumValues = lookup.enumDefs[enumName] |> snd
                 enumValues |> Array.tryPick (fun (ev, r) -> if ev == enumValue then r else None)
             | Some(_, (_, Some(FileRef f), _)) ->
+                let fNorm = f.Replace("\\", "/")
                 resourceManager.Api.AllEntities()
                 |> Seq.map structFst
-                |> Seq.tryFind (fun x -> x.logicalpath = f)
-                |> Option.map (fun x -> mkRange x.filepath pos pos)
+                |> Seq.tryFind (fun x -> x.logicalpath.Replace("\\", "/").Equals(fNorm, StringComparison.OrdinalIgnoreCase))
+                |> Option.map (fun x -> mkRange x.filepath pos0 pos0)
             | _ -> None
         | _, _ -> None
 
