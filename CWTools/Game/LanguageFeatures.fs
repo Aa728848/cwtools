@@ -927,7 +927,7 @@ module LanguageFeatures =
                 resourceManager.Api.AllEntities()
                 |> Seq.map structFst
                 |> Seq.tryFind (fun x -> x.logicalpath.Replace("\\", "/").Equals(fNorm, StringComparison.OrdinalIgnoreCase))
-                |> Option.map (fun x -> mkRange x.filepath pos0 pos0)
+                |> Option.map (fun x -> x.entity.Position)
             | _ -> None
         | _, _ -> None
 
