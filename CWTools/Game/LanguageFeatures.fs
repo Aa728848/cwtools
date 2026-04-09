@@ -899,37 +899,71 @@ module LanguageFeatures =
         =
         let resource = makeEntityResourceInput fileManager filepath filetext
 
-        match resourceManager.ManualProcessResource resource, infoService with
-        | Some e, Some info ->
-            logDiag (sprintf "getInfo %s %s" (fileManager.ConvertPathToLogicalPath filepath) filepath)
+        let primaryResult =
+            match resourceManager.ManualProcessResource resource, infoService with
+            | Some e, Some info ->
+                logDiag (sprintf "getInfo %s %s" (fileManager.ConvertPathToLogicalPath filepath) filepath)
 
-            match info.GetInfo(pos, e) with
-            | Some(_, (_, Some(LocRef(tv)), _)) ->
-                match
-                    localisationManager.LocalisationEntries()
-                    |> Seq.tryFind (fun (l, _) -> l = lang)
-                with
-                | Some(_, entries) ->
-                    match entries |> Array.tryFind (fun struct (k, _) -> k = tv) with
-                    | Some(_, entry) -> Some entry.position
-                    | _ -> None
-                | None -> None
-            | Some(_, (_, Some(TypeRef(t, tv)), _)) ->
-                lookup.typeDefInfo
-                |> Map.tryFind t
-                |> Option.defaultValue [||]
-                |> Array.tryPick (fun tdi -> if tdi.id = tv then Some tdi.range else None)
-            | Some(_, (_, Some(EnumRef(enumName, enumValue)), _)) ->
-                let enumValues = lookup.enumDefs[enumName] |> snd
-                enumValues |> Array.tryPick (fun (ev, r) -> if ev == enumValue then r else None)
-            | Some(_, (_, Some(FileRef f), _)) ->
-                let fNorm = f.Replace("\\", "/")
-                resourceManager.Api.AllEntities()
-                |> Seq.map structFst
-                |> Seq.tryFind (fun x -> x.logicalpath.Replace("\\", "/").Equals(fNorm, StringComparison.OrdinalIgnoreCase))
-                |> Option.map (fun x -> mkRange x.filepath pos0 pos0)
-            | _ -> None
-        | _, _ -> None
+                match info.GetInfo(pos, e) with
+                | Some(_, (_, Some(LocRef(tv)), _)) ->
+                    match
+                        localisationManager.LocalisationEntries()
+                        |> Seq.tryFind (fun (l, _) -> l = lang)
+                    with
+                    | Some(_, entries) ->
+                        match entries |> Array.tryFind (fun struct (k, _) -> k = tv) with
+                        | Some(_, entry) -> Some entry.position
+                        | _ -> None
+                    | None -> None
+                | Some(_, (_, Some(TypeRef(t, tv)), _)) ->
+                    lookup.typeDefInfo
+                    |> Map.tryFind t
+                    |> Option.defaultValue [||]
+                    |> Array.tryPick (fun tdi -> if tdi.id = tv then Some tdi.range else None)
+                | Some(_, (_, Some(EnumRef(enumName, enumValue)), _)) ->
+                    let enumValues = lookup.enumDefs[enumName] |> snd
+                    enumValues |> Array.tryPick (fun (ev, r) -> if ev == enumValue then r else None)
+                | Some(_, (_, Some(FileRef f), _)) ->
+                    let fNorm = f.Replace("\\", "/")
+                    resourceManager.Api.AllEntities()
+                    |> Seq.map structFst
+                    |> Seq.tryFind (fun x -> x.logicalpath.Replace("\\", "/").Equals(fNorm, StringComparison.OrdinalIgnoreCase))
+                    |> Option.map (fun x -> mkRange x.filepath pos0 pos0)
+                | _ -> None
+            | _, _ -> None
+
+        // Fallback for inline_script files: if primary lookup failed,
+        // extract the word at cursor and search the type registry directly
+        match primaryResult with
+        | Some _ -> primaryResult
+        | None ->
+            let isInlineScript =
+                filepath.Contains("inline_scripts", StringComparison.OrdinalIgnoreCase)
+            if not isInlineScript then None
+            else
+                try
+                    let split = filetext.Split('\n')
+                    let lineIdx = pos.Line - 1
+                    if lineIdx < 0 || lineIdx >= split.Length then None
+                    else
+                        let line = split.[lineIdx]
+                        let col = pos.Column
+                        // Extract word at cursor position
+                        let wordChars c = System.Char.IsLetterOrDigit(c) || c = '_' || c = ':' || c = '.'
+                        let mutable startIdx = col
+                        while startIdx > 0 && wordChars line.[startIdx - 1] do startIdx <- startIdx - 1
+                        let mutable endIdx = col
+                        while endIdx < line.Length && wordChars line.[endIdx] do endIdx <- endIdx + 1
+                        if startIdx >= endIdx then None
+                        else
+                            let word = line.Substring(startIdx, endIdx - startIdx)
+                            // Search all type definitions for a matching identifier
+                            lookup.typeDefInfo
+                            |> Map.toSeq
+                            |> Seq.tryPick (fun (_, infos) ->
+                                infos |> Array.tryPick (fun tdi ->
+                                    if tdi.id = word then Some tdi.range else None))
+                with _ -> None
 
     let findAllRefsFromPos
         (fileManager: FileManager)
@@ -1200,6 +1234,7 @@ module LanguageFeatures =
                                 match scriptFilePath with
                                 | Some scriptFile ->
                                     let scriptContent = System.IO.File.ReadAllText(scriptFile)
+                                    let scriptLines = scriptContent.Split('\n')
                                     // Extract all @[...] expressions from the script
                                     let exprPattern = System.Text.RegularExpressions.Regex(@"@\[([^\]]+)\]")
                                     let exprMatches = exprPattern.Matches(scriptContent)
@@ -1207,12 +1242,56 @@ module LanguageFeatures =
                                     if exprMatches.Count > 0 then
                                         let varValues = getVarValues()
                                         let paramPattern = System.Text.RegularExpressions.Regex(@"\$([A-Za-z0-9_]+)\$")
+                                        let varRefPattern = System.Text.RegularExpressions.Regex(@"@([A-Za-z_][A-Za-z0-9_]*)")
 
                                         let results =
                                             exprMatches
                                             |> Seq.cast<System.Text.RegularExpressions.Match>
                                             |> Seq.choose (fun m ->
                                                 let exprContent = m.Groups.[1].Value.Trim()
+
+                                                // Find the line context (e.g., "min = @[...]" → "min")
+                                                let lineContext =
+                                                    let exprPos = m.Index
+                                                    let mutable charCount = 0
+                                                    let mutable lineNum = -1
+                                                    for li = 0 to scriptLines.Length - 1 do
+                                                        let lineLen = scriptLines.[li].Length + 1 // +1 for \n
+                                                        if charCount <= exprPos && exprPos < charCount + lineLen then
+                                                            lineNum <- li
+                                                        charCount <- charCount + lineLen
+                                                    if lineNum >= 0 && lineNum < scriptLines.Length then
+                                                        let l = scriptLines.[lineNum].Trim()
+                                                        // Extract the key before = @[
+                                                        let eqIdx = l.IndexOf("=")
+                                                        if eqIdx > 0 then l.Substring(0, eqIdx).Trim()
+                                                        else ""
+                                                    else ""
+
+                                                // Collect @variable values used in this expression
+                                                let varRefs =
+                                                    varRefPattern.Matches(exprContent)
+                                                    |> Seq.cast<System.Text.RegularExpressions.Match>
+                                                    |> Seq.choose (fun vm ->
+                                                        let varName = "@" + vm.Groups.[1].Value
+                                                        match varValues |> Map.tryFind varName with
+                                                        | Some v -> Some (varName, fmtDecimal v)
+                                                        | None -> None)
+                                                    |> Seq.distinctBy fst
+                                                    |> Seq.toList
+
+                                                // Collect $PARAM$ values used in this expression
+                                                let paramRefs =
+                                                    paramPattern.Matches(exprContent)
+                                                    |> Seq.cast<System.Text.RegularExpressions.Match>
+                                                    |> Seq.choose (fun pm ->
+                                                        let paramName = pm.Groups.[1].Value
+                                                        match paramMap |> Map.tryFind paramName with
+                                                        | Some value -> Some (sprintf "$%s$" paramName, value)
+                                                        | None -> None)
+                                                    |> Seq.distinctBy fst
+                                                    |> Seq.toList
+
                                                 // Substitute parameters
                                                 let instantiated =
                                                     paramPattern.Matches(exprContent)
@@ -1223,14 +1302,29 @@ module LanguageFeatures =
                                                         | Some value -> expr.Replace(pm.Value, value)
                                                         | None -> expr) exprContent
 
+                                                // Substitute @variables for display
+                                                let fullySubstituted =
+                                                    varRefPattern.Matches(instantiated)
+                                                    |> Seq.cast<System.Text.RegularExpressions.Match>
+                                                    |> Seq.fold (fun (expr: string) vm ->
+                                                        let varName = "@" + vm.Groups.[1].Value
+                                                        match varValues |> Map.tryFind varName with
+                                                        | Some v -> expr.Replace(vm.Value, fmtDecimal v)
+                                                        | None -> expr) instantiated
+
                                                 match evalExpr instantiated varValues with
-                                                | Some v -> Some (exprContent, fmtDecimal v)
+                                                | Some v ->
+                                                    Some (exprContent, lineContext, varRefs, paramRefs, fullySubstituted, fmtDecimal v)
                                                 | None -> None)
                                             |> Seq.toArray
 
                                         if results.Length > 0 then
-                                            let resultStrs = results |> Array.map (fun (expr, res) -> sprintf "- `@[%s]` = **%s**" expr res)
-                                            let allResults = String.concat "\n\n" resultStrs
+                                            let resultStrs =
+                                                results |> Array.map (fun (expr, ctx, vars, parms, subst, res) ->
+                                                    if ctx <> "" then sprintf "**%s** = **%s**" ctx res
+                                                    else sprintf "`@[ %s ]` = **%s**" expr res)
+
+                                            let allResults = String.concat "\n\n---\n\n" resultStrs
                                             foundScript <- Some (path, allResults)
                                 | None -> ()
                             with _ -> ()
@@ -1312,18 +1406,75 @@ module LanguageFeatures =
                                         paramMap <- paramMap |> Map.add m.Groups.[1].Value m.Groups.[2].Value
                         paramMap
 
-                    let resultText =
+                    let varRefPattern = System.Text.RegularExpressions.Regex(@"@([A-Za-z_][A-Za-z0-9_]*)")
+
+                    // Extract the field context from the current line (e.g., "min = @[...]" → "min")
+                    let lineContext =
+                        let trimmed = line.Trim()
+                        let eqIdx = trimmed.IndexOf("=")
+                        if eqIdx > 0 then trimmed.Substring(0, eqIdx).Trim() else ""
+
+                    // Collect @variable values used in this expression
+                    let varRefs =
+                        varRefPattern.Matches(exprContent)
+                        |> Seq.cast<System.Text.RegularExpressions.Match>
+                        |> Seq.choose (fun vm ->
+                            let varName = "@" + vm.Groups.[1].Value
+                            match varValues |> Map.tryFind varName with
+                            | Some v -> Some (varName, fmtDecimal v)
+                            | None -> None)
+                        |> Seq.distinctBy fst
+                        |> Seq.toList
+
+                    // Determine the result with detailed info
+                    let makeDetailedResult (instantiated: string) (callSiteParams: Map<string, string>) =
+                        // Collect $PARAM$ values
+                        let paramRefs =
+                            paramMatches
+                            |> Seq.cast<System.Text.RegularExpressions.Match>
+                            |> Seq.choose (fun pm ->
+                                let paramName = pm.Groups.[1].Value
+                                match callSiteParams |> Map.tryFind paramName with
+                                | Some value -> Some (sprintf "$%s$" paramName, value)
+                                | None -> None)
+                            |> Seq.distinctBy fst
+                            |> Seq.toList
+
+                        // Substitute @variables for display
+                        let fullySubstituted =
+                            varRefPattern.Matches(instantiated)
+                            |> Seq.cast<System.Text.RegularExpressions.Match>
+                            |> Seq.fold (fun (expr: string) vm ->
+                                let varName = "@" + vm.Groups.[1].Value
+                                match varValues |> Map.tryFind varName with
+                                | Some v -> expr.Replace(vm.Value, fmtDecimal v)
+                                | None -> expr) instantiated
+
+                        match evalExpr instantiated varValues with
+                        | Some v ->
+                            let res = fmtDecimal v
+
+                            if lineContext <> "" then sprintf "**%s** = **%s**" lineContext res
+                            else sprintf "`@[ %s ]` = **%s**" exprContent res
+                        | None ->
+                            let unresolved =
+                                paramMatches
+                                |> Seq.cast<System.Text.RegularExpressions.Match>
+                                |> Seq.map (fun m -> m.Groups.[1].Value)
+                                |> Seq.distinct |> Seq.toArray
+                            if unresolved.Length > 0 then
+                                sprintf "`@[ %s ]`\n\n(parameters: %s)" exprContent (String.concat ", " unresolved)
+                            else
+                                sprintf "`@[ %s ]` (could not evaluate)" exprContent
+
+                    let detailedText =
                         if paramMatches.Count = 0 then
                             // No parameters - evaluate directly
-                            match evalExpr exprContent varValues with
-                            | Some v -> sprintf " = %s" (fmtDecimal v)
-                            | None -> " (could not evaluate)"
+                            makeDetailedResult exprContent Map.empty
                         else
                             // Has $PARAM$ placeholders - try to get actual values from call site
                             let callSiteParams = tryGetInlineScriptParams()
-
                             if callSiteParams.Count > 0 then
-                                // Substitute actual parameter values from call site
                                 let instantiated =
                                     paramMatches
                                     |> Seq.cast<System.Text.RegularExpressions.Match>
@@ -1332,31 +1483,26 @@ module LanguageFeatures =
                                         match callSiteParams |> Map.tryFind paramName with
                                         | Some value -> expr.Replace(m.Value, value)
                                         | None -> expr) exprContent
-                                match evalExpr instantiated varValues with
-                                | Some v -> sprintf " = %s" (fmtDecimal v)
-                                | None ->
-                                    // Show which params were substituted
-                                    let paramStrs =
-                                        callSiteParams
-                                        |> Map.toSeq
-                                        |> Seq.map (fun (k, v) -> sprintf "%s=%s" k v)
-                                        |> String.concat ", "
-                                    sprintf " (with %s, could not evaluate)" paramStrs
+                                makeDetailedResult instantiated callSiteParams
                             else
                                 // No call site params found - show template info
                                 let paramNames =
                                     paramMatches
                                     |> Seq.cast<System.Text.RegularExpressions.Match>
                                     |> Seq.map (fun m -> m.Groups.[1].Value)
-                                    |> Seq.distinct
-                                    |> Seq.toArray
-                                sprintf " (parameters: %s)" (String.concat ", " paramNames)
+                                    |> Seq.distinct |> Seq.toArray
+                                let header =
+                                    if lineContext <> "" then sprintf "**%s** = `@[ %s ]`" lineContext exprContent
+                                    else sprintf "`@[ %s ]`" exprContent
+                                let varLines = varRefs |> List.map (fun (name, value) -> sprintf "- `%s` = `%s`" name value)
+                                let paramLines = paramNames |> Array.toList |> List.map (fun p -> sprintf "- `$%s$` — *parameter*" p)
+                                String.concat "\n" ([header; "\n"] @ varLines @ paramLines)
 
                     Some
-                        { name = sprintf "@[ %s ]%s" exprContent resultText
+                        { name = exprContent
                           typename = "expression"
                           localisation = []
-                          ruleDescription = Some (sprintf "Arithmetic expression: @[ %s ]%s" exprContent resultText)
+                          ruleDescription = Some detailedText
                           ruleRequiredScopes = [] }
                 else None
             else None
@@ -1420,6 +1566,27 @@ module LanguageFeatures =
                                 else
                                     None)
                     | None -> "", "", []
+                | Some(FileRef f) ->
+                    // Find the actual file for preview
+                    let fNorm = f.Replace("\\", "/")
+                    let fileEntity =
+                        resourceManager.Api.AllEntities()
+                        |> Seq.map structFst
+                        |> Seq.tryFind (fun x -> x.logicalpath.Replace("\\", "/").Equals(fNorm, StringComparison.OrdinalIgnoreCase))
+                    let previewText =
+                        match fileEntity with
+                        | Some entity ->
+                            try
+                                let content = System.IO.File.ReadAllText(entity.filepath)
+                                let lines = content.Split('\n')
+                                let maxLines = min lines.Length 20
+                                let preview = lines |> Array.take maxLines |> String.concat "\n"
+                                if lines.Length > maxLines then preview + "\n..."
+                                else preview
+                            with _ -> ""
+                        | None -> ""
+                    let displayPath = fNorm.Replace("/", " / ")
+                    f, "inline_script_file", [{ key = "path"; value = displayPath }; { key = "preview"; value = previewText }]
                 | None -> "", "", []
                 | _ -> "", "", []
 

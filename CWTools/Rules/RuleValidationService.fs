@@ -264,6 +264,8 @@ type RuleValidationService
                 text.StartsWith("$") || text.StartsWith("\\[") || text.StartsWith("[[") ||
                 text = "=" || text = "<" || text = ">" || text = "<=" || text = ">=" || text = "!=" || text = "==" || text = "?="
             )
+            || startNode.Nodes |> Seq.exists (fun n -> n.Key.StartsWith("$") && n.Key.EndsWith("$"))
+            || startNode.Leaves |> Seq.exists (fun l -> l.Key.StartsWith("$") && l.Key.EndsWith("$"))
 
         let inline valueFun innerErrors (leaf: Leaf) =
             let key = leaf.Key
@@ -410,6 +412,8 @@ type RuleValidationService
                     text.StartsWith("$") || text.StartsWith("\\[") || text.StartsWith("[[") ||
                     text = "=" || text = "<" || text = ">" || text = "<=" || text = ">=" || text = "!=" || text = "==" || text = "?="
                 )
+                || clause.Nodes |> Seq.exists (fun n -> n.Key.StartsWith("$") && n.Key.EndsWith("$"))
+                || clause.Leaves |> Seq.exists (fun l -> l.Key.StartsWith("$") && l.Key.EndsWith("$"))
             match rule with
             | NodeRule(SpecificField(SpecificValue key), _), opts
             | LeafRule(SpecificField(SpecificValue key), _), opts ->
@@ -693,6 +697,13 @@ type RuleValidationService
         let oldErrors = errors
         let errors = OK
 
+        // When node key is a $PARAM$ variable (e.g., $KEY$ = { hostile = yes }),
+        // don't enforce cardinality on children — we can't statically know the target
+        let enforceCardinality =
+            if node.Key.StartsWith("$") && node.Key.EndsWith("$") && node.Key.Length > 2 then
+                false
+            else
+                enforceCardinality
         let newErrors =
             (match options.requiredScopes with
              | [] -> OK
