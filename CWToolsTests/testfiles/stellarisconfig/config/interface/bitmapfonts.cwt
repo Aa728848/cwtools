@@ -79,6 +79,12 @@ bitmapfont = {
 		## cardinality = 1..inf
 		scalar
 	}
+	## cardinality = 0..1
+	ttf_font = <font>
+	## cardinality = 0..1
+	ttf_size = int
+	## cardinality = 0..1
+	vertical_offset = int
 	#TODO: hex
 	color = scalar
 	## cardinality = 0..1
