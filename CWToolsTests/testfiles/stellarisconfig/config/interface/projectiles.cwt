@@ -7,7 +7,7 @@ types = {
 	}
 	type[planet_killer_animation] = {
 		path = "game/gfx/projectiles/planet_destruction"
-	}
+	} 
 }
 
 #there appear to be differences between different projectile types with beam weapons having specific fields. The problem of defining these
