@@ -258,21 +258,30 @@ type RuleValidationService
         let noderules, leafrules, leafvaluerules, valueclauserules, nodeSpecificDict, leafSpecificDict =
             memoizeRules rules ctx.subtypes
 
+        // 检查当前节点的子元素中是否包含宏/参数模式
+        // 包括完整的 $PARAM$ 键和嵌入式参数（如 event_target:wg_crisis$CURRENT$_country）
         let hasMacro =
             startNode.LeafValues |> Seq.exists (fun lv ->
                 let text = lv.ValueText
                 text.StartsWith("$") || text.StartsWith("\\[") || text.StartsWith("[[") ||
                 text = "=" || text = "<" || text = ">" || text = "<=" || text = ">=" || text = "!=" || text = "==" || text = "?="
             )
-            || startNode.Nodes |> Seq.exists (fun n -> n.Key.StartsWith("$") && n.Key.EndsWith("$"))
-            || startNode.Leaves |> Seq.exists (fun l -> l.Key.StartsWith("$") && l.Key.EndsWith("$"))
+            || startNode.Nodes |> Seq.exists (fun n ->
+                (stringManager.GetMetadataForID n.KeyId.lower).containsDoubleDollar)
+            || startNode.Leaves |> Seq.exists (fun l ->
+                (stringManager.GetMetadataForID l.KeyId.lower).containsDoubleDollar)
 
         let inline valueFun innerErrors (leaf: Leaf) =
             let key = leaf.Key
             let keyIds = leaf.KeyId
 
             let inline createDefault () =
-                if enforceCardinality && not hasMacro && (leaf.Key.[0] <> '@') then
+                // 跳过以 @ 开头的变量引用，以及 key 中包含 $...$ 参数模式的条目
+                // 如果通过 inline_script 参数注入了代码块而变成了 key，则跳过（含有 "=" 或 "{"）或者被替换为空字符串
+                let isExpandedSnippet = key = "" || key.Contains('=') || key.Contains('{') || key.Contains('}')
+                if enforceCardinality && not hasMacro && (leaf.Key.[0] <> '@')
+                   && not isExpandedSnippet
+                   && not (stringManager.GetMetadataForID keyIds.lower).containsDoubleDollar then
                     inv
                         (ErrorCodes.ConfigRulesUnexpectedPropertyNode
                             $"%s{key} is unexpected in %s{startNode.Key}"
@@ -315,7 +324,12 @@ type RuleValidationService
             let keyIds = node.KeyId
 
             let createDefault () =
-                if enforceCardinality && not hasMacro then
+                // 跳过 key 中包含 $...$ 参数模式的条目（如 inline_script 模板中的参数化键）
+                // 同样跳过展开的代码块或被替换为空字符串的参数
+                let isExpandedSnippet = key = "" || key.Contains('=') || key.Contains('{') || key.Contains('}')
+                if enforceCardinality && not hasMacro
+                   && not isExpandedSnippet
+                   && not (stringManager.GetMetadataForID keyIds.lower).containsDoubleDollar then
                     inv
                         (ErrorCodes.ConfigRulesUnexpectedPropertyLeaf
                             $"%s{key} is unexpected in %s{startNode.Key}"
@@ -354,9 +368,16 @@ type RuleValidationService
 
         let inline leafValueFun innerErrors (leafvalue: LeafValue) =
             let createDefault () =
+                // 当通过 inline_script 参数展开复杂代码块（如 A = "give_specimen = { key = tallboy }"）时，
+                // 该代码块在 AST 中会被当作普通字符串（LeafValue）保存，而不是被重新解析为 Node。
+                // 此时，文本中包含 "=" 或 "{"，或者被替换为空字符串，我们应该跳过它是 "unexpected in xx" 的报错。
+                let valText = leafvalue.ValueText
+                let isExpandedSnippet = valText = "" || valText.Contains('=') || valText.Contains('{') || valText.Contains('}')
+                
                 if
                     enforceCardinality
                     && not hasMacro
+                    && not isExpandedSnippet
                     && not (stringManager.GetMetadataForID leafvalue.ValueId.lower).startsWithSquareBracket
                 then
                     inv
@@ -412,8 +433,10 @@ type RuleValidationService
                     text.StartsWith("$") || text.StartsWith("\\[") || text.StartsWith("[[") ||
                     text = "=" || text = "<" || text = ">" || text = "<=" || text = ">=" || text = "!=" || text = "==" || text = "?="
                 )
-                || clause.Nodes |> Seq.exists (fun n -> n.Key.StartsWith("$") && n.Key.EndsWith("$"))
-                || clause.Leaves |> Seq.exists (fun l -> l.Key.StartsWith("$") && l.Key.EndsWith("$"))
+                || clause.Nodes |> Seq.exists (fun n ->
+                    (stringManager.GetMetadataForID n.KeyId.lower).containsDoubleDollar)
+                || clause.Leaves |> Seq.exists (fun l ->
+                    (stringManager.GetMetadataForID l.KeyId.lower).containsDoubleDollar)
             match rule with
             | NodeRule(SpecificField(SpecificValue key), _), opts
             | LeafRule(SpecificField(SpecificValue key), _), opts ->

@@ -255,14 +255,15 @@ module STLEventValidation =
         (globals: Set<string>)
         (events: Node list)
         =
+        let filterParams = Set.filter (fun (s: string) -> not (s.Contains("$")))
         let mutable current =
             events
             |> List.map (fun e ->
                 ((e.TagText "id", e),
-                 findAllSavedEventTargets e,
-                 findAllUsedEventTargets e,
+                 findAllSavedEventTargets e |> filterParams,
+                 findAllUsedEventTargets e |> filterParams,
                  findAllReferencedEvents projects e,
-                 findAllExistsEventTargets e))
+                 findAllExistsEventTargets e |> filterParams))
             //|> List.map (fun (e, s, u, r, x) -> log "%s %A %A %A %A" e.ID s u r x; (e, s, u, r, x))
             //|> (fun f -> log "%A" f; f)
             |> List.map (addScriptedEffectTargets effects)
@@ -459,7 +460,13 @@ module STLEventValidation =
     let getEventChains: LookupValidator<_> =
         fun lu os es ->
             let reffects = lu.effects
-            let events = es.GlobMatchChildren("**/events/*.txt")
+            // 过滤掉 inline_scripts 目录中的文件，因为这些模板文件包含未替换的参数（如 $CURRENT$）
+            // 它们会在被调用者展开时进行参数替换，不应作为独立事件进行验证
+            let events =
+                es.GlobMatchChildren("**/events/*.txt")
+                |> List.filter (fun e ->
+                    let pos = e.Position
+                    not (pos.FileName.Contains("inline_scripts")))
             let eids = events |> List.map (fun e -> e.TagText "id", e) |> Map.ofList
 
             let projects =
