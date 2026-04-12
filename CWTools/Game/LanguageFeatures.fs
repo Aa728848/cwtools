@@ -1155,7 +1155,12 @@ module LanguageFeatures =
 
         let tryGetInlineScriptInfo () =
             if lineIdx >= 0 && lineIdx < split.Length then
-                // Search upward for inline_script block
+                let line = split.[lineIdx]
+                // Only show evaluated expressions when hovering on the "script = ..." key in the block
+                if not (System.Text.RegularExpressions.Regex(@"\bscript\s*=").IsMatch(line)) then
+                    None
+                else
+                    // Search upward for inline_script block
                 let mutable foundScript = None
                 let mutable i = lineIdx
                 let mutable braceDepth = 0
