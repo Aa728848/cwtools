@@ -1,4 +1,4 @@
-﻿namespace CWTools.Parser
+namespace CWTools.Parser
 
 open System.Text
 open CWTools.Process
@@ -86,6 +86,7 @@ module internal SharedParsers =
            '^'
            '&'
            '|'
+           '+'
            magicChar |]
 
     let isAnyOfIdCharArray = isAnyOf idCharArray

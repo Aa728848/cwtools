@@ -504,12 +504,23 @@ module STLEventValidation =
                 let globalScriptedEffects =
                     seffects |> List.collect (fun se -> se.GlobalEventTargets) |> Set.ofList
 
+                // Collect global event targets (save_global_event_target_as) from all effect blocks
+                let globalSavedTargets =
+                    effects
+                    |> List.map findAllSavedGlobalEventTargets
+                    |> List.fold Set.union Set.empty
+
+                // Also collect ALL save_event_target_as from all effect blocks in the workspace.
+                // This prevents false positives when targets are set in on_actions, decisions,
+                // scripted effects, or events outside the current chain.
+                let allSavedTargets =
+                    effects
+                    |> List.map findAllSavedEventTargets
+                    |> List.fold Set.union Set.empty
+
                 let globals =
-                    Set.union
-                        globalScriptedEffects
-                        (effects
-                         |> List.map findAllSavedGlobalEventTargets
-                         |> List.fold Set.union Set.empty)
+                    Set.union globalScriptedEffects globalSavedTargets
+                    |> Set.union allSavedTargets
 
                 let sinits =
                     os.GlobMatchChildren("**\\common\\solar_system_initializers\\**\\*.txt")
