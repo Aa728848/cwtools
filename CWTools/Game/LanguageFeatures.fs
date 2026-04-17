@@ -681,50 +681,128 @@ module LanguageFeatures =
                             scriptName.Split([| '/'; '\\' |]) 
                             |> Array.last
                         
-                        // 遍历所有非inline_scripts的实体,找到调用者
+                        log (sprintf "completion: scriptName='%s', scriptFileName='%s'" scriptName scriptFileName)
+                        
+                        // 检查文件内容是否包含对指定 inline_script 的调用引用
+                        // 支持三种匹配模式：
+                        //   1. 精确匹配：完整路径或文件名出现在文件中
+                        //   2. 参数化路径匹配：将 script 行中的 $PARAM$ 替换为正则通配符后匹配
+                        //      例如 script = components/kuat_template_tech_overwrite_$kuat_tech_overwrite$
+                        //      匹配 → components/kuat_template_tech_overwrite_yes
+                        let fileContainsInlineRef (targetScriptName: string) (targetFileName: string) (fileContent: string) =
+                            let normTarget = targetScriptName.Replace('\\', '/')
+                            // 1. 精确匹配
+                            if fileContent.Contains(normTarget, StringComparison.OrdinalIgnoreCase) ||
+                               fileContent.Contains(normTarget.Replace('/', '\\'), StringComparison.OrdinalIgnoreCase) then
+                                true
+                            elif fileContent.Contains(targetFileName, StringComparison.OrdinalIgnoreCase) then
+                                true
+                            else
+                                // 2. 参数化路径匹配：提取所有 script = xxx 行，将 $..$ 替换为正则通配符后匹配
+                                let scriptLinePattern = System.Text.RegularExpressions.Regex(@"script\s*=\s*([^\s}]+)")
+                                let paramPattern = System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*\$")
+                                let matches = scriptLinePattern.Matches(fileContent)
+                                matches
+                                |> Seq.cast<System.Text.RegularExpressions.Match>
+                                |> Seq.exists (fun m ->
+                                    let callPath = m.Groups.[1].Value.Trim()
+                                    if callPath.Contains("$") then
+                                        // 将 $PARAM$ 替换为 .+ 正则通配符
+                                        let regexStr = paramPattern.Replace(callPath, ".+").Replace('\\', '/')
+                                        try
+                                            let regex = System.Text.RegularExpressions.Regex(
+                                                "^" + System.Text.RegularExpressions.Regex.Escape(regexStr).Replace(@"\.\+", ".+") + "$",
+                                                System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                                            regex.IsMatch(normTarget)
+                                        with _ -> false
+                                    else false)
+                        
+                        // 判断一个实体是否在 inline_scripts 目录
+                        let isInlineScriptEntity (e: Entity) =
+                            e.logicalpath.Contains("common/inline_scripts", StringComparison.OrdinalIgnoreCase) ||
+                            e.logicalpath.Contains("common\\inline_scripts", StringComparison.OrdinalIgnoreCase)
+                        
+                        // 从实体路径中提取 inline_script 相对名称
+                        let extractInlineScriptName (logicalpath: string) =
+                            let pathLower = logicalpath.ToLowerInvariant()
+                            let inlineIdx =
+                                let idx1 = pathLower.IndexOf("common/inline_scripts/")
+                                let idx2 = pathLower.IndexOf("common\\inline_scripts\\")
+                                if idx1 >= 0 then idx1 + "common/inline_scripts/".Length
+                                elif idx2 >= 0 then idx2 + "common\\inline_scripts\\".Length
+                                else -1
+                            if inlineIdx >= 0 && inlineIdx < logicalpath.Length then
+                                Some (logicalpath.Substring(inlineIdx).Replace(".txt", ""))
+                            else None
+                        
                         let allEntities = resourceManager.Api.AllEntities()
                         
-                        // 优先查找component_templates目录下的文件
-                        let callerEntityOpt =
-                            allEntities
-                            |> Seq.filter (fun struct (e, _) ->
-                                // 排除inline_scripts目录
-                                let callerPath = e.logicalpath
-                                not (callerPath.Contains("common/inline_scripts", StringComparison.OrdinalIgnoreCase) ||
-                                     callerPath.Contains("common\\inline_scripts", StringComparison.OrdinalIgnoreCase)))
-                            |> Seq.filter (fun struct (e, _) ->
-                                // 只查找component_templates目录
-                                e.logicalpath.Contains("common/component_templates", StringComparison.OrdinalIgnoreCase) ||
-                                e.logicalpath.Contains("common\\component_templates", StringComparison.OrdinalIgnoreCase))
+                        // 在指定的实体集合中搜索调用者
+                        let findCallerIn (entities: struct (Entity * 'a) seq) (targetName: string) (targetFileName: string) =
+                            entities
                             |> Seq.tryPick (fun struct (e, _) ->
                                 try
                                     let fileContent = System.IO.File.ReadAllText(e.filepath)
-                                    // 检查是否包含脚本文件名
-                                    if fileContent.Contains(scriptFileName, StringComparison.OrdinalIgnoreCase) then
-                                        Some e
-                                    else
-                                        None
+                                    if fileContainsInlineRef targetName targetFileName fileContent then Some e else None
                                 with _ -> None)
-                            |> function
-                               | Some e -> Some e
-                               | None ->
-                                   // 如果component_templates中没找到,扩展搜索所有文件
-                                   allEntities
-                                   |> Seq.filter (fun struct (e, _) ->
-                                       let callerPath = e.logicalpath
-                                       not (callerPath.Contains("common/inline_scripts", StringComparison.OrdinalIgnoreCase) ||
-                                            callerPath.Contains("common\\inline_scripts", StringComparison.OrdinalIgnoreCase)))
-                                   |> Seq.tryPick (fun struct (e, _) ->
-                                       try
-                                           let fileContent = System.IO.File.ReadAllText(e.filepath)
-                                           if fileContent.Contains(scriptFileName, StringComparison.OrdinalIgnoreCase) then
-                                               Some e
-                                           else
-                                               None
-                                       with _ -> None)
+                        
+                        // 递归查找根调用者（非 inline_script 的调用者）
+                        // 当直接调用者是另一个 inline_script 文件时，继续向上追溯
+                        let rec findRootCaller (targetName: string) (targetFileName: string) (visited: Set<string>) =
+                            if visited.Count > 20 then
+                                log "completion: exceeded max recursion depth for caller search"
+                                None
+                            else
+                                let newVisited = visited.Add(targetName.ToLowerInvariant())
+                                // 优先在 component_templates 目录中搜索非 inline_script 调用者
+                                let nonInlineCallerOpt =
+                                    allEntities
+                                    |> Seq.filter (fun struct (e, _) -> not (isInlineScriptEntity e))
+                                    |> Seq.filter (fun struct (e, _) ->
+                                        e.logicalpath.Contains("common/component_templates", StringComparison.OrdinalIgnoreCase) ||
+                                        e.logicalpath.Contains("common\\component_templates", StringComparison.OrdinalIgnoreCase))
+                                    |> findCallerIn <| targetName <| targetFileName
+                                    |> function
+                                       | Some e -> Some e
+                                       | None ->
+                                           // 扩展搜索所有非 inline_script 文件
+                                           allEntities
+                                           |> Seq.filter (fun struct (e, _) -> not (isInlineScriptEntity e))
+                                           |> findCallerIn <| targetName <| targetFileName
+                                
+                                match nonInlineCallerOpt with
+                                | Some e -> Some e
+                                | None ->
+                                    // 在 inline_script 文件中搜索直接调用者（排除自身和已访问的）
+                                    let inlineCallerOpt =
+                                        allEntities
+                                        |> Seq.filter (fun struct (e, _) ->
+                                            isInlineScriptEntity e &&
+                                            not (newVisited.Contains(
+                                                (extractInlineScriptName e.logicalpath |> Option.defaultValue "").ToLowerInvariant())))
+                                        |> findCallerIn <| targetName <| targetFileName
+                                    
+                                    match inlineCallerOpt with
+                                    | Some inlineCaller ->
+                                        log (sprintf "completion: found inline_script caller '%s', searching upward..." inlineCaller.filepath)
+                                        // 直接调用者是 inline_script，递归向上查找根调用者
+                                        match extractInlineScriptName inlineCaller.logicalpath with
+                                        | Some callerScriptName ->
+                                            let callerFileName = callerScriptName.Split([| '/'; '\\' |]) |> Array.last
+                                            match findRootCaller callerScriptName callerFileName newVisited with
+                                            | Some rootCaller -> Some rootCaller
+                                            | None ->
+                                                // 找不到根调用者，使用 inline_script 调用者作为备选
+                                                log "completion: no root caller found, using inline_script caller as fallback"
+                                                Some inlineCaller
+                                        | None -> Some inlineCaller
+                                    | None -> None
+                        
+                        let callerEntityOpt = findRootCaller scriptName scriptFileName Set.empty
                         
                         match callerEntityOpt with
                         | Some callerEntity ->
+                            log (sprintf "completion: found caller '%s'" callerEntity.filepath)
                             // 收集全局变量
                             let globalVars =
                                 try
@@ -743,7 +821,7 @@ module LanguageFeatures =
                                     |> Seq.toList
                                 with _ -> []
 
-                            // 关键修复：使用专用的 CompleteInlineScript 方法
+                            // 使用专用的 CompleteInlineScript 方法
                             // 该方法使用 inline_script 实体的 AST 确定当前光标深度，
                             // 同时使用调用者的 logicalpath 匹配类型规则，
                             // 从而正确处理根层和子层的补全
@@ -751,14 +829,34 @@ module LanguageFeatures =
                             match infoService with
                             | Some info ->
                                 // 使用调用者实体获取 scope 上下文（从调用者的 inline_script 引用位置）
+                                // 支持精确文件名匹配和参数化路径匹配
                                 let callerScopeCtxOpt =
                                     try
                                         let callerFileContent = System.IO.File.ReadAllText(callerEntity.filepath)
                                         let callerLines = callerFileContent.Split([| '\n'; '\r' |], StringSplitOptions.RemoveEmptyEntries)
+                                        let paramPattern = System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*\$")
+                                        let normScriptName = scriptName.Replace('\\', '/')
                                         let mutable inlineScriptLine = -1
                                         for i = 0 to callerLines.Length - 1 do
-                                            if inlineScriptLine = -1 && callerLines.[i].Contains(scriptFileName, StringComparison.OrdinalIgnoreCase) then
-                                                inlineScriptLine <- i
+                                            if inlineScriptLine = -1 then
+                                                let line = callerLines.[i]
+                                                // 精确文件名匹配
+                                                if line.Contains(scriptFileName, StringComparison.OrdinalIgnoreCase) then
+                                                    inlineScriptLine <- i
+                                                else
+                                                    // 参数化路径匹配
+                                                    let scriptLinePattern = System.Text.RegularExpressions.Regex(@"script\s*=\s*([^\s}]+)")
+                                                    let m = scriptLinePattern.Match(line)
+                                                    if m.Success && m.Groups.[1].Value.Contains("$") then
+                                                        let callPath = m.Groups.[1].Value.Trim()
+                                                        let regexStr = paramPattern.Replace(callPath, ".+").Replace('\\', '/')
+                                                        try
+                                                            let regex = System.Text.RegularExpressions.Regex(
+                                                                "^" + System.Text.RegularExpressions.Regex.Escape(regexStr).Replace(@"\.\+", ".+") + "$",
+                                                                System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                                                            if regex.IsMatch(normScriptName) then
+                                                                inlineScriptLine <- i
+                                                        with _ -> ()
                                         if inlineScriptLine >= 0 then
                                             let callerPos = mkPos (inlineScriptLine + 1) (callerLines.[inlineScriptLine].Length)
                                             info.GetInfo(callerPos, callerEntity) |> Option.map fst

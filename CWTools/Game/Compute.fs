@@ -77,18 +77,26 @@ module EU4 =
                         | _ -> s  // 没有缺省值，使用整个字符串
                     paramName :: acc
                 else acc) acc
-        // let split = s.Split([|'$'|],3)
-        // if split.Length = 3 then split.[1]::acc else acc
+        // 提取 [[PARAM] 和 [[!PARAM] 条件块中的参数名
+        let getBracketText (s: string) acc =
+            if s.StartsWith("[[") then
+                let inner = s.Substring(2).TrimEnd([| ']'; ' ' |])
+                let paramName = if inner.StartsWith("!") then inner.Substring(1).Trim() else inner.Trim()
+                if paramName.Length > 0 && System.Char.IsLetterOrDigit(paramName.[0]) then
+                    paramName :: acc
+                else acc
+            else acc
+        let extractText (s: string) acc = getDollarText s (getBracketText s acc)
         let fNode =
             (fun (x: Node) acc ->
-                let nodeRes = getDollarText x.Key acc
+                let nodeRes = extractText x.Key acc
 
                 let leafRes =
                     x.Leaves
-                    |> Seq.fold (fun a n -> getDollarText n.Key (getDollarText (n.Value.ToRawString()) a)) nodeRes
+                    |> Seq.fold (fun a n -> extractText n.Key (extractText (n.Value.ToRawString()) a)) nodeRes
 
                 x.LeafValues
-                |> Seq.fold (fun a n -> getDollarText (n.ValueText) a) leafRes)
+                |> Seq.fold (fun a n -> extractText (n.ValueText) a) leafRes)
 
         node |> (foldNode7 fNode) |> List.ofSeq
 
@@ -298,18 +306,26 @@ module Jomini =
                         | _ -> s  // 没有缺省值，使用整个字符串
                     paramName :: acc
                 else acc) acc
-        // let split = s.Split([|'$'|],3)
-        // if split.Length = 3 then split.[1]::acc else acc
+        // 提取 [[PARAM] 和 [[!PARAM] 条件块中的参数名
+        let getBracketText (s: string) acc =
+            if s.StartsWith("[[") then
+                let inner = s.Substring(2).TrimEnd([| ']'; ' ' |])
+                let paramName = if inner.StartsWith("!") then inner.Substring(1).Trim() else inner.Trim()
+                if paramName.Length > 0 && System.Char.IsLetterOrDigit(paramName.[0]) then
+                    paramName :: acc
+                else acc
+            else acc
+        let extractText (s: string) acc = getDollarText s (getBracketText s acc)
         let fNode =
             (fun (x: Node) acc ->
-                let nodeRes = getDollarText x.Key acc
+                let nodeRes = extractText x.Key acc
 
                 let leafRes =
                     x.Leaves
-                    |> Seq.fold (fun a n -> getDollarText n.Key (getDollarText (n.Value.ToRawString()) a)) nodeRes
+                    |> Seq.fold (fun a n -> extractText n.Key (extractText (n.Value.ToRawString()) a)) nodeRes
 
                 x.LeafValues
-                |> Seq.fold (fun a n -> getDollarText (n.ValueText) a) leafRes)
+                |> Seq.fold (fun a n -> extractText (n.ValueText) a) leafRes)
 
         node |> (foldNode7 fNode) |> List.ofSeq
 
