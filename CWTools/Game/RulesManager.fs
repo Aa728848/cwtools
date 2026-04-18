@@ -414,22 +414,26 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
         let processLoc, validateLoc = settings.locFunctions lookup
 
-        // Collect global scripted variables from all common/scripted_variables/*.txt files
+        // Collect global scripted variables with their actual values from all entities
         let allEntitiesList = resources.AllEntities() |> Seq.toList
 
-        let globalScriptVariables =
+        let globalScriptVariablesWithValues =
             allEntitiesList
-            |> Seq.choose (fun struct (e, _) -> Some e.entity)
-            |> Seq.collect (fun entity ->
-                CWTools.Validation.Stellaris.STLValidation.getDefinedVariables entity)
-            |> Seq.filter (fun v -> not (v.StartsWith("@[")) && not (v.StartsWith(@"@\[")))  // 过滤掉表达式
-            |> Seq.distinct
+            |> Seq.collect (fun struct (e, _) ->
+                e.entity.Leaves
+                |> Seq.choose (fun leaf ->
+                    if leaf.Key.StartsWith("@") && not (leaf.Key.StartsWith("@[")) && not (leaf.Key.StartsWith(@"@\[")) then
+                        Some (leaf.Key, leaf.Value.ToRawString())
+                    else None))
+            |> Seq.distinctBy fst
             |> Seq.toList
 
-        // Store in lookup for later use
-        lookup.scriptedVariables <-
-            globalScriptVariables
-            |> List.map (fun v -> (v, "1"))
+        // Also collect variable names for CompletionService (needs name-only list)
+        let globalScriptVariables =
+            globalScriptVariablesWithValues |> List.map fst
+
+        // Store in lookup for later use (with actual values)
+        lookup.scriptedVariables <- globalScriptVariablesWithValues
 
         let completionService =
             CompletionService(
