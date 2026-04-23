@@ -227,7 +227,7 @@ type ErrorCodes =
     static member InvalidLocCommand =
         fun (thisLoc: string) (command: string) ->
             { ID = "CW226"
-              Severity = Severity.Error
+              Severity = Severity.Information
               Message = sprintf "Localisation key \"%s\" uses command \"%s\" which doesn't exist" thisLoc command }
 
     static member UnknownSectionTemplate =

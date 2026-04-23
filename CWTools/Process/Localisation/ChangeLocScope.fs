@@ -161,9 +161,13 @@ module ChangeLocScope =
                 if inVariable then
                     variableCommandMatch ()
                 else
-                    onetooneMatch ()
-                    |> Option.orElseWith effectMatch
-                    |> Option.defaultWith commandMatch
+                    match onetooneMatch () |> Option.orElseWith effectMatch with
+                    | Some res -> res
+                    | None ->
+                        match commandMatch () with
+                        | LocNotFound _ when nextKey.StartsWith "'" -> LocContextResult.Found "concept"
+                        | LocNotFound _ when nextKey.Contains "_" || System.Char.IsLower(nextKey.[0]) -> LocContextResult.Found "variable_fallback"
+                        | res -> res
 
             let locKeyFolder (result: LocContextResult) (nextKey: string) =
                 match result with
