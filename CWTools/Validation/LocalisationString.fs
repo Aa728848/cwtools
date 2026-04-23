@@ -100,22 +100,22 @@ module LocalisationString =
                     r |> seq |> Seq.exists (fun c -> Char.IsLower(c))
                     && not (List.contains r hardcodedLocalisation)
                 with
-            | true ->
-                let firstSpace = r.IndexOf ' '
-                let lastSpace = r.LastIndexOf ' '
+                | true ->
+                    let firstSpace = r.IndexOf ' '
+                    let lastSpace = r.LastIndexOf ' '
 
-                if firstSpace <> -1 && lastSpace <> -1 && firstSpace <> lastSpace then
-                    OK
-                else
-                    Invalid(
-                        Guid.NewGuid(),
-                        [ invManual
-                              (ErrorCodes.UndefinedLocReference entry.key r (lang :> obj))
-                              entry.position
-                              entry.key
-                              None ]
-                    )
-            | false -> OK
+                    if firstSpace <> -1 && lastSpace <> -1 && firstSpace <> lastSpace then
+                        OK
+                    else
+                        Invalid(
+                            Guid.NewGuid(),
+                            [ invManual
+                                  (ErrorCodes.UndefinedLocReference entry.key r (lang :> obj))
+                                  entry.position
+                                  entry.key
+                                  None ]
+                        )
+                | false -> OK
 
     /// Given a set of localisation APIs, validates them.
     /// Checks quotes, localisation command chains, localisation references
