@@ -257,6 +257,12 @@ module ChangeLocScope =
                     else
                         None
 
+                let conceptMatch () =
+                    if nextKey.StartsWith "'" && nextKey.EndsWith "'" then
+                        Some(Found "concept")
+                    else
+                        None
+
                 let res =
                     match first with
                     | true ->
@@ -264,7 +270,8 @@ module ChangeLocScope =
                          |> Option.orElse (savedScopedMatch ())
                          |> Option.orElse (promoteMatch ())
                          |> Option.orElse (globalFunctionMatch ())
-                         |> Option.orElse (rawTypeMatch ()))
+                         |> Option.orElse (rawTypeMatch ())
+                         |> Option.orElse (conceptMatch ()))
                     | false -> functionMatch ()
 
                 res

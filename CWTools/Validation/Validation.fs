@@ -220,7 +220,7 @@ type ErrorCodes =
     static member UndefinedLocReference =
         fun (thisLoc: string) (otherLoc: string) language ->
             { ID = "CW225"
-              Severity = Severity.Error
+              Severity = Severity.Information
               Message =
                 sprintf "Localisation key \"%s\" references \"%s\" which doesn't exist in %O" thisLoc otherLoc language }
 

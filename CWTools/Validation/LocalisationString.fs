@@ -93,10 +93,13 @@ module LocalisationString =
             else
                 OK
         | false ->
-            match
-                r |> seq |> Seq.exists (fun c -> Char.IsLower(c))
-                && not (List.contains r hardcodedLocalisation)
-            with
+            if r.StartsWith("var_") || r.StartsWith("event_target:") || r.StartsWith("parameter:") || r.Contains("_planet") || r.Contains("_system") || r.Contains("_country") then
+                OK
+            else
+                match
+                    r |> seq |> Seq.exists (fun c -> Char.IsLower(c))
+                    && not (List.contains r hardcodedLocalisation)
+                with
             | true ->
                 let firstSpace = r.IndexOf ' '
                 let lastSpace = r.LastIndexOf ' '
