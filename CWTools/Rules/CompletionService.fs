@@ -135,19 +135,30 @@ type CompletionService
     let varSet =
         varMap.TryFind "variable" |> Option.defaultValue (PrefixOptimisedStringSet())
 
+    // Cached result of getAllKeysInFile to avoid repeated full-AST traversals.
+    // The cache is keyed by reference identity of the root Node object.
+    let mutable cachedAllKeysRoot: Node = Unchecked.defaultof<Node>
+    let mutable cachedAllKeysResult: string list = []
+
     let getAllKeysInFile (root: Node) =
-        let fNode =
-            (fun (x: Node) acc ->
-                let withValues =
-                    x.Leaves |> Seq.fold (fun a leaf -> leaf.Key :: leaf.ValueText :: a) acc
+        if Object.ReferenceEquals(root, cachedAllKeysRoot) then
+            cachedAllKeysResult
+        else
+            let fNode =
+                (fun (x: Node) acc ->
+                    let withValues =
+                        x.Leaves |> Seq.fold (fun a leaf -> leaf.Key :: leaf.ValueText :: a) acc
 
-                let withBoth =
-                    x.LeafValues
-                    |> Seq.fold (fun a leafvalue -> leafvalue.ValueText :: a) withValues
+                    let withBoth =
+                        x.LeafValues
+                        |> Seq.fold (fun a leafvalue -> leafvalue.ValueText :: a) withValues
 
-                x.Key :: withBoth)
+                    x.Key :: withBoth)
 
-        foldNode7 fNode root
+            let result = foldNode7 fNode root
+            cachedAllKeysRoot <- root
+            cachedAllKeysResult <- result
+            result
 
     let fieldToCompletionList (field: NewField) =
         match field with
@@ -390,18 +401,51 @@ type CompletionService
 
 
     // | LeafValue
+    /// Binary search helper: find the element in a sorted-by-position array
+    /// whose range contains the given position. Returns None if not found.
+    let tryFindByPosBinary (pos: pos) (arr: 'a array) (getRange: 'a -> range) =
+        if arr.Length = 0 then None
+        else
+            // Binary search: find the last element whose StartLine <= pos.Line
+            let mutable lo = 0
+            let mutable hi = arr.Length - 1
+            let mutable result = -1
+            while lo <= hi do
+                let mid = lo + (hi - lo) / 2
+                let r = getRange arr.[mid]
+                if r.StartLine <= pos.Line then
+                    result <- mid
+                    lo <- mid + 1
+                else
+                    hi <- mid - 1
+            // Check the candidate and its neighbors (to handle same-line elements)
+            if result >= 0 then
+                // Check result and a few neighbors to handle elements on the same line
+                let startIdx = max 0 (result - 1)
+                let endIdx = min (arr.Length - 1) (result + 1)
+                let mutable found = None
+                for i = startIdx to endIdx do
+                    if found.IsNone then
+                        let r = getRange arr.[i]
+                        if rangeContainsPos r pos then
+                            found <- Some arr.[i]
+                found
+            else None
+
     let rec getRulePath
         (pos: pos)
         (stack: (string * int * string option * CompletionContext * string option) list)
         (node: IClause)
         =
-        //log "grp %A %A %A" pos stack (node.Children |> List.map (fun f -> f.ToRaw))
         let countChildren (n2: IClause) (key: string) =
             n2.Nodes |> Seq.sumBy (fun c -> if c.Key == key then 1 else 0)
 
-        match node.Nodes |> Seq.tryFind (fun c -> rangeContainsPos c.Position pos) with
+        // Use array + binary search instead of Seq.tryFind for O(log n) lookup
+        let nodesArr = node.AllArray
+        let nodeChildren =
+            nodesArr |> Array.choose (function | NodeC n -> Some n | _ -> None)
+        match tryFindByPosBinary pos nodeChildren (fun c -> c.Position) with
         | Some c ->
-            //            log (sprintf "%s %A %A" c.Key c.Position pos)
             match
                 (c.Position.StartLine = pos.Line)
                 && ((c.Position.StartColumn + c.Key.Length + 1) > pos.Column)
@@ -409,15 +453,20 @@ type CompletionService
             | true -> getRulePath pos ((c.Key, countChildren node c.Key, None, NodeLHS, c.KeyPrefix) :: stack) c
             | false -> getRulePath pos ((c.Key, countChildren node c.Key, None, NodeRHS, c.KeyPrefix) :: stack) c
         | None ->
-            /// This handles LHS vs RHS beacuse LHS gets an "x" inserted into it, so fails to match any rules
-            match node.Leaves |> Seq.tryFind (fun l -> rangeContainsPos l.Position pos) with
+            let leafChildren =
+                nodesArr |> Array.choose (function | LeafC l -> Some l | _ -> None)
+            match tryFindByPosBinary pos leafChildren (fun l -> l.Position) with
             | Some l ->
-                // SHould be <, but for some reason it isn't
                 match l.Position.StartColumn + l.Key.Length + 1 > pos.Column with
                 | true -> (l.Key, countChildren node l.Key, Some l.Key, LeafLHS, None) :: stack
                 | false -> (l.Key, countChildren node l.Key, Some l.ValueText, LeafRHS, None) :: stack
             | None ->
-                match node.Clauses |> Seq.tryFind (fun c -> rangeContainsPos c.Position pos) with
+                let clauseChildren =
+                    nodesArr |> Array.choose (function
+                        | ValueClauseC vc -> Some (vc :> IClause)
+                        | NodeC n -> Some (n :> IClause)
+                        | _ -> None)
+                match tryFindByPosBinary pos clauseChildren (fun c -> c.Position) with
                 | Some vc ->
                     match
                         (vc.Position.StartLine = pos.Line)

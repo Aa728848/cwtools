@@ -322,6 +322,12 @@ module internal FieldValidators =
         errors
         =
         let key = trimQuote (getOriginalKey ids)
+        let key =
+            if key.StartsWith("text:", StringComparison.OrdinalIgnoreCase) then key.Substring(5)
+            elif key.StartsWith("desc:", StringComparison.OrdinalIgnoreCase) then key.Substring(5)
+            elif key.StartsWith("background:", StringComparison.OrdinalIgnoreCase) then key.Substring(11)
+            elif key.StartsWith("icon:", StringComparison.OrdinalIgnoreCase) then key.Substring(5)
+            else key
 
         match synced, isInline with
         | true, false ->
@@ -366,6 +372,12 @@ module internal FieldValidators =
         match typesMap.TryFind fieldType with
         | Some values ->
             let value = trimQuote key
+            let value =
+                if value.StartsWith("text:", StringComparison.OrdinalIgnoreCase) then value.Substring(5)
+                elif value.StartsWith("desc:", StringComparison.OrdinalIgnoreCase) then value.Substring(5)
+                elif value.StartsWith("background:", StringComparison.OrdinalIgnoreCase) then value.Substring(11)
+                elif value.StartsWith("icon:", StringComparison.OrdinalIgnoreCase) then value.Substring(5)
+                else value
 
             if firstCharEqualsAmp ids.lower then
                 errors
@@ -416,6 +428,12 @@ module internal FieldValidators =
         match typesMap.TryFindV fieldType with
         | ValueSome values ->
             let value = trimQuote key
+            let value =
+                if value.StartsWith("text:", StringComparison.OrdinalIgnoreCase) then value.Substring(5)
+                elif value.StartsWith("desc:", StringComparison.OrdinalIgnoreCase) then value.Substring(5)
+                elif value.StartsWith("background:", StringComparison.OrdinalIgnoreCase) then value.Substring(11)
+                elif value.StartsWith("icon:", StringComparison.OrdinalIgnoreCase) then value.Substring(5)
+                else value
 
             if firstCharEqualsAmp ids.lower then
                 true
@@ -669,8 +687,6 @@ module internal FieldValidators =
             | ValueSome f, _, _ when isInt -> inv ErrorCodes.ConfigRulesVariableIntOnly leafornode <&&&> errors
             | _, _, VarFound -> errors
             | _, _, VarNotFound s -> inv (ErrorCodes.ConfigRulesUnsetVariable s) leafornode <&&&> errors
-            //TODO: Better error messages for scope instead of variable
-            // |NewScope ({Scopes = current::_} ,_) -> if current = s || s = anyScope || current = anyScope then OK else Invalid (Guid.NewGuid(), [inv (ErrorCodes.ConfigRulesTargetWrongScope (current.ToString()) (s.ToString())) leafornode])
             | _, _, ScopeResult.WrongScope(command, prevscope, expected, refHint) ->
                 Invalid(
                     Guid.NewGuid(),
@@ -679,9 +695,8 @@ module internal FieldValidators =
                           leafornode ]
                 )
             | _, _, NotFound -> inv ErrorCodes.ConfigRulesExpectedVariableValue leafornode <&&&> errors
-            //        |_, _, WrongScope (command, prevscope, expected) ->
             | _ ->
-                inv (ErrorCodes.CustomError "Expecting a variable, but got a scope" Severity.Error) leafornode
+                inv (ErrorCodes.CustomError "Expecting a variable, but got a scope" Severity.Information) leafornode
                 <&&&> errors
 
     let checkVariableFieldNE
@@ -759,9 +774,6 @@ module internal FieldValidators =
         | _, _, _, VarFound -> errors
         | _, _, _, VarNotFound s -> inv (ErrorCodes.ConfigRulesUnsetVariable s) leafornode <&&&> errors
         | _, _, _, ValueFound _ -> errors
-        //TODO: Better error messages for scope instead of variable
-        // |NewScope ({Scopes = current::_} ,_) -> if current = s || s = anyScope || current = anyScope then OK else Invalid (Guid.NewGuid(), [inv (ErrorCodes.ConfigRulesTargetWrongScope (current.ToString()) (s.ToString())) leafornode])
-        // |WrongScope (command, prevscope, expected) -> Invalid (Guid.NewGuid(), [inv (ErrorCodes.ConfigRulesErrorInTarget command (prevscope.ToString()) (sprintf "%A" expected) ) leafornode])
         | _, _, _, ScopeResult.WrongScope(command, prevscope, expected, refHint) ->
             inv (ErrorCodes.ConfigRulesErrorInTarget command (prevscope.ToString()) $"%A{expected}") leafornode
             <&&&> errors
@@ -774,7 +786,7 @@ module internal FieldValidators =
                     inv ErrorCodes.ConfigRulesExpectedVariableValue leafornode <&&&> errors
             | None -> inv ErrorCodes.ConfigRulesExpectedVariableValue leafornode <&&&> errors
         | _ ->
-            inv (ErrorCodes.CustomError "Expecting a variable, but got a scope" Severity.Error) leafornode
+            inv (ErrorCodes.CustomError "Expecting a variable, but got a scope" Severity.Information) leafornode
             <&&&> errors
 
     let checkValueScopeFieldNE
@@ -810,9 +822,6 @@ module internal FieldValidators =
             | Some(_, es) -> es.Contains(trimQuoteSpan key)
             | None -> false
 
-        // |NewScope ({Scopes = current::_} ,_) -> if current = s || s = anyScope || current = anyScope then OK else Invalid (Guid.NewGuid(), [inv (ErrorCodes.ConfigRulesTargetWrongScope (current.ToString()) (s.ToString())) leafornode])
-        // |NotFound _ -> Invalid (Guid.NewGuid(), [inv (ErrorCodes.ConfigRulesInvalidTarget (s.ToString())) leafornode])
-        // |WrongScope (command, prevscope, expected) -> Invalid (Guid.NewGuid(), [inv (ErrorCodes.ConfigRulesErrorInTarget command (prevscope.ToString()) (sprintf "%A" expected) ) leafornode])
         | _ -> false
 
     let checkAliasValueKeysField

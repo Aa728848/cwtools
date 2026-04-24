@@ -1,6 +1,7 @@
 namespace CWTools.Games
 
 open System
+open System.Collections.Concurrent
 open CWTools.Utilities.Position
 open System.IO
 open Files
@@ -11,6 +12,11 @@ open CWTools.Common
 open CWTools.Parser
 
 module LanguageFeatures =
+
+    /// Cache for ManualProcessResource results. Key: filepath, Value: (content_hash, Entity).
+    /// Avoids re-parsing the entire file on every completion/hover/goto request
+    /// when the file content hasn't changed.
+    let private completionEntityCache = ConcurrentDictionary<string, struct (int * Entity)>()
 
     let getNodeForTypeDefAndType
         (resourceManager: ResourceManager<_>)
@@ -87,7 +93,26 @@ module LanguageFeatures =
                     s)
             |> String.concat "\n"
 
-        let resource = makeEntityResourceInput fileManager filepath filetext
+        // Use cached Entity when file content hasn't changed to avoid expensive re-parsing.
+        // The filetext here already has the magic char inserted at cursor position,
+        // so we hash the modified text (it changes on every cursor move, but stays
+        // stable for TriggerForIncompleteCompletions re-requests at the same position).
+        let contentHash = filetext.GetHashCode()
+        let resource = lazy (makeEntityResourceInput fileManager filepath filetext)
+        let cachedEntityOpt =
+            match completionEntityCache.TryGetValue(filepath) with
+            | true, struct (cachedHash, cachedEntity) when cachedHash = contentHash ->
+                Some cachedEntity
+            | _ -> None
+        let processResourceCached () =
+            match cachedEntityOpt with
+            | Some e -> Some e
+            | None ->
+                match resourceManager.ManualProcessResource (resource.Value) with
+                | Some e ->
+                    completionEntityCache.[filepath] <- struct (contentHash, e)
+                    Some e
+                | None -> None
 
         // 检测当前文件是否是 inline_script 文件
         let isInlineScriptFile =
@@ -674,7 +699,7 @@ module LanguageFeatures =
                         else
                             None
                     
-                    match inlineScriptNameOpt, resourceManager.ManualProcessResource resource with
+                    match inlineScriptNameOpt, processResourceCached () with
                     | Some scriptName, Some inlineEntity ->
                         // 提取脚本的文件名部分(最后一部分)用于搜索
                         let scriptFileName = 
@@ -894,84 +919,27 @@ module LanguageFeatures =
                         log "completion: missing required info for inline_script"
                         []
                 else
-                    // 辅助函数:动态收集全局 scripted variables
-                    // 直接从文件系统读取 scripted_variables 文件
+                    // 辅助函数:从 ResourceManager 已缓存的实体中收集全局 scripted variables
+                    // 避免文件 I/O 和重复解析，直接使用已加载的实体数据
                     let getGlobalScriptVars () =
                         try
-                            // 从当前文件路径推断出 mod/游戏根目录
-                            let currentDir = System.IO.Path.GetDirectoryName(filepath)
-                            
-                            // 向上查找 common 目录的父目录(即 mod 根目录)
-                            let rec findModRoot dir =
-                                if System.String.IsNullOrEmpty(dir) then None
-                                else
-                                    let dirName = System.IO.Path.GetFileName(dir)
-                                    if dirName = "common" || dirName = "events" || dirName = "interface" then
-                                        Some(System.IO.Path.GetDirectoryName(dir))
-                                    else
-                                        findModRoot (System.IO.Path.GetDirectoryName(dir))
-                            
-                            match findModRoot currentDir with
-                            | None -> []
-                            | Some modRoot ->
-                                // 搜索 mod 根目录下的 common/scripted_variables
-                                let svPath = System.IO.Path.Combine(modRoot, "common", "scripted_variables")
-                                
-                                if not (System.IO.Directory.Exists(svPath)) then
-                                    // 可能在游戏本体或其他 mod 中
-                                    let gameRoot = System.IO.Path.GetDirectoryName(modRoot)
-                                    if System.String.IsNullOrEmpty(gameRoot) then
-                                        []
-                                    else
-                                        let modDir = System.IO.Path.Combine(gameRoot, "mod")
-                                        if not (System.IO.Directory.Exists(modDir)) then
-                                            []
-                                        else
-                                            let mutable allVars = []
-                                            let modFolders = System.IO.Directory.GetDirectories(modDir)
-                                            
-                                            for modFolder in modFolders do
-                                                let modSVPath = System.IO.Path.Combine(modFolder, "common", "scripted_variables")
-                                                if System.IO.Directory.Exists(modSVPath) then
-                                                    let files = System.IO.Directory.GetFiles(modSVPath, "*.txt", System.IO.SearchOption.AllDirectories)
-                                                    
-                                                    for file in files do
-                                                        try
-                                                            // 使用 FileManager 创建 EntityResourceInput
-                                                            let input = makeEntityResourceInput fileManager file (System.IO.File.ReadAllText(file))
-                                                            match resourceManager.ManualProcessResource input with
-                                                            | Some entity ->
-                                                                let vars = CWTools.Validation.Stellaris.STLValidation.getDefinedVariables entity.entity
-                                                                            |> List.filter (fun v -> not (v.StartsWith("@[")) && not (v.StartsWith(@"@\[")))
-                                                                allVars <- vars @ allVars
-                                                            | _ -> ()
-                                                        with _ -> ()
-                                            
-                                            allVars |> List.distinct
-                                else
-                                    let files = System.IO.Directory.GetFiles(svPath, "*.txt", System.IO.SearchOption.AllDirectories)
-                                    
-                                    files
-                                    |> Array.map (fun file ->
-                                        try
-                                            let input = makeEntityResourceInput fileManager file (System.IO.File.ReadAllText(file))
-                                            match resourceManager.ManualProcessResource input with
-                                            | Some entity ->
-                                                CWTools.Validation.Stellaris.STLValidation.getDefinedVariables entity.entity
-                                                |> List.filter (fun v -> not (v.StartsWith("@[")) && not (v.StartsWith(@"@\[")))
-                                            | _ -> []
-                                        with _ -> [])
-                                    |> Array.toList
-                                    |> List.collect id
-                                    |> List.distinct
-                        with ex -> 
-                            []
+                            resourceManager.Api.AllEntities()
+                            |> Seq.choose (fun struct (e, _) ->
+                                if e.filepath.Contains("scripted_variables", StringComparison.OrdinalIgnoreCase) ||
+                                   e.logicalpath.Contains("scripted_variables", StringComparison.OrdinalIgnoreCase) then
+                                    Some e.entity
+                                else None)
+                            |> Seq.collect CWTools.Validation.Stellaris.STLValidation.getDefinedVariables
+                            |> Seq.filter (fun v -> not (v.StartsWith("@[")) && not (v.StartsWith(@"@\[")))
+                            |> Seq.distinct
+                            |> Seq.toList
+                        with _ -> []
                     
                     let globalVars = getGlobalScriptVars ()
                     
                     // 使用常规补全逻辑
                     match
-                        Path.GetExtension filepath, resourceManager.ManualProcessResource resource, completionService, infoService
+                        Path.GetExtension filepath, processResourceCached (), completionService, infoService
                     with
                     | ".yml", _, Some completion, _ -> completion.LocalisationComplete(pos, filetext) |> List.ofArray
                     | _, Some e, Some completion, Some info ->

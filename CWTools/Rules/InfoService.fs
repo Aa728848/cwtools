@@ -777,21 +777,29 @@ type InfoService
                         None
                 | None -> None
 
+        let trimPrefixes (s: string) =
+            let s = s.Trim('"')
+            if s.StartsWith("text:", StringComparison.OrdinalIgnoreCase) then s.Substring(5)
+            elif s.StartsWith("desc:", StringComparison.OrdinalIgnoreCase) then s.Substring(5)
+            elif s.StartsWith("background:", StringComparison.OrdinalIgnoreCase) then s.Substring(11)
+            elif s.StartsWith("icon:", StringComparison.OrdinalIgnoreCase) then s.Substring(5)
+            else s
+
         let fLeaf (ctx: RuleContext, _) (leaf: Leaf) ((field, o): NewRule) =
             match o.typeHint, field with
-            | Some(t, true), _ -> ctx, (Some o, Some(TypeRef(t, leaf.Key)), Some(LeafC leaf))
-            | Some(t, false), _ -> ctx, (Some o, Some(TypeRef(t, leaf.ValueText)), Some(LeafC leaf))
+            | Some(t, true), _ -> ctx, (Some o, Some(TypeRef(t, trimPrefixes leaf.Key)), Some(LeafC leaf))
+            | Some(t, false), _ -> ctx, (Some o, Some(TypeRef(t, trimPrefixes leaf.ValueText)), Some(LeafC leaf))
             | _, LeafRule(_, TypeField(TypeType.Simple t)) ->
-                ctx, (Some o, Some(TypeRef(t, leaf.ValueText)), Some(LeafC leaf))
-            | _, LeafRule(_, LocalisationField _) -> ctx, (Some o, Some(LocRef(leaf.ValueText)), Some(LeafC leaf))
+                ctx, (Some o, Some(TypeRef(t, trimPrefixes leaf.ValueText)), Some(LeafC leaf))
+            | _, LeafRule(_, LocalisationField _) -> ctx, (Some o, Some(LocRef(trimPrefixes leaf.ValueText)), Some(LeafC leaf))
             | _, LeafRule(_, FilepathField(Some pre, Some ext)) ->
-                ctx, (Some o, Some(FileRef(pre + leaf.ValueText + ext)), Some(LeafC leaf))
+                ctx, (Some o, Some(FileRef(pre + (trimPrefixes leaf.ValueText) + ext)), Some(LeafC leaf))
             | _, LeafRule(TypeField(TypeType.Simple t), _) ->
-                ctx, (Some o, Some(TypeRef(t, leaf.Key)), Some(LeafC leaf))
+                ctx, (Some o, Some(TypeRef(t, trimPrefixes leaf.Key)), Some(LeafC leaf))
             | _, _ when leaf.Key = "inline_script" || leaf.Key = "script" ->
-                let value = leaf.ValueText.Trim('"')
+                let value = trimPrefixes leaf.ValueText
                 ctx, (Some o, Some(FileRef("common/inline_scripts/" + value + ".txt")), Some(LeafC leaf))
-            | _, LeafRule(LocalisationField _, _) -> ctx, (Some o, Some(LocRef(leaf.Key)), Some(LeafC leaf))
+            | _, LeafRule(LocalisationField _, _) -> ctx, (Some o, Some(LocRef(trimPrefixes leaf.Key)), Some(LeafC leaf))
             | _, LeafRule(_, ScopeField _) ->
                 ctx, (Some o, changeScopeInner leaf.ValueText ctx.scopes, Some(LeafC leaf))
             | _, LeafRule(_, ValueScopeField _) ->
@@ -803,11 +811,11 @@ type InfoService
 
         let fLeafValue (ctx, _) (leafvalue: LeafValue) (field, o: Options) =
             match o.typeHint, field with
-            | Some(t, true), _ -> ctx, (Some o, Some(TypeRef(t, leafvalue.Key)), Some(LeafValueC leafvalue))
+            | Some(t, true), _ -> ctx, (Some o, Some(TypeRef(t, trimPrefixes leafvalue.Key)), Some(LeafValueC leafvalue))
             | _, LeafValueRule(TypeField(TypeType.Simple t)) ->
-                ctx, (Some o, Some(TypeRef(t, leafvalue.Key)), Some(LeafValueC leafvalue))
+                ctx, (Some o, Some(TypeRef(t, trimPrefixes leafvalue.Key)), Some(LeafValueC leafvalue))
             | _, LeafValueRule(LocalisationField _) ->
-                ctx, (Some o, Some(LocRef(leafvalue.Key)), Some(LeafValueC leafvalue))
+                ctx, (Some o, Some(LocRef(trimPrefixes leafvalue.Key)), Some(LeafValueC leafvalue))
             | _ -> ctx, (Some o, None, Some(LeafValueC leafvalue))
 
         let fComment (ctx, _) _ _ = ctx, (None, None, None)

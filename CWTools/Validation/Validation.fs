@@ -368,7 +368,7 @@ type ErrorCodes =
     static member ConfigRulesUnsetVariable =
         fun var ->
             { ID = "CW246"
-              Severity = Severity.Warning
+              Severity = Severity.Information
               Message = sprintf "The variable %s has not been set" var }
 
     static member ConfigRulesRuleWrongScope =
@@ -386,7 +386,7 @@ type ErrorCodes =
 
     static member ConfigRulesExpectedVariableValue =
         { ID = "CW249"
-          Severity = Severity.Warning
+          Severity = Severity.Information
           Message = "Expecting a variable or number" }
 
     static member PlanetKillerMissing =
