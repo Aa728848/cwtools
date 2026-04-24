@@ -938,8 +938,10 @@ module LanguageFeatures =
                     let globalVars = getGlobalScriptVars ()
                     
                     // 使用常规补全逻辑
+                    let entityOpt = processResourceCached ()
+
                     match
-                        Path.GetExtension filepath, processResourceCached (), completionService, infoService
+                        Path.GetExtension filepath, entityOpt, completionService, infoService
                     with
                     | ".yml", _, Some completion, _ -> completion.LocalisationComplete(pos, filetext) |> List.ofArray
                     | _, Some e, Some completion, Some info ->
