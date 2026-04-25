@@ -1045,8 +1045,6 @@ module LanguageFeatures =
 
         match resourceManager.ManualProcessResource resource, infoService with
         | Some e, Some info ->
-            log (sprintf "findRefs %s %s" (fileManager.ConvertPathToLogicalPath filepath) filepath)
-
             match info.GetInfo(pos, e) with
             | Some(_, (_, Some(TypeRef(t: string, tv)), _)) ->
                 //log "tv %A %A" t tv
