@@ -219,8 +219,17 @@ module Helpers =
             let resources = game.Resources
 
             let rulesLocErrors =
+                let locKeysArray = game.LocalisationManager.LocalisationKeys()
                 game.ValidationManager.CachedRuleErrors(resources.ValidatableEntities())
-                |> List.filter (fun e -> e.code = "CW100")
+                |> List.filter (fun e -> 
+                    if e.code = "CW100" then
+                        match e.data with
+                        | Some key ->
+                            let exists = locKeysArray |> Array.exists (fun (_, keys) -> keys.Contains key)
+                            not exists
+                        | None -> true
+                    else 
+                        false)
 
             let genGlobal () =
                 let ges = globalLocalisation (game)
