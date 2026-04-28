@@ -296,6 +296,10 @@ module Utils2 =
                 trie.Add(value) |> ignore
                 idValueList.Add(StringResource.stringManager.InternIdentifierToken value)
 
+        member this.Add(value: string) =
+            if value <> "" then
+                trie.Add(value) |> ignore
+
         member this.Count = trie.Count
         member _.IdValues = idValueList
 

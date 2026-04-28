@@ -63,3 +63,50 @@ country_event = {
         ##country_event = { id = event.1 }
     }
 }
+
+country_event = {
+    is_triggered_only = yes
+    id = test_dynamic_targets.success
+    immediate = {
+        save_event_target_as = A_@scope 
+        #error
+        save_event_target_as = @scope
+
+        event_target:A_123 = { }
+
+        event_target:@scope = { }
+
+    }
+}
+
+#error
+country_event = {
+    is_triggered_only = yes
+    id = test_dynamic_targets.fail_length
+    immediate = {
+        save_event_target_as = A_@scope
+
+        event_target:A_ = { }
+    }
+}
+
+#error
+country_event = {
+    is_triggered_only = yes
+    id = test_dynamic_targets.fail_wrong_prefix
+    immediate = {
+        save_event_target_as = A_@scope
+        
+        event_target:B_456 = { }
+    }
+}
+
+country_event = {
+    is_triggered_only = yes
+    id = test_dynamic_targets.chain_success
+    immediate = {
+        country_event = { id = test_dynamic_targets.success }
+        
+        event_target:A_123 = { } 
+    }
+}

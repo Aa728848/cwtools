@@ -428,29 +428,42 @@ module STLEventValidation =
         // current |> List.iter (fun (e, s, u, r) -> log "event %s is missing %A" (e.ID) (Set.difference u s))
         // current |> List.iter (fun (e, os, s, u, r, ox, x) -> log "%s %A %A %A %A" e.ID s u r x;)
 
+        let computeUnresolved (expected: Set<string>) (u: Set<string>) =
+            let dynamicPrefixes = CWTools.Utilities.Utils2.PrefixOptimisedStringSet()
+            expected |> Set.iter (fun (t: string) ->
+                let parts = t.Split('@', 2)
+                if parts.Length > 1 && parts.[0].Length > 0 then
+                    dynamicPrefixes.Add(parts.[0])
+            )
+            u |> Set.filter (fun usedTarget ->
+                if expected.Contains(usedTarget) then false
+                else
+                    let matched = dynamicPrefixes.LongestPrefixMatch(usedTarget.AsSpan())
+                    String.IsNullOrEmpty(matched) || usedTarget.Length = matched.Length
+            )
+
         let missing =
             current
             |> List.filter (fun (e, os, s, u, r, ox, x) ->
-                not (Set.difference (Set.difference u (Set.union s x)) globals |> Set.isEmpty))
+                let expected = Set.union (Set.union s x) globals
+                not (computeUnresolved expected u |> Set.isEmpty))
 
         let maybeMissing =
             current
             |> List.filter (fun (e, os, s, u, r, ox, x) ->
-                not (Set.difference (Set.difference u s) globals |> Set.isEmpty)
-                && (Set.difference (Set.difference u (Set.union s x)) globals |> Set.isEmpty))
+                let expectedLocal = Set.union s globals
+                let expectedGlobal = Set.union (Set.union s x) globals
+                not (computeUnresolved expectedLocal u |> Set.isEmpty)
+                && (computeUnresolved expectedGlobal u |> Set.isEmpty))
 
         let createError ((eid, e): string * Node, os, s, u, _, _, x) =
-            let needed =
-                Set.difference (Set.difference u (Set.union s x)) globals
-                |> Set.toList
-                |> String.concat ", "
-
+            let expected = Set.union (Set.union s x) globals
+            let needed = computeUnresolved expected u |> Set.toList |> String.concat ", "
             Invalid(Guid.NewGuid(), [ inv (ErrorCodes.UnsavedEventTarget eid needed) e ])
 
         let createWarning ((eid, e): string * Node, os, s, u, _, _, _) =
-            let needed =
-                Set.difference (Set.difference u s) globals |> Set.toList |> String.concat ", "
-
+            let expected = Set.union s globals
+            let needed = computeUnresolved expected u |> Set.toList |> String.concat ", "
             Invalid(Guid.NewGuid(), [ inv (ErrorCodes.MaybeUnsavedEventTarget eid needed) e ])
 
         missing <&!&> createError <&&> (maybeMissing <&!&> createWarning)
