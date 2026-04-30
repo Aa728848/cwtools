@@ -365,6 +365,10 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     /// 清理不存在文件的缓存条目，防止内存泄漏
     member _.CleanupCache(existingFiles: Set<string>) =
         validationManager.Cleanup existingFiles
+        // Also clean the internal immutable errorCache (deep validation results)
+        errorCache <-
+            errorCache
+            |> Map.filter (fun filepath _ -> existingFiles.Contains filepath)
 
     member this.InfoAtPos pos file text =
         LanguageFeatures.symbolInformationAtPos

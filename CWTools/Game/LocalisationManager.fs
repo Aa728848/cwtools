@@ -73,9 +73,15 @@ type LocalisationManager<'T when 'T :> ComputedData>
     let updateLocalisationSource (locFile: FileWithContentResource) =
         let loc = parseLocFile locFile |> Option.defaultValue [||]
 
+        // First remove all existing entries for this file (across all languages)
+        // to prevent stale entries from accumulating when a file is re-parsed
+        let cleanedMap =
+            localisationAPIMap
+            |> Map.filter (fun (fp, _) _ -> fp <> locFile.filepath)
+
         let newMap =
             loc
-            |> Array.fold (fun map (key, value) -> Map.add key value map) localisationAPIMap
+            |> Array.fold (fun map (key, value) -> Map.add key value map) cleanedMap
 
         localisationAPIMap <- newMap
 
