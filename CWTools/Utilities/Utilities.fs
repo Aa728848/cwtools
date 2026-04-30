@@ -242,6 +242,13 @@ type StringResourceManager() =
     member x.GetStringForID(id: StringToken) = ints[id]
     member x.GetMetadataForID(id: StringToken) = metadata[id]
 
+    /// Diagnostic: number of unique interned string forms (case-sensitive keys in `strings` dict)
+    member _.StringCount = strings.Count
+    /// Diagnostic: total int→string mappings (normal + lower IDs)
+    member _.IntCount = ints.Count
+    /// Diagnostic: current monotonic token ID counter
+    member _.TokenIdCounter = i
+
 module StringResource =
     let mutable stringManager = StringResourceManager()
 
