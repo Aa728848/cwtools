@@ -594,17 +594,40 @@ type ResourceManager<'T when 'T :> ComputedData>
             |> Seq.map (fun e -> ((e.logicalpath.Substring inlinePathLength).Replace(".txt", ""), e.rawEntity))
             |> Map.ofSeq
 
-        // Helper: try exact match first, then suffix match for path flexibility
+        // Helper: try exact match first, then suffix match, then wildcard match for $PARAM$ patterns
         let tryFindInlineScript (scriptName: string) =
             match inlineScriptsMap |> Map.tryFind scriptName with
             | Some _ as result -> result
             | None ->
-                // Try suffix matching: if scriptName is "a/b/c", try matching keys ending with "/b/c" or "b/c"
                 let normalizedName = scriptName.Replace('\\', '/')
+
+                // Check if scriptName contains parameter patterns like $RARITY$
+                let hasParams = normalizedName.Contains("$")
+
+                // Build a regex pattern: replace $...$ with wildcard, escape the rest
+                let pattern =
+                    if hasParams then
+                        let parts = normalizedName.Split('$')
+                        parts
+                        |> Array.mapi (fun i part ->
+                            if i % 2 = 1 then // odd indices are inside $...$
+                                "(.+)"
+                            else
+                                System.Text.RegularExpressions.Regex.Escape(part))
+                        |> String.concat ""
+                        |> fun p -> "^" + p + "$"
+                        |> System.Text.RegularExpressions.Regex
+                    else
+                        null
+
                 inlineScriptsMap
                 |> Map.tryPick (fun key value ->
                     let normalizedKey = key.Replace('\\', '/')
+                    // Suffix match
                     if normalizedKey.EndsWith("/" + normalizedName) || normalizedName.EndsWith("/" + normalizedKey) then
+                        Some value
+                    // Wildcard match for parameterized script names
+                    elif hasParams && pattern.IsMatch(normalizedKey) then
                         Some value
                     else
                         None)
@@ -720,7 +743,9 @@ type ResourceManager<'T when 'T :> ComputedData>
                                 // 这样 wg_crisis$CURRENT$.100 当 CURRENT 为空时能正确解析为 wg_crisis.100
                                 |> Seq.where (fun (k, v) -> k.Length > 0)
 
-                            match tryFindInlineScript scriptName with
+                            // Substitute parameters in script name before lookup,
+                            // e.g. "rarity_$RARITY$" with RARITY=common -> "rarity_common"
+                            match tryFindInlineScript (stringReplace values scriptName) with
                             | Some scriptNode ->
                                 let newScriptNode = STLProcess.cloneNode scriptNode
                                 foldOverNode (stringReplace values) newScriptNode

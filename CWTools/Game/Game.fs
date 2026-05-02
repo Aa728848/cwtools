@@ -227,27 +227,6 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     let initialLoad () =
         let timer = System.Diagnostics.Stopwatch()
         timer.Start()
-        let files = fileManager.AllFilesByPath()
-        log $"Parsing %i{files.Length} files"
-
-        let filteredfiles =
-            if settings.validation.validateVanilla then
-                files
-            else
-                files
-                |> Array.choose (function
-                    | FileResourceInput f -> Some(FileResourceInput f)
-                    | FileWithContentResourceInput f -> Some(FileWithContentResourceInput f)
-                    | EntityResourceInput f ->
-                        (if f.scope = "vanilla" then
-                             Some(EntityResourceInput { f with validate = false })
-                         else
-                             Some(EntityResourceInput f))
-                    | _ -> None)
-
-        resourceManager.Api.UpdateFiles(filteredfiles) |> ignore
-        log $"Parsed files in %A{timer.ElapsedMilliseconds}"
-        timer.Restart()
 
         let embeddedFiles =
             settings.embedded.embeddedFiles
@@ -284,12 +263,35 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
         let embedded = embeddedFiles.Concat(cached).ToArray()
 
+        // Load vanilla cache BEFORE workspace files so that inline scripts
+        // from the base game are available when processing mod files
         if fileManager.ShouldUseEmbedded then
             resourceManager.Api.UpdateFiles(embedded) |> ignore
+            log $"Parsed embedded in %A{timer.ElapsedMilliseconds}"
+            timer.Restart()
         else
             ()
 
-        log (sprintf "Parsed embedded in %A" timer.ElapsedMilliseconds)
+        let files = fileManager.AllFilesByPath()
+        log $"Parsing %i{files.Length} files"
+
+        let filteredfiles =
+            if settings.validation.validateVanilla then
+                files
+            else
+                files
+                |> Array.choose (function
+                    | FileResourceInput f -> Some(FileResourceInput f)
+                    | FileWithContentResourceInput f -> Some(FileWithContentResourceInput f)
+                    | EntityResourceInput f ->
+                        (if f.scope = "vanilla" then
+                             Some(EntityResourceInput { f with validate = false })
+                         else
+                             Some(EntityResourceInput f))
+                    | _ -> None)
+
+        resourceManager.Api.UpdateFiles(filteredfiles) |> ignore
+        log $"Parsed files in %A{timer.ElapsedMilliseconds}"
 
     let updateRulesCache () =
         let rules, info, completion = rulesManager.RefreshConfig()
