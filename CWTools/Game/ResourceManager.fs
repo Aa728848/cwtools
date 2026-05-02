@@ -677,9 +677,32 @@ type ResourceManager<'T when 'T :> ComputedData>
                                 l.Key <- stringReplacer l.Key
                                 l.Value <- replaceValue l.Value)
 
-                            node.LeafValues
-                            |> Seq.iter (fun (l: LeafValue) ->
-                                l.Value <- replaceValue l.Value)
+                            // After replacing LeafValues, split any unquoted values that contain spaces
+                            // into multiple LeafValues. This handles parameter expansion like
+                            // $TAGS$ -> "weapon_type_kinetic weapon_type_energy" which should become
+                            // two separate LeafValues, matching how the parser tokenizes unquoted values.
+                            let expandedLeafValues =
+                                node.AllArray
+                                |> Array.collect (fun child ->
+                                    match child with
+                                    | LeafValueC lv ->
+                                        let origValue = lv.Value
+                                        let newValue = replaceValue origValue
+                                        match origValue with
+                                        | Value.QString _ ->
+                                            lv.Value <- newValue
+                                            [| child |]
+                                        | _ ->
+                                            let text = newValue.ToRawString()
+                                            if text.Contains(" ") then
+                                                text.Split([| ' ' |], StringSplitOptions.RemoveEmptyEntries)
+                                                |> Array.map (fun part ->
+                                                    LeafValueC(LeafValue(String(StringResource.stringManager.InternIdentifierToken(part)), lv.Position)))
+                                            else
+                                                lv.Value <- newValue
+                                                [| child |]
+                                    | _ -> [| child |])
+                            node.AllArray <- expandedLeafValues
 
                             node.Nodes |> Seq.iter (foldOverNode stringReplacer)
 
