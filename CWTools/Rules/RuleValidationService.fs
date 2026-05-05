@@ -720,10 +720,12 @@ type RuleValidationService
         let oldErrors = errors
         let errors = OK
 
-        // When node key is a $PARAM$ variable (e.g., $KEY$ = { hostile = yes }),
-        // don't enforce cardinality on children — we can't statically know the target
+        // When node key contains $PARAM$ parameters (e.g., $KEY$ = { hostile = yes }
+        // or random_ground_combat_$SIDE_B$ = { limit = { ... } }),
+        // don't enforce cardinality on children — we can't statically know the resolved target
         let enforceCardinality =
-            if node.Key.StartsWith("$") && node.Key.EndsWith("$") && node.Key.Length > 2 then
+            if (node.Key.StartsWith("$") && node.Key.EndsWith("$") && node.Key.Length > 2)
+               || (stringManager.GetMetadataForID node.KeyId.lower).containsDoubleDollar then
                 false
             else
                 enforceCardinality
