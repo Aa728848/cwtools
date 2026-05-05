@@ -284,13 +284,20 @@ module internal SharedParsers =
             | '{' -> vcP stream
             | '"' -> valueQStr stream
             | x when isDigit x || x = '-' ->
-                let i = (iP stream)
-
-                if i.Status = Ok then
-                    i
+                // Leading zeros (e.g., 00000902, 007) indicate a string identifier, not a number.
+                // In Paradox scripting, legitimate integers never have leading zeros.
+                // Without this check, "00000902" would be parsed as Int 902, permanently losing
+                // the leading zeros and causing false validation errors downstream
+                // (e.g., "Expected value of type portrait", "902 is not a target").
+                let hasLeadingZero = x = '0' && (let s = stream.PeekString 2 in s.Length >= 2 && isDigit s.[1])
+                if hasLeadingZero then
+                    valueStr stream
                 else
-                    let f = (fP stream)
-                    if f.Status = Ok then f else valueStr stream
+                    let i = (iP stream)
+                    if i.Status = Ok then i
+                    else
+                        let f = (fP stream)
+                        if f.Status = Ok then f else valueStr stream
             | _ ->
                 match stream.PeekString 3, stream.PeekString 2 with
                 | "rgb", _ -> rgb stream
