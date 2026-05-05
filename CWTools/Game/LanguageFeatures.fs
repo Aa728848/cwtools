@@ -1050,22 +1050,38 @@ module LanguageFeatures =
                 //log "tv %A %A" t tv
                 let t = t.Split('.').[0]
 
-                resourceManager.Api.ValidatableEntities()
-                |> List.choose (fun struct (e, l) ->
-                    let x = l.Force().Referencedtypes in
+                let refsFromTypes =
+                    resourceManager.Api.ValidatableEntities()
+                    |> List.choose (fun struct (e, l) ->
+                        let x = l.Force().Referencedtypes in
 
-                    if x.IsSome then
-                        (x.Value.TryFind t)
+                        if x.IsSome then
+                            (x.Value.TryFind t)
+                        else
+                            let contains, value = (info.GetReferencedTypes e).TryGetValue t in
+                            if contains then Some(value |> List.ofSeq) else None)
+                    |> List.collect id
+                    |> List.choose (fun ref ->
+                        if ref.name.GetString() == tv && ref.referenceType = ReferenceType.TypeDef then
+                            Some ref.position
+                        else
+                            None)
+
+                // Fallback: direct AST key search when Referencedtypes yields no results
+                let results =
+                    if refsFromTypes.Length > 0 then
+                        refsFromTypes
                     else
-                        let contains, value = (info.GetReferencedTypes e).TryGetValue t in
-                        if contains then Some(value |> List.ofSeq) else None)
-                |> List.collect id
-                |> List.choose (fun ref ->
-                    if ref.name.GetString() == tv && ref.referenceType = ReferenceType.TypeDef then
-                        Some ref.position
-                    else
-                        None)
-                |> Some
+                        let rec searchNode (node: Node) =
+                            [   yield! node.Leaves |> Seq.choose (fun l ->
+                                    if l.Key == tv then Some l.Position else None)
+                                yield! node.Nodes |> Seq.choose (fun n ->
+                                    if n.Key == tv then Some n.Position else None)
+                                yield! node.Nodes |> Seq.collect searchNode ]
+                        resourceManager.Api.ValidatableEntities()
+                        |> List.collect (fun struct (e, _) -> searchNode e.entity)
+
+                results |> Some
             | _ -> None
         | _, _ -> None
 
