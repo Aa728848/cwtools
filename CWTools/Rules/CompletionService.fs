@@ -189,25 +189,7 @@ type CompletionService
         |> Seq.filter _.StartsWith(folder, StringComparison.OrdinalIgnoreCase)
         |> Seq.map _.Replace(".dds", "")
         |> Seq.toArray
-    // let value = folder + "/" + key + ".dds"
-    // if files.Contains value then OK else Invalid (Guid.NewGuid(), [inv (ErrorCodes.MissingFile value) leafornode])
 
-
-    //////Loc Complete
-    ///
-    ///
-    ///
-    // let promoteMatch() =
-    //     dataTypes.promotes |> Map.tryFind nextKey
-    //     |> Option.orElse (dataTypes.promotes |> Map.tryFind (nextKey.ToUpperInvariant()))
-    //     |> Option.map (fun (newType) -> if Set.contains newType dataTypes.dataTypeNames then NewDataType (newType, true) else Found newType)
-    // let globalFunctionMatch() =
-    //     dataTypes.functions |> Map.tryFind nextKey
-    //     |> Option.map (fun (newType) -> if Set.contains newType dataTypes.dataTypeNames then NewDataType (newType, true) else Found newType)
-    // let functionMatch() =
-    //     dataTypes.dataTypes |> Map.tryFind dataType
-    //     |> Option.bind (fun dataTypeMap -> dataTypeMap |> Map.tryFind nextKey)
-    //     |> Option.map (fun (newType) -> if Set.contains newType dataTypes.dataTypeNames then NewDataType (newType, true) else Found newType)
     let promotes = dataTypes.promotes.Keys |> Seq.toArray
     let functions = dataTypes.functions.Keys |> Seq.toArray
 
@@ -220,31 +202,6 @@ type CompletionService
         if textBeforeCursor.LastIndexOf '[' > textBeforeCursor.LastIndexOf ']' then
             (allPossibles |> Array.map CompletionResponse.CreateSimple)
         else
-            // let completionForScopeDotChain (key : string) (startingContext : ScopeContext) innerRules description =
-            // let completionForScopeDotChain (key : string) innerRules description =
-            //     let createSnippetForClauseWithCustomScopeReq scopeContext = (fun (r) -> createSnippetForClause (scoreFunction r scopeContext))
-
-            //     let defaultRes = scopeCompletionList |> List.map (fun (l, r) -> createSnippetForClauseWithCustomScopeReq startingContext r innerRules description l)
-            //     // eprintfn "dr %A" defaultRes
-            //     if key.Contains(".")
-            //     then
-            //         let splitKey = key.Split([|'.'|])
-            //         let changeScopeRes =
-            //                 splitKey |> Array.take (splitKey.Length - 1)
-            //                  |> String.concat "."
-            //                  |> (fun next -> changeScope false true linkMap valueTriggerMap wildCardLinks varSet next startingContext)
-            //         match changeScopeRes with
-            //         | NewScope (newscope, _) ->
-            //             scopeCompletionList |> List.map (fun (l, r) -> createSnippetForClauseWithCustomScopeReq newscope r innerRules description l)
-            //         | ValueFound
-            //         | VarFound
-            //         | VarNotFound _
-            //         | WrongScope _
-            //         | NotFound -> defaultRes
-            //     else
-            //         defaultRes
-            //let actualText = textBeforeCursor.Substring(textBeforeCursor.LastIndexOf "[" + 1)
-            //Some (completionForScopeDotChain actualText )
             [||]
 
     let locComplete (pos: pos) (filetext: string) =
@@ -512,24 +469,7 @@ type CompletionService
                                 startingContext
                             ))
                         |> Some
-
-                //                        let res =
-                //                            substringBefore
-                //                            |> (fun x -> log x; x)
-                //                            |> (fun next -> changeScope false true linkMap valueTriggerMap wildCardLinks varSet next startingContext)
-                //                        res, substringBefore.Contains(".")
-                //                log (sprintf "REW %A %A %A" key changeScopeRes targetScopes)
                 changeScopeRes
-            //                match changeScopeRes with
-            //                | None -> defaultRes
-            //                | Some (NewScope (newscope, _, _)) ->
-            //                    log (sprintf "%A %A" key newscope)
-            //                    scopeCompletionListNonGlobal |> List.map (fun x -> createSnippetWithScore newscope x.requiredScopes x.outputScope targetScopes x.key x.desc x.kind)
-            //                | Some (ValueFound _)
-            //                | Some VarFound
-            //                | Some (VarNotFound _)
-            //                | Some (WrongScope _)
-            //                | Some (NotFound) -> defaultResNonGlobal
             else
                 None
 
@@ -1015,37 +955,7 @@ type CompletionService
 
         let usedKeyBonus = if Set.contains key allUsedKeys then 10 else 0
         let score = validInputScopeScore + validOutputScopeScore + usedKeyBonus
-        //        if key = "test_variable"
-        //        then log (sprintf "sf %A %A %A %A %A %A %A" startingContext.CurrentScope inputScopes outputScope expectedScope validInputScopeScore validOutputScopeScore usedKeyBonus)
-        //        else ()
         max score 1
-    //        let validInputScope =
-    //            match inputScopes with
-    //            | [] -> true
-    //            | xs ->
-    //                match startingContext.CurrentScope with
-    //                | x when x = anyScope -> true
-    //                | s -> List.exists s.IsOfScope xs
-    //        let validOutputScope =
-    //            match requiredScopes with
-    //            | [] -> true
-    //            | xs ->
-    //                match outputScope with
-    //                | Some x when x = anyScope -> true
-    //                | Some x -> List.exists x.IsOfScope xs
-    //                | _ -> false
-    //        //TODO add shortcutting
-    //
-    //        let usedKey = List.contains key allUsedKeys
-    //        match validOutputScope, usedKey, validInputScope with
-    //        | true, true, true -> 110
-    //        | true, true, false -> 60
-    //        | true, false, true -> 100
-    //        | true, false, false -> 50
-    //        | false, true, true -> 60
-    //        | false, true, false -> 10
-    //        | false, false, true -> 50
-    //        | false, false, false -> 1
 
     let complete (pos: pos) (entity: Entity) (scopeContext: ScopeContext option) (extraGlobalVars: string list option) =
         let scopeContext = Option.defaultValue defaultContext scopeContext
