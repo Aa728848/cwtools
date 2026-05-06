@@ -853,23 +853,21 @@ module LanguageFeatures =
 
                             match infoService with
                             | Some info ->
-                                // 使用调用者实体获取 scope 上下文（从调用者的 inline_script 引用位置）
-                                // 支持精确文件名匹配和参数化路径匹配
+                                // Compute caller scope context using rawEntity (which preserves the
+                                // original inline_script leaf, unlike entity which has it expanded).
                                 let callerScopeCtxOpt =
                                     try
                                         let callerFileContent = System.IO.File.ReadAllText(callerEntity.filepath)
-                                        let callerLines = callerFileContent.Split([| '\n'; '\r' |], StringSplitOptions.RemoveEmptyEntries)
+                                        let callerLines = callerFileContent.Split('\n')
                                         let paramPattern = System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*\$")
                                         let normScriptName = scriptName.Replace('\\', '/')
                                         let mutable inlineScriptLine = -1
                                         for i = 0 to callerLines.Length - 1 do
                                             if inlineScriptLine = -1 then
                                                 let line = callerLines.[i]
-                                                // 精确文件名匹配
                                                 if line.Contains(scriptFileName, StringComparison.OrdinalIgnoreCase) then
                                                     inlineScriptLine <- i
                                                 else
-                                                    // 参数化路径匹配
                                                     let scriptLinePattern = System.Text.RegularExpressions.Regex(@"script\s*=\s*([^\s}]+)")
                                                     let m = scriptLinePattern.Match(line)
                                                     if m.Success && m.Groups.[1].Value.Contains("$") then
@@ -883,23 +881,63 @@ module LanguageFeatures =
                                                                 inlineScriptLine <- i
                                                         with _ -> ()
                                         if inlineScriptLine >= 0 then
-                                            let callerPos = mkPos (inlineScriptLine + 1) (callerLines.[inlineScriptLine].Length)
-                                            info.GetInfo(callerPos, callerEntity) |> Option.map fst
+                                            // Use rawEntity for GetInfo — the raw AST still has the
+                                            // inline_script leaf, so the position matches correctly
+                                            // and foldWithPos can accumulate scope from parent blocks.
+                                            let rawCallerEntity = { callerEntity with entity = callerEntity.rawEntity }
+                                            let lineText = callerLines.[inlineScriptLine].TrimEnd('\r')
+                                            let indentCol = lineText.Length - lineText.TrimStart().Length
+                                            let callerPos = mkPos (inlineScriptLine + 1) indentCol
+                                            info.GetInfo(callerPos, rawCallerEntity) |> Option.map fst
                                         else
                                             None
                                     with _ -> None
                                 match completionService with
                                 | Some completion ->
-                                    // 使用专用的 CompleteInlineScript 方法：
-                                    // - 使用 inline_script 实体的 AST 确定当前光标深度
-                                    // - 使用调用者的 logicalpath 匹配类型规则
-                                    // - 正确处理根层和子层的补全
-                                    completion.CompleteInlineScript(pos, inlineEntity, callerEntity, callerScopeCtxOpt, Some globalVars)
+                                    // Compute caller's structural rule path using rawEntity
+                                    // (rawEntity preserves inline_script leaf; entity has it expanded).
+                                    // This path tells CompleteInlineScript the caller's depth
+                                    // (e.g. country_event → immediate) so it can return
+                                    // effect-level completions instead of root-level ones.
+                                    let callerRulePath =
+                                        try
+                                            let callerFileContent = System.IO.File.ReadAllText(callerEntity.filepath)
+                                            let callerLines = callerFileContent.Split('\n')
+                                            let paramPattern = System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*\$")
+                                            let normScriptName = scriptName.Replace('\\', '/')
+                                            let mutable inlineScriptLine = -1
+                                            for i = 0 to callerLines.Length - 1 do
+                                                if inlineScriptLine = -1 then
+                                                    let line = callerLines.[i]
+                                                    if line.Contains(scriptFileName, StringComparison.OrdinalIgnoreCase) then
+                                                        inlineScriptLine <- i
+                                                    else
+                                                        let scriptLinePattern = System.Text.RegularExpressions.Regex(@"script\s*=\s*([^\s}]+)")
+                                                        let m = scriptLinePattern.Match(line)
+                                                        if m.Success && m.Groups.[1].Value.Contains("$") then
+                                                            let callPath = m.Groups.[1].Value.Trim()
+                                                            let regexStr = paramPattern.Replace(callPath, ".+").Replace('\\', '/')
+                                                            try
+                                                                let regex = System.Text.RegularExpressions.Regex(
+                                                                    "^" + System.Text.RegularExpressions.Regex.Escape(regexStr).Replace(@"\.\+", ".+") + "$",
+                                                                    System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                                                                if regex.IsMatch(normScriptName) then
+                                                                    inlineScriptLine <- i
+                                                            with _ -> ()
+                                            if inlineScriptLine >= 0 then
+                                                let lineText = callerLines.[inlineScriptLine].TrimEnd('\r')
+                                                let indentCol = lineText.Length - lineText.TrimStart().Length
+                                                let callerPos = mkPos (inlineScriptLine + 1) indentCol
+                                                completion.GetRulePath(callerPos, callerEntity.rawEntity)
+                                            else
+                                                []
+                                        with _ -> []
+                                    completion.CompleteInlineScript(pos, inlineEntity, callerEntity, callerScopeCtxOpt, Some globalVars, callerRulePath)
                                 | None -> []
                             | None ->
                                 match completionService with
                                 | Some completion ->
-                                    completion.CompleteInlineScript(pos, inlineEntity, callerEntity, None, Some globalVars)
+                                    completion.CompleteInlineScript(pos, inlineEntity, callerEntity, None, Some globalVars, [])
                                 | None -> []
                         | None ->
                             log "completion: no caller found, providing basic parameter completion"

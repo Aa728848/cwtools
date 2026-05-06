@@ -1079,12 +1079,15 @@ type CompletionService
 
     member _.Complete(pos: pos, entity: Entity, scopeContext, extraGlobalVars) = complete pos entity scopeContext extraGlobalVars
     member _.LocalisationComplete(pos: pos, filetext: string) = locComplete pos filetext
+    /// Expose the AST rule-path computation for external callers (e.g. inline_script caller-path)
+    member _.GetRulePath(pos: pos, node: IClause) = getRulePath pos [] node |> List.rev
 
     /// Complete for inline_script files: uses the inline entity's AST path but prepends the caller's path prefix
-    /// so that type rules match correctly. pathPrefix is the path from the caller entity up to (but not including)
-    /// the inline_script block content.
+    /// so that type rules match correctly. callerRulePath is the structural path from the caller entity root
+    /// down to (but not including) the inline_script call site, used to anchor completions at the correct depth
+    /// (e.g. inside "immediate" for effect-level completions).
     member _.CompleteInlineScript
-        (pos: pos, inlineEntity: Entity, callerEntity: Entity, scopeContext: ScopeContext option, extraGlobalVars: string list option)
+        (pos: pos, inlineEntity: Entity, callerEntity: Entity, scopeContext: ScopeContext option, extraGlobalVars: string list option, callerRulePath: (string * int * string option * CompletionContext * string option) list)
         =
         let scopeContext = Option.defaultValue defaultContext scopeContext
         let effectiveGlobalVars =
@@ -1111,8 +1114,22 @@ type CompletionService
             | AnyKey -> true
             | MultipleKeys(keys, shouldMatch) -> (keys |> List.exists ((==) s)) <> (not shouldMatch)
 
+        // Strip the type root key and inline_script leaf from callerRulePath to get
+        // the intermediate path (e.g. [("immediate", 1, None, NodeRHS, None)]).
+        // The type root is added back by validateTypeSkipRootInline; the inline_script
+        // leaf is not a structural container and must be excluded.
+        let intermediateCallerPath =
+            let stripped =
+                match callerRulePath with
+                | _ :: rest -> rest  // drop type root (e.g. country_event)
+                | [] -> []
+            stripped
+            |> List.filter (fun (key, _, _, _, _) ->
+                not (key = "inline_script" || key = "script"))
+
         // For inline_script files, the content is the body of the type (inside the root key).
-        // We need to prepend the type's root key to the path so validateTypeSkipRoot works correctly.
+        // We need to prepend the type's root key AND the caller's intermediate path so that
+        // getCompletionFromPath walks through the correct rules (e.g. event → immediate → effects).
         let rec validateTypeSkipRootInline
             (t: TypeDefinition)
             (skipRootKeyStack: SkipRootKey list)
@@ -1127,22 +1144,24 @@ type CompletionService
 
             match skipRootKeyStack, t.type_per_file, path with
             | _, false, [] ->
-                // At root of inline_script = inside the type body
-                // Prepend the type name to get completions for the type body
-                getCompletionFromPath scoreFunction typerules [ (t.name, 1, None, NodeRHS, None) ] scopeContext
-            | _, true, _ ->
-                // type_per_file: prepend type name
+                // At root of inline_script = inside the caller's block.
+                // Build: [type_root] @ [caller intermediate path (e.g. immediate)]
                 let fullPath =
-                    match path with
-                    | [] -> [ (t.name, 1, None, NodeRHS, None) ]
-                    | (head, c, b, nt, kp) :: tail -> (t.name, 1, None, NodeRHS, None) :: (head, c, b, nt, kp) :: tail
+                    (t.name, 1, None, NodeRHS, None) :: intermediateCallerPath
+                getCompletionFromPath scoreFunction typerules fullPath scopeContext
+            | _, true, _ ->
+                // type_per_file: prepend type name + caller path
+                let fullPath =
+                    (t.name, 1, None, NodeRHS, None) :: intermediateCallerPath @ path
                 getCompletionFromPath scoreFunction typerules fullPath scopeContext
             | [], false, (head, c, _, _, keyprefix) :: tail ->
-                // Prepend type name, then the inline path
+                // Prepend type name + caller path, then the inline path
+                let fullPath =
+                    (t.name, 1, None, NodeRHS, None) :: intermediateCallerPath @ ((head, c, None, NodeRHS, keyprefix) :: tail)
                 getCompletionFromPath
                     scoreFunction
                     typerules
-                    ((t.name, 1, None, NodeRHS, None) :: (head, c, None, NodeRHS, keyprefix) :: tail)
+                    fullPath
                     scopeContext
             | head :: rest, false, (pathhead, _, _, _, _) :: pathtail ->
                 if skiprootkey head pathhead then
