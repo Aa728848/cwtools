@@ -1114,11 +1114,23 @@ type CompletionService
             | AnyKey -> true
             | MultipleKeys(keys, shouldMatch) -> (keys |> List.exists ((==) s)) <> (not shouldMatch)
 
-        // Strip the type root key and inline_script leaf from callerRulePath to get
-        // the intermediate path (e.g. [("immediate", 1, None, NodeRHS, None)]).
-        // The type root is added back by validateTypeSkipRootInline; the inline_script
-        // leaf is not a structural container and must be excluded.
-        let intermediateCallerPath =
+        // Strip the type root key and inline_script/script leaves from callerRulePath
+        // to get the intermediate path elements between the type root and inline_script.
+        // The type root is added back by validateTypeSkipRootInline.
+        //
+        // BEST-OF-BOTH STRATEGY: We compute TWO paths:
+        //   1. fullCallerPath   = all intermediate elements (e.g. [desc, trigger])
+        //   2. minimalCallerPath = only the first element (e.g. [desc])
+        // Then try both and use whichever returns MORE completions.
+        //
+        // WHY: Some intermediate elements are scope-DEFINING (desc > trigger changes context
+        // from desc-content to trigger-content) and MUST be kept. Others are transparent
+        // control-flow (switch, if) whose dynamic children can't be resolved by
+        // getCompletionFromPath, returning few wrong intermediate-level results.
+        // The "more results" heuristic works because:
+        //   - Correct deep resolution returns many content-level completions (200+ effects/triggers)
+        //   - Wrong intermediate-level resolution returns few structural fields (1-5 items)
+        let fullCallerPath =
             let stripped =
                 match callerRulePath with
                 | _ :: rest -> rest  // drop type root (e.g. country_event)
@@ -1127,9 +1139,30 @@ type CompletionService
             |> List.filter (fun (key, _, _, _, _) ->
                 not (key = "inline_script" || key = "script"))
 
-        // For inline_script files, the content is the body of the type (inside the root key).
-        // We need to prepend the type's root key AND the caller's intermediate path so that
-        // getCompletionFromPath walks through the correct rules (e.g. event → immediate → effects).
+        let minimalCallerPath =
+            match fullCallerPath with
+            | first :: _ -> [first]
+            | [] -> []
+
+        // Used for rootTypeItems suppression: any non-empty caller path means we're inside a block
+        let intermediateCallerPath = fullCallerPath
+
+        // Helper: try a path through getCompletionFromPath
+        let tryPath scoreFunction typerules typeRoot callerPath suffix scopeContext =
+            let fullPath = typeRoot :: (callerPath @ suffix)
+            getCompletionFromPath scoreFunction typerules fullPath scopeContext
+
+        // Try both full and minimal caller paths, return the one with more results.
+        let bestOfBoth scoreFunction typerules typeRoot suffix scopeContext =
+            let fullResult = tryPath scoreFunction typerules typeRoot fullCallerPath suffix scopeContext
+            if fullCallerPath = minimalCallerPath then
+                // Same path (0 or 1 elements), no need to try twice
+                fullResult
+            else
+                let minimalResult = tryPath scoreFunction typerules typeRoot minimalCallerPath suffix scopeContext
+                if fullResult.Length >= minimalResult.Length then fullResult
+                else minimalResult
+
         let rec validateTypeSkipRootInline
             (t: TypeDefinition)
             (skipRootKeyStack: SkipRootKey list)
@@ -1142,27 +1175,19 @@ type CompletionService
                     | _ -> None)
                 |> Seq.toArray
 
+            let typeRoot = (t.name, 1, None, NodeRHS, None)
+
             match skipRootKeyStack, t.type_per_file, path with
             | _, false, [] ->
                 // At root of inline_script = inside the caller's block.
-                // Build: [type_root] @ [caller intermediate path (e.g. immediate)]
-                let fullPath =
-                    (t.name, 1, None, NodeRHS, None) :: intermediateCallerPath
-                getCompletionFromPath scoreFunction typerules fullPath scopeContext
+                bestOfBoth scoreFunction typerules typeRoot [] scopeContext
             | _, true, _ ->
                 // type_per_file: prepend type name + caller path
-                let fullPath =
-                    (t.name, 1, None, NodeRHS, None) :: intermediateCallerPath @ path
-                getCompletionFromPath scoreFunction typerules fullPath scopeContext
+                bestOfBoth scoreFunction typerules typeRoot path scopeContext
             | [], false, (head, c, _, _, keyprefix) :: tail ->
                 // Prepend type name + caller path, then the inline path
-                let fullPath =
-                    (t.name, 1, None, NodeRHS, None) :: intermediateCallerPath @ ((head, c, None, NodeRHS, keyprefix) :: tail)
-                getCompletionFromPath
-                    scoreFunction
-                    typerules
-                    fullPath
-                    scopeContext
+                let suffix = (head, c, None, NodeRHS, keyprefix) :: tail
+                bestOfBoth scoreFunction typerules typeRoot suffix scopeContext
             | head :: rest, false, (pathhead, _, _, _, _) :: pathtail ->
                 if skiprootkey head pathhead then
                     validateTypeSkipRootInline t rest pathtail
@@ -1193,10 +1218,12 @@ type CompletionService
                    if st.typeKeyField.IsSome then Some st.typeKeyField.Value else None))
             |> List.map (fun s -> createSnippetForClause (fun _ -> 1) [||] None s)
 
+        // Only show root type items when there's NO intermediate caller path.
+        // If we have a caller path, we're inside a block (e.g. immediate), not at type root.
         let rootTypeItems =
-            match inlinePath with
-            | [ (_, _, _, CompletionContext.NodeLHS, _) ] -> pathFilteredTypes |> List.collect createSnippetForType
-            | y when y.Length = 0 -> pathFilteredTypes |> List.collect createSnippetForType
+            match intermediateCallerPath, inlinePath with
+            | [], [ (_, _, _, CompletionContext.NodeLHS, _) ] -> pathFilteredTypes |> List.collect createSnippetForType
+            | [], y when y.Length = 0 -> pathFilteredTypes |> List.collect createSnippetForType
             | _ -> []
 
         let scoreForLabel (label: string) =

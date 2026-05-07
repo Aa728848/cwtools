@@ -894,23 +894,25 @@ module LanguageFeatures =
                                     with _ -> None
                                 match completionService with
                                 | Some completion ->
-                                    // Compute caller's structural rule path using rawEntity
-                                    // (rawEntity preserves inline_script leaf; entity has it expanded).
-                                    // This path tells CompleteInlineScript the caller's depth
-                                    // (e.g. country_event → immediate) so it can return
-                                    // effect-level completions instead of root-level ones.
+                                    // Compute caller's structural rule path.
+                                    // For direct inline_scripts: search root caller file for the script reference
+                                    // and compute getRulePath on rawEntity.
+                                    // For NESTED inline_scripts (target called from another inline_script which
+                                    // is called from root): the root caller doesn't contain the target reference.
+                                    // In this case, find the DIRECT caller (intermediate inline_script) and chain:
+                                    //   rootPath(to intermediate) + intermediatePath(to target)
                                     let callerRulePath =
-                                        try
-                                            let callerFileContent = System.IO.File.ReadAllText(callerEntity.filepath)
-                                            let callerLines = callerFileContent.Split('\n')
+                                        // Helper: find inlineScriptLine for a given script name in a file
+                                        let findScriptLine (fileContent: string) (targetScriptFileName: string) (targetScriptName: string) =
+                                            let lines = fileContent.Split('\n')
                                             let paramPattern = System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*\$")
-                                            let normScriptName = scriptName.Replace('\\', '/')
-                                            let mutable inlineScriptLine = -1
-                                            for i = 0 to callerLines.Length - 1 do
-                                                if inlineScriptLine = -1 then
-                                                    let line = callerLines.[i]
-                                                    if line.Contains(scriptFileName, StringComparison.OrdinalIgnoreCase) then
-                                                        inlineScriptLine <- i
+                                            let normName = targetScriptName.Replace('\\', '/')
+                                            let mutable found = -1
+                                            for i = 0 to lines.Length - 1 do
+                                                if found = -1 then
+                                                    let line = lines.[i]
+                                                    if line.Contains(targetScriptFileName, StringComparison.OrdinalIgnoreCase) then
+                                                        found <- i
                                                     else
                                                         let scriptLinePattern = System.Text.RegularExpressions.Regex(@"script\s*=\s*([^\s}]+)")
                                                         let m = scriptLinePattern.Match(line)
@@ -921,16 +923,78 @@ module LanguageFeatures =
                                                                 let regex = System.Text.RegularExpressions.Regex(
                                                                     "^" + System.Text.RegularExpressions.Regex.Escape(regexStr).Replace(@"\.\+", ".+") + "$",
                                                                     System.Text.RegularExpressions.RegexOptions.IgnoreCase)
-                                                                if regex.IsMatch(normScriptName) then
-                                                                    inlineScriptLine <- i
+                                                                if regex.IsMatch(normName) then
+                                                                    found <- i
                                                             with _ -> ()
-                                            if inlineScriptLine >= 0 then
-                                                let lineText = callerLines.[inlineScriptLine].TrimEnd('\r')
+                                            found
+                                        try
+                                            let callerFileContent = System.IO.File.ReadAllText(callerEntity.filepath)
+                                            let directLine = findScriptLine callerFileContent scriptFileName scriptName
+                                            if directLine >= 0 then
+                                                // Direct reference found in root caller
+                                                let callerLines = callerFileContent.Split('\n')
+                                                let lineText = callerLines.[directLine].TrimEnd('\r')
                                                 let indentCol = lineText.Length - lineText.TrimStart().Length
-                                                let callerPos = mkPos (inlineScriptLine + 1) indentCol
+                                                let callerPos = mkPos (directLine + 1) indentCol
                                                 completion.GetRulePath(callerPos, callerEntity.rawEntity)
                                             else
-                                                []
+                                                // Not found in root caller — this is a NESTED inline_script.
+                                                // Find the direct (intermediate) caller that actually references the target.
+                                                let directCallerOpt =
+                                                    allEntities
+                                                    |> Seq.tryPick (fun struct (e, _) ->
+                                                        if isInlineScriptEntity e then
+                                                            try
+                                                                let content = System.IO.File.ReadAllText(e.filepath)
+                                                                if fileContainsInlineRef scriptName scriptFileName content then
+                                                                    Some e
+                                                                else None
+                                                            with _ -> None
+                                                        else None)
+                                                match directCallerOpt with
+                                                | Some directCaller ->
+                                                    // Chain paths: root→intermediate + intermediate→target
+                                                    // 1. Find root's path to intermediate inline_script
+                                                    let intermediateScriptName =
+                                                        extractInlineScriptName directCaller.logicalpath
+                                                        |> Option.defaultValue ""
+                                                    let intermediateFileName =
+                                                        intermediateScriptName.Split([| '/'; '\\' |]) |> Array.last
+                                                    let rootToIntermediatePath =
+                                                        let rootLine = findScriptLine callerFileContent intermediateFileName intermediateScriptName
+                                                        if rootLine >= 0 then
+                                                            let callerLines = callerFileContent.Split('\n')
+                                                            let lineText = callerLines.[rootLine].TrimEnd('\r')
+                                                            let indentCol = lineText.Length - lineText.TrimStart().Length
+                                                            let callerPos = mkPos (rootLine + 1) indentCol
+                                                            completion.GetRulePath(callerPos, callerEntity.rawEntity)
+                                                        else []
+                                                    // 2. Find intermediate's path to target inline_script
+                                                    let intermediateContent = System.IO.File.ReadAllText(directCaller.filepath)
+                                                    let targetLine = findScriptLine intermediateContent scriptFileName scriptName
+                                                    let intermediateToTargetPath =
+                                                        if targetLine >= 0 then
+                                                            let intermediateLines = intermediateContent.Split('\n')
+                                                            let lineText = intermediateLines.[targetLine].TrimEnd('\r')
+                                                            let indentCol = lineText.Length - lineText.TrimStart().Length
+                                                            let targetPos = mkPos (targetLine + 1) indentCol
+                                                            completion.GetRulePath(targetPos, directCaller.rawEntity)
+                                                        else []
+                                                    // Chain: root path (includes type root) + intermediate path (without its root)
+                                                    // rootToIntermediatePath = [event_type, desc, inline_script]
+                                                    // intermediateToTargetPath = [desc, trigger, inline_script]
+                                                    // Combined: [event_type, desc, trigger, inline_script]
+                                                    // (drop intermediate root, drop inline_script/script from root path tail)
+                                                    let rootPrefix =
+                                                        rootToIntermediatePath
+                                                        |> List.filter (fun (key, _, _, _, _) ->
+                                                            not (key = "inline_script" || key = "script"))
+                                                    let intermediateSuffix =
+                                                        match intermediateToTargetPath with
+                                                        | _ :: rest -> rest  // drop intermediate's root key
+                                                        | [] -> []
+                                                    rootPrefix @ intermediateSuffix
+                                                | None -> []
                                         with _ -> []
                                     completion.CompleteInlineScript(pos, inlineEntity, callerEntity, callerScopeCtxOpt, Some globalVars, callerRulePath)
                                 | None -> []
@@ -1038,11 +1102,44 @@ module LanguageFeatures =
                 | _ -> None
             | _, _ -> None
 
-        // Fallback for inline_script files: if primary lookup failed,
-        // extract the word at cursor and search the type registry directly
-        match primaryResult with
-        | Some _ -> primaryResult
-        | None ->
+        // Fallback 1: inline_script navigation
+        // When the entity has inline_script nodes expanded, GetInfo can't resolve them.
+        // Check if the current line contains an inline_script reference and navigate to the target file.
+        let inlineScriptFallback () =
+            try
+                let split = filetext.Split('\n')
+                let lineIdx = pos.Line - 1
+                if lineIdx < 0 || lineIdx >= split.Length then None
+                else
+                    let line = split.[lineIdx]
+                    // Match: inline_script = { script = path/to/script ... }
+                    // Use \bscript (word boundary) to avoid matching the "script" inside "inline_script"
+                    let scriptPattern = System.Text.RegularExpressions.Regex(@"\bscript\s*=\s*([^\s}|]+)")
+                    let inlinePattern = System.Text.RegularExpressions.Regex(@"inline_script\s*=")
+                    if inlinePattern.IsMatch(line) then
+                        let m = scriptPattern.Match(line)
+                        if m.Success then
+                            let scriptPath = m.Groups.[1].Value.Trim()
+                            // Skip parameterized paths (contain $) - they can't be resolved statically
+                            if scriptPath.Contains("$") then None
+                            else
+                                // Normalize path separators
+                                let normalizedPath = scriptPath.Replace('\\', '/')
+                                // Search all entities for the inline_script file
+                                resourceManager.Api.AllEntities()
+                                |> Seq.map structFst
+                                |> Seq.tryFind (fun e ->
+                                    let lp = e.logicalpath.Replace('\\', '/')
+                                    (lp.Contains("common/inline_scripts", StringComparison.OrdinalIgnoreCase)) &&
+                                    (lp.EndsWith(normalizedPath + ".txt", StringComparison.OrdinalIgnoreCase) ||
+                                     lp.EndsWith(normalizedPath, StringComparison.OrdinalIgnoreCase)))
+                                |> Option.map (fun e -> mkRange e.filepath pos0 pos0)
+                        else None
+                    else None
+            with _ -> None
+
+        // Fallback 2: For inline_script files, extract word at cursor and search type registry
+        let wordLookupFallback () =
             let isInlineScript =
                 filepath.Contains("inline_scripts", StringComparison.OrdinalIgnoreCase)
             if not isInlineScript then None
@@ -1054,8 +1151,8 @@ module LanguageFeatures =
                     else
                         let line = split.[lineIdx]
                         let col = pos.Column
-                        // Extract word at cursor position
-                        let wordChars c = System.Char.IsLetterOrDigit(c) || c = '_' || c = ':' || c = '.'
+                        // Extract word at cursor position (include '/' for inline_script paths)
+                        let wordChars c = System.Char.IsLetterOrDigit(c) || c = '_' || c = ':' || c = '.' || c = '/'
                         let mutable startIdx = col
                         while startIdx > 0 && wordChars line.[startIdx - 1] do startIdx <- startIdx - 1
                         let mutable endIdx = col
@@ -1070,6 +1167,13 @@ module LanguageFeatures =
                                 infos |> Array.tryPick (fun tdi ->
                                     if tdi.id = word then Some tdi.range else None))
                 with _ -> None
+
+        match primaryResult with
+        | Some _ -> primaryResult
+        | None ->
+            match inlineScriptFallback () with
+            | Some _ as r -> r
+            | None -> wordLookupFallback ()
 
     let findAllRefsFromPos
         (fileManager: FileManager)
