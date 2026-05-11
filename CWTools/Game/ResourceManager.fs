@@ -582,17 +582,40 @@ type ResourceManager<'T when 'T :> ComputedData>
 
     // log "print all"
     // entitiesMap |> Map.toList |> List.map fst |> List.sortBy id |> List.iter (log "%s")
-    let updateInlineScripts (news: (Resource * struct (Entity * Lazy<'T>) option) list) =
-        let inlinePath = "common/inline_scripts/"
-        let inlinePathLength = inlinePath.Length
 
-        let inlineScriptsMap =
-            entitiesMap.Values
-            |> Seq.filter (fun struct (e, _) -> e.overwrite <> Overwrite.Overwritten)
-            |> Seq.map structFst
-            |> Seq.filter (fun e -> e.logicalpath.StartsWith inlinePath)
-            |> Seq.map (fun e -> ((e.logicalpath.Substring inlinePathLength).Replace(".txt", ""), e.rawEntity))
-            |> Map.ofSeq
+    // 性能优化：缓存参数化 inline_script 名称的正则表达式，避免重复编译
+    let regexCache = ConcurrentDictionary<string, System.Text.RegularExpressions.Regex>()
+
+    /// 缓存 inline_script 文件的 Map，避免每次 updateInlineScripts 都遍历整个 entitiesMap
+    let mutable cachedInlineScriptsMap: Map<string, Node> option = None
+    let inlinePath = "common/inline_scripts/"
+    let inlinePathLength = inlinePath.Length
+
+    let getOrBuildInlineScriptsMap () =
+        match cachedInlineScriptsMap with
+        | Some m -> m
+        | None ->
+            let m =
+                entitiesMap.Values
+                |> Seq.filter (fun struct (e, _) -> e.overwrite <> Overwrite.Overwritten)
+                |> Seq.map structFst
+                |> Seq.filter (fun e -> e.logicalpath.StartsWith inlinePath)
+                |> Seq.map (fun e -> ((e.logicalpath.Substring inlinePathLength).Replace(".txt", ""), e.rawEntity))
+                |> Map.ofSeq
+            cachedInlineScriptsMap <- Some m
+            m
+
+    /// 使缓存失效（当 inline_script 文件本身变更时调用）
+    let invalidateInlineScriptsCache () = cachedInlineScriptsMap <- None
+
+    let updateInlineScripts (news: (Resource * struct (Entity * Lazy<'T>) option) list) =
+        // 如果被修改的文件是 inline_script 本身，先失效缓存
+        for (resource, entityOpt) in news do
+            match entityOpt with
+            | Some struct (e, _) when e.logicalpath.StartsWith inlinePath -> invalidateInlineScriptsCache ()
+            | _ -> ()
+
+        let inlineScriptsMap = getOrBuildInlineScriptsMap ()
 
         // Helper: try exact match first, then suffix match, then wildcard match for $PARAM$ patterns
         let tryFindInlineScript (scriptName: string) =
@@ -604,19 +627,20 @@ type ResourceManager<'T when 'T :> ComputedData>
                 // Check if scriptName contains parameter patterns like $RARITY$
                 let hasParams = normalizedName.Contains("$")
 
-                // Build a regex pattern: replace $...$ with wildcard, escape the rest
+                // 性能优化：使用缓存的正则表达式，避免重复编译
                 let pattern =
                     if hasParams then
-                        let parts = normalizedName.Split('$')
-                        parts
-                        |> Array.mapi (fun i part ->
-                            if i % 2 = 1 then // odd indices are inside $...$
-                                "(.+)"
-                            else
-                                System.Text.RegularExpressions.Regex.Escape(part))
-                        |> String.concat ""
-                        |> fun p -> "^" + p + "$"
-                        |> System.Text.RegularExpressions.Regex
+                        regexCache.GetOrAdd(normalizedName, fun name ->
+                            let parts = name.Split('$')
+                            let patternStr =
+                                parts
+                                |> Array.mapi (fun i part ->
+                                    if i % 2 = 1 then // odd indices are inside $...$
+                                        "(.+)"
+                                    else
+                                        System.Text.RegularExpressions.Regex.Escape(part))
+                                |> String.concat ""
+                            System.Text.RegularExpressions.Regex("^" + patternStr + "$", System.Text.RegularExpressions.RegexOptions.Compiled))
                     else
                         null
 
@@ -633,14 +657,33 @@ type ResourceManager<'T when 'T :> ComputedData>
                         None)
 
         let keyId = StringResource.stringManager.InternIdentifierToken "inline_script"
+        let keyIdLower = keyId.lower
+
+        // 性能优化：快速判断 AST 是否包含 inline_script 引用（可提前退出，比 foldNode7 快得多）
+        let rec containsInlineScriptRef (node: Node) =
+            // 检查节点自身的 key 是否是 inline_script
+            if node.KeyId.lower = keyIdLower then true
+            // 检查直接子元素中是否有 inline_script 引用（不递归）
+            elif node.AllArray |> Array.exists (function
+                | NodeC n -> n.KeyId.lower = keyIdLower
+                | LeafC l -> l.KeyId.lower = keyIdLower
+                | _ -> false)
+            then true
+            // 递归检查子节点
+            else node.Nodes |> Seq.exists containsInlineScriptRef
 
         let folder (node: Node) (acc: Child list) =
-            if node.KeyId.lower = keyId.lower then
+            if node.KeyId.lower = keyIdLower then
                 NodeC node :: acc
             else
-                node.LeafsById keyId.lower |> Seq.fold (fun state x -> LeafC x :: state) acc
+                node.LeafsById keyIdLower |> Seq.fold (fun state x -> LeafC x :: state) acc
 
         let updateEntity (e: Entity) =
+            // 性能优化：快速短路检查，如果实体不包含任何 inline_script 引用则直接跳过
+            if not (containsInlineScriptRef e.entity) then
+                None
+            else
+
             let allScriptRefs = ProcessCore.foldNode7 folder e.entity
             // allScriptRefs |> List.iter (function |LeafC l -> log $"a {l.ValueText} {l.Position}" |_ -> ())
             let nodeScriptRefs =
@@ -654,6 +697,15 @@ type ResourceManager<'T when 'T :> ComputedData>
                 |> List.choose (function
                     | LeafC l -> Some l
                     | _ -> None)
+
+            // 性能优化：将 List.exists 替换为 HashSet 查找（O(N) -> O(1)）
+            let nodeRefSet = HashSet<struct(int * int * int * int * StringLowerToken)>()
+            for s in nodeScriptRefs do
+                nodeRefSet.Add(struct(s.Position.StartLine, s.Position.StartColumn, s.Position.EndLine, s.Position.EndColumn, s.KeyId.lower)) |> ignore
+
+            let leafRefSet = HashSet<struct(int * int * int * int * StringLowerToken * StringLowerToken)>()
+            for s in leafScriptRefs do
+                leafRefSet.Add(struct(s.Position.StartLine, s.Position.StartColumn, s.Position.EndLine, s.Position.EndColumn, s.KeyId.lower, s.ValueId.lower)) |> ignore
 
             let rec replaceCataFun (node: Node) =
                 let childFun (child: Child) =
@@ -731,8 +783,7 @@ type ResourceManager<'T when 'T :> ComputedData>
 
 
                         if
-                            nodeScriptRefs
-                            |> List.exists (fun s -> s.Position.Equals(n.Position) && s.KeyId.lower = n.KeyId.lower)
+                            nodeRefSet.Contains(struct(n.Position.StartLine, n.Position.StartColumn, n.Position.EndLine, n.Position.EndColumn, n.KeyId.lower))
                         then
                             let scriptName = (n.TagText "script")
 
@@ -770,11 +821,7 @@ type ResourceManager<'T when 'T :> ComputedData>
                     | LeafC l ->
                         // log $"b {l.ValueText} {l.Position}"
                         if
-                            leafScriptRefs
-                            |> List.exists (fun s ->
-                                s.Position.Equals(l.Position)
-                                && s.KeyId = l.KeyId
-                                && s.ValueId.lower = l.ValueId.lower)
+                            leafRefSet.Contains(struct(l.Position.StartLine, l.Position.StartColumn, l.Position.EndLine, l.Position.EndColumn, l.KeyId.lower, l.ValueId.lower))
                         then
                             let scriptName = l.ValueText
 
@@ -812,6 +859,11 @@ type ResourceManager<'T when 'T :> ComputedData>
         news
         |> Seq.map (function
             | resource, Some struct (oldE, oldLazy) ->
+                // 性能优化：跳过 inline_scripts/ 目录内的文件（它们是模板，不需要被展开）
+                if oldE.logicalpath.StartsWith inlinePath then
+                    resource, Some struct (oldE, oldLazy)
+                else
+
                 let maxIter = 5
 
                 let rec updateInner entity i =
@@ -848,6 +900,8 @@ type ResourceManager<'T when 'T :> ComputedData>
         |> PSeq.iter (fun (struct (_, l)) -> (l.Force() |> ignore))
 
     let forceRecompute () =
+        // 失效 inline_script 缓存，确保下一次展开使用最新数据
+        invalidateInlineScriptsCache ()
         for pair in entitiesMap do
             let struct (entity, _) = pair.Value
 
@@ -872,13 +926,47 @@ type ResourceManager<'T when 'T :> ComputedData>
         let _ = Task.Run(fun () -> forceEagerData ())
         res
 
+    /// 单文件编辑的轻量路径：跳过 updateOverwrite 和 forceEagerData，
+    /// 避免每次编辑都对整个项目做全量扫描和后台预热。
+    /// 完整的 overwrite 重建和 eager 预热仍在 ForceRecompute（delayedAnalyze）中执行。
     let updateFile file =
-        let res = updateFiles [| file |]
+        // 1. 解析文件并生成 Entity
+        let (resource, entity) = parseFileThenEntity file
+
+        // 2. 保存结果到 fileMap/entitiesMap，保留旧 Entity 的 overwrite 状态
+        let savedResults =
+            seq {
+                match resource with
+                | EntityResource(f, _) -> fileMap[f] <- resource
+                | FileResource(f, _) -> fileMap[f] <- resource
+                | FileWithContentResource(f, _) -> fileMap[f] <- resource
+
+                match entity with
+                | Some e ->
+                    // 保留旧 Entity 的 overwrite 状态，避免跳过 updateOverwrite 导致状态丢失
+                    let preservedOverwrite =
+                        match entitiesMap.TryGetValue(e.filepath) with
+                        | true, struct (oldE, _) -> oldE.overwrite
+                        | _ -> Overwrite.No
+                    let e = { e with overwrite = preservedOverwrite }
+                    let lazyi =
+                        new System.Lazy<_>((fun () -> computedDataFunction e), LazyThreadSafetyMode.PublicationOnly)
+                    let item = struct (e, lazyi)
+                    entitiesMap[e.filepath] <- item
+                    yield resource, Some item
+                | None -> yield resource, None
+            } |> Seq.toList
+
+        // 3. 处理 inline script 展开（仅针对本文件）
+        let mutable res = savedResults
+        if enableInlineScripts then
+            res <- updateInlineScripts res |> Seq.toList
+
+        // 跳过 updateOverwrite — 编辑内容不改变覆盖关系
+        // 跳过 forceEagerData — Lazy 值按需求值，避免全量预热导致巨额分配
 
         if res.Length > 1 then
             log (sprintf "File %A returned multiple resources" file)
-        else
-            ()
 
         res.[0]
 

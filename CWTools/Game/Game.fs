@@ -177,7 +177,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             settings.validation.langs,
             debugMode
         )
-    let mutable errorCache = Map.empty
+    let errorCache = System.Collections.Concurrent.ConcurrentDictionary<string, CWError list>()
 
     let updateFile (shallow: bool) filepath (fileText: string option) =
         log $"updateFile %s{filepath}"
@@ -213,12 +213,12 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 | true ->
                     let shallowres, _ = validationManager.Validate(shallow, newEntities)
                     let shallowres = shallowres @ (validationManager.ValidateLocalisation newEntities)
-                    let deep = errorCache |> Map.tryFind filepath |> Option.defaultValue []
+                    let deep = match errorCache.TryGetValue(filepath) with true, v -> v | _ -> []
                     shallowres @ deep
                 | false ->
                     let shallowres, deepres = validationManager.Validate(shallow, newEntities)
                     let shallowres = shallowres @ (validationManager.ValidateLocalisation newEntities)
-                    errorCache <- errorCache.Add(filepath, deepres)
+                    errorCache.[filepath] <- deepres
                     shallowres @ deepres
 
         log $"Update file Time: %i{timer.ElapsedMilliseconds}"
@@ -367,10 +367,10 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     /// 清理不存在文件的缓存条目，防止内存泄漏
     member _.CleanupCache(existingFiles: Set<string>) =
         validationManager.Cleanup existingFiles
-        // Also clean the internal immutable errorCache (deep validation results)
-        errorCache <-
-            errorCache
-            |> Map.filter (fun filepath _ -> existingFiles.Contains filepath)
+        // 清理 errorCache 中不存在文件的条目
+        for key in errorCache.Keys |> Seq.toArray do
+            if not (existingFiles.Contains key) then
+                errorCache.TryRemove(key) |> ignore
 
     member this.InfoAtPos pos file text =
         LanguageFeatures.symbolInformationAtPos
