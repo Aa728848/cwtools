@@ -177,7 +177,8 @@ type StringResourceManager() =
     let metadata = new ConcurrentDictionary<StringToken, StringMetadata>()
     // Fast-path cache: exact case-sensitive key → already-interned token.
     // Avoids redundant ID allocation when the same (key, lower) pair is interned repeatedly.
-    let exactCache = new ConcurrentDictionary<string, StringTokens>()
+    [<NonSerialized>]
+    let mutable exactCache = new ConcurrentDictionary<string, StringTokens>()
 
     let mutable i = 0
 
@@ -237,6 +238,8 @@ type StringResourceManager() =
     [<OnDeserialized>]
     member _.OnDeserialized(_context: StreamingContext) =
         addData <- Func<string, StringTokens>(addDataFunc)
+        if isNull exactCache then
+            exactCache <- new ConcurrentDictionary<string, StringTokens>()
 
     member x.InternIdentifierToken(s: string) : StringTokens =
         // Fast path: exact case-sensitive match avoids GetOrAdd overhead and redundant ID allocation
