@@ -217,18 +217,20 @@ module Helpers =
     let getLocalisationErrors (game: GameObject<_, _>) globalLocalisation =
         fun (force: bool, forceGlobal: bool) ->
             let resources = game.Resources
+            // Cache ValidatableEntities for this call — avoids double materialization
+            let validatableEntities = resources.ValidatableEntities()
 
             let rulesLocErrors =
                 let locKeysArray = game.LocalisationManager.LocalisationKeys()
-                game.ValidationManager.CachedRuleErrors(resources.ValidatableEntities())
-                |> List.filter (fun e -> 
+                game.ValidationManager.CachedRuleErrors(validatableEntities)
+                |> List.filter (fun e ->
                     if e.code = "CW100" then
                         match e.data with
                         | Some key ->
                             let exists = locKeysArray |> Array.exists (fun (_, keys) -> keys.Contains key)
                             not exists
                         | None -> true
-                    else 
+                    else
                         false)
 
             let genGlobal () =
@@ -238,7 +240,7 @@ module Helpers =
 
             let genAll () =
                 let les =
-                    (game.ValidationManager.ValidateLocalisation(resources.ValidatableEntities()))
+                    (game.ValidationManager.ValidateLocalisation(validatableEntities))
 
                 game.LocalisationManager.localisationErrors <- Some les
                 les

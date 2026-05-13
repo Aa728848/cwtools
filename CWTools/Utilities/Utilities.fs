@@ -175,6 +175,9 @@ type StringResourceManager() =
     let strings = new ConcurrentDictionary<string, StringTokens>()
     let ints = new ConcurrentDictionary<StringToken, string>()
     let metadata = new ConcurrentDictionary<StringToken, StringMetadata>()
+    // Fast-path cache: exact case-sensitive key → already-interned token.
+    // Avoids redundant ID allocation when the same (key, lower) pair is interned repeatedly.
+    let exactCache = new ConcurrentDictionary<string, StringTokens>()
 
     let mutable i = 0
 
@@ -235,7 +238,14 @@ type StringResourceManager() =
     member _.OnDeserialized(_context: StreamingContext) =
         addData <- Func<string, StringTokens>(addDataFunc)
 
-    member x.InternIdentifierToken(s: string) : StringTokens = strings.GetOrAdd(s, addData)
+    member x.InternIdentifierToken(s: string) : StringTokens =
+        // Fast path: exact case-sensitive match avoids GetOrAdd overhead and redundant ID allocation
+        match exactCache.TryGetValue(s) with
+        | true, token -> token
+        | false, _ ->
+            let token = strings.GetOrAdd(s, addData)
+            exactCache.TryAdd(s, token) |> ignore
+            token
 
     member x.GetStringForIDs(id: StringTokens) = ints[id.normal]
     member x.GetLowerStringForIDs(id: StringTokens) = ints[id.lower]

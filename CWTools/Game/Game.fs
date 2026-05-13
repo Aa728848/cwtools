@@ -293,13 +293,31 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         resourceManager.Api.UpdateFiles(filteredfiles) |> ignore
         log $"Parsed files in %A{timer.ElapsedMilliseconds}"
 
+    let mutable prevRuleServiceRef: WeakReference option = None
+    let mutable prevInfoServiceRef: WeakReference option = None
+    let mutable prevCompletionServiceRef: WeakReference option = None
+
     let updateRulesCache () =
+        // Capture old service instances for leak detection
+        let oldRule = this.RuleValidationService |> Option.map (fun x -> WeakReference(x))
+        let oldInfo = this.InfoService |> Option.map (fun x -> WeakReference(x))
+        let oldCompletion = this.completionService |> Option.map (fun x -> WeakReference(x))
+
         let rules, info, completion = rulesManager.RefreshConfig()
         this.RuleValidationService <- Some rules
         this.InfoService <- Some info
         this.completionService <- Some completion
         this.RefreshValidationManager()
         LanguageFeatures.clearCompletionEntityCache ()
+
+        // Check if previous instances were collected (diagnostic)
+        match prevRuleServiceRef, prevInfoServiceRef, prevCompletionServiceRef with
+        | Some r, Some i, Some c ->
+            log $"[MemDiag:WeakRef] prev services alive: rule={r.IsAlive} info={i.IsAlive} completion={c.IsAlive}"
+        | _ -> ()
+        prevRuleServiceRef <- oldRule
+        prevInfoServiceRef <- oldInfo
+        prevCompletionServiceRef <- oldCompletion
 
     let initialConfigRules () =
         log "Initial config rules update"

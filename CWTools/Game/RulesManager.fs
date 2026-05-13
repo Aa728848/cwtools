@@ -197,9 +197,12 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         endToEndTimer.Start()
         let rulesWrapper = RulesWrapper(lookup.configRules)
 
+        // Materialize all entities once to avoid repeated Seq creation (5+ calls previously)
+        let allEntitiesList = resources.AllEntities() |> Seq.toList
+
         /// Enums
         let complexEnumDefs =
-            getEnumsFromComplexEnums complexEnums (resources.AllEntities() |> Seq.map structFst)
+            getEnumsFromComplexEnums complexEnums (allEntitiesList |> Seq.map structFst)
 
         let allEnums = simpleEnums @ complexEnumDefs
 
@@ -247,7 +250,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     validateLoc
                 )
 
-            let allEntities = resources.AllEntities() |> Seq.map structFst
+            let allEntities = allEntitiesList |> Seq.map structFst
             let typeDefInfo =
                 getTypesFromDefinitions (Some tempRuleValidationService) tempTypes allEntities
 
@@ -360,7 +363,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             |> Map.ofList
 
         let results =
-            resources.AllEntities()
+            allEntitiesList
             |> PSeq.map (fun struct (e, l) ->
                 (l.Force().Definedvariables
                  |> (Option.defaultWith (fun () -> tempInfoService.GetDefinedVariables e))))
@@ -379,7 +382,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         lookup.varDefInfo <- addEmbeddedVarDefData results
         // eprintfn "vdi %A" results
         let results =
-            resources.AllEntities()
+            allEntitiesList
             |> PSeq.map (fun struct (e, l) ->
                 (l.Force().SavedEventTargets
                  |> (Option.defaultWith (fun () -> tempInfoService.GetSavedEventTargets e))))
@@ -415,8 +418,6 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let processLoc, validateLoc = settings.locFunctions lookup
 
         // Collect global scripted variables with their actual values from all entities
-        let allEntitiesList = resources.AllEntities() |> Seq.toList
-
         let globalScriptVariablesWithValues =
             allEntitiesList
             |> Seq.collect (fun struct (e, _) ->
