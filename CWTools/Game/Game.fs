@@ -293,15 +293,15 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         resourceManager.Api.UpdateFiles(filteredfiles) |> ignore
         log $"Parsed files in %A{timer.ElapsedMilliseconds}"
 
-    let mutable prevRuleServiceRef: WeakReference option = None
-    let mutable prevInfoServiceRef: WeakReference option = None
-    let mutable prevCompletionServiceRef: WeakReference option = None
+    let mutable prevRuleServiceRef: System.WeakReference option = None
+    let mutable prevInfoServiceRef: System.WeakReference option = None
+    let mutable prevCompletionServiceRef: System.WeakReference option = None
 
     let updateRulesCache () =
         // Capture old service instances for leak detection
-        let oldRule = this.RuleValidationService |> Option.map (fun x -> WeakReference(x))
-        let oldInfo = this.InfoService |> Option.map (fun x -> WeakReference(x))
-        let oldCompletion = this.completionService |> Option.map (fun x -> WeakReference(x))
+        let oldRule = this.RuleValidationService |> Option.map (fun x -> System.WeakReference(x))
+        let oldInfo = this.InfoService |> Option.map (fun x -> System.WeakReference(x))
+        let oldCompletion = this.completionService |> Option.map (fun x -> System.WeakReference(x))
 
         let rules, info, completion = rulesManager.RefreshConfig()
         this.RuleValidationService <- Some rules
