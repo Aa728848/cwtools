@@ -299,6 +299,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         this.InfoService <- Some info
         this.completionService <- Some completion
         this.RefreshValidationManager()
+        LanguageFeatures.clearCompletionEntityCache ()
 
     let initialConfigRules () =
         log "Initial config rules update"

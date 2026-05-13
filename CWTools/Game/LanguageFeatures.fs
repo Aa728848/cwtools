@@ -18,6 +18,10 @@ module LanguageFeatures =
     /// when the file content hasn't changed.
     let private completionEntityCache = ConcurrentDictionary<string, struct (int * Entity)>()
 
+    /// Clear the completion entity cache. Call during RefreshCaches to release
+    /// stale Entity ASTs for files that are no longer relevant.
+    let clearCompletionEntityCache () = completionEntityCache.Clear()
+
     let getNodeForTypeDefAndType
         (resourceManager: ResourceManager<_>)
         (lookup: Lookup)
