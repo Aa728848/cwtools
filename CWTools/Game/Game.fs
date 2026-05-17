@@ -391,6 +391,11 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             if not (existingFiles.Contains key) then
                 errorCache.TryRemove(key) |> ignore
 
+    /// 清除单个文件的深度验证缓存。
+    /// 在文件编辑时调用，确保 shallow lint 不会返回过时的 deep 错误。
+    member _.InvalidateFileCache(filepath: string) =
+        errorCache.TryRemove(filepath) |> ignore
+
     member this.InfoAtPos pos file text =
         LanguageFeatures.symbolInformationAtPos
             this.FileManager

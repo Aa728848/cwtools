@@ -281,6 +281,7 @@ type VIC3Game(setupSettings: VIC3Settings) =
             game.LocalisationManager.UpdateProcessedLocalisation()
 
         member _.CleanupCache(existingFiles) = game.CleanupCache existingFiles
+        member _.InvalidateFileCache(filepath) = game.InvalidateFileCache filepath
 
         member _.ForceRecompute() = resources.ForceRecompute()
         member _.Types() = game.Lookup.typeDefInfo

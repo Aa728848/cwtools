@@ -84,6 +84,7 @@ type IGame =
     abstract RefreshCaches: unit -> unit
     abstract RefreshLocalisationCaches: unit -> unit
     abstract CleanupCache: Set<string> -> unit
+    abstract InvalidateFileCache: string -> unit
     abstract ForceRecompute: unit -> unit
     abstract Types: unit -> Map<string, TypeDefInfo array>
     abstract TypeDefs: unit -> CWTools.Rules.TypeDefinition list
