@@ -19,6 +19,14 @@ open CWTools.Utilities
 open System.Threading.Tasks
 open CWTools.Utilities.StringResource
 
+module ResourceManagerEager =
+    let mutable private eagerVersion = 0
+
+    let nextVersion () =
+        Interlocked.Increment(&eagerVersion)
+
+    let currentVersion () = Volatile.Read(&eagerVersion)
+
 // Fuzzy = prefix/suffix
 type ReferenceType =
     | TypeDef = 0uy
@@ -892,12 +900,16 @@ type ResourceManager<'T when 'T :> ComputedData>
         entitiesMap.Values
         |> PSeq.iter (fun (struct (e, l)) -> computedDataUpdateFunction e (l.Force()))
 
-    let forceEagerData () =
+    let forceEagerData expectedVersion =
         entitiesMap.Values.ToArray()
         |> (fun array ->
             Array.randomShuffleInPlace array
             array)
-        |> PSeq.iter (fun (struct (_, l)) -> (l.Force() |> ignore))
+        |> Array.chunkBySize 64
+        |> Array.iter (fun batch ->
+            if ResourceManagerEager.currentVersion () = expectedVersion then
+                batch |> Array.iter (fun (struct (_, l)) -> l.Force() |> ignore)
+                Thread.Yield() |> ignore)
 
     let forceRecompute () =
         // 失效 inline_script 缓存，确保下一次展开使用最新数据
@@ -910,7 +922,8 @@ type ResourceManager<'T when 'T :> ComputedData>
 
             entitiesMap[pair.Key] <- struct (entity, lazyi)
 
-        let _ = Task.Run(fun () -> forceEagerData ())
+        let eagerVersion = ResourceManagerEager.nextVersion ()
+        let _ = Task.Run(fun () -> forceEagerData eagerVersion)
         ()
 
     let updateFiles (files: ResourceInput array) =
@@ -923,13 +936,15 @@ type ResourceManager<'T when 'T :> ComputedData>
         if enableInlineScripts then
             res <- updateInlineScripts news |> Seq.toList
 
-        let _ = Task.Run(fun () -> forceEagerData ())
+        let eagerVersion = ResourceManagerEager.nextVersion ()
+        let _ = Task.Run(fun () -> forceEagerData eagerVersion)
         res
 
     /// 单文件编辑的轻量路径：跳过 updateOverwrite 和 forceEagerData，
     /// 避免每次编辑都对整个项目做全量扫描和后台预热。
     /// 完整的 overwrite 重建和 eager 预热仍在 ForceRecompute（delayedAnalyze）中执行。
     let updateFile file =
+        ResourceManagerEager.nextVersion () |> ignore
         // 1. 解析文件并生成 Entity
         let (resource, entity) = parseFileThenEntity file
 
