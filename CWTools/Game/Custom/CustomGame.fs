@@ -259,7 +259,7 @@ type CustomGame(setupSettings: CustomSettings, gameFolderName: string) =
                 game.InfoService
                 game.LocalisationManager
                 lookup
-                (Custom CustomLang.English)
+                (settings.validation.langs |> Array.tryHead |> Option.defaultValue (Custom CustomLang.English))
                 pos
                 file
                 text

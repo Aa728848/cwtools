@@ -332,7 +332,7 @@ type IRGame(setupSettings: IRSettings) =
                 game.InfoService
                 game.LocalisationManager
                 lookup
-                (IR IRLang.English)
+                (settings.validation.langs |> Array.tryHead |> Option.defaultValue (IR IRLang.English))
                 pos
                 file
                 text

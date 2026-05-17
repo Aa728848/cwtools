@@ -560,7 +560,7 @@ type CK2Game(setupSettings: CK2Settings) =
                 game.InfoService
                 game.LocalisationManager
                 lookup
-                (CK2 CK2Lang.English)
+                (settings.validation.langs |> Array.tryHead |> Option.defaultValue (CK2 CK2Lang.English))
                 pos
                 file
                 text

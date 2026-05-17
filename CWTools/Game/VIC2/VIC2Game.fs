@@ -302,7 +302,7 @@ type VIC2Game(setupSettings: VIC2Settings) =
                 game.InfoService
                 game.LocalisationManager
                 lookup
-                (VIC2 VIC2Lang.English)
+                (settings.validation.langs |> Array.tryHead |> Option.defaultValue (VIC2 VIC2Lang.English))
                 pos
                 file
                 text

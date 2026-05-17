@@ -267,7 +267,7 @@ type CK3Game(setupSettings: CK3Settings) =
                 game.InfoService
                 game.LocalisationManager
                 lookup
-                (CK3 CK3Lang.English)
+                (settings.validation.langs |> Array.tryHead |> Option.defaultValue (CK3 CK3Lang.English))
                 pos
                 file
                 text

@@ -259,7 +259,7 @@ type EU5Game(setupSettings: EU5Settings) =
                 game.InfoService
                 game.LocalisationManager
                 lookup
-                (EU5 EU5Lang.English)
+                (settings.validation.langs |> Array.tryHead |> Option.defaultValue (EU5 EU5Lang.English))
                 pos
                 file
                 text

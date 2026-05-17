@@ -496,7 +496,7 @@ type EU4Game(setupSettings: EU4Settings) =
                 game.InfoService
                 game.LocalisationManager
                 lookup
-                (EU4 EU4Lang.English)
+                (settings.validation.langs |> Array.tryHead |> Option.defaultValue (EU4 EU4Lang.English))
                 pos
                 file
                 text

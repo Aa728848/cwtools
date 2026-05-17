@@ -493,7 +493,7 @@ type HOI4Game(setupSettings: HOI4Settings) =
                 game.InfoService
                 game.LocalisationManager
                 lookup
-                (HOI4 HOI4Lang.English)
+                (settings.validation.langs |> Array.tryHead |> Option.defaultValue (HOI4 HOI4Lang.English))
                 pos
                 file
                 text

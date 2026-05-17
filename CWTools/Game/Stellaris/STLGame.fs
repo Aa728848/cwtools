@@ -629,7 +629,7 @@ type STLGame(setupSettings: StellarisSettings) =
                 game.InfoService
                 game.LocalisationManager
                 lookup
-                (STL STLLang.English)
+                (settings.validation.langs |> Array.tryHead |> Option.defaultValue (STL STLLang.English))
                 pos
                 file
                 text

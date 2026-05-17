@@ -258,7 +258,7 @@ type VIC3Game(setupSettings: VIC3Settings) =
                 game.InfoService
                 game.LocalisationManager
                 lookup
-                (VIC3 VIC3Lang.English)
+                (settings.validation.langs |> Array.tryHead |> Option.defaultValue (VIC3 VIC3Lang.English))
                 pos
                 file
                 text
