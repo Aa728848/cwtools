@@ -346,6 +346,11 @@ module private RulesParserImpl =
             | Some s -> s.Substring(s.IndexOf '=' + 1).Trim() |> Some
             | None -> None
 
+        let completionType =
+            match comments |> List.tryFind (fun s -> s.Contains("completion_type")) with
+            | Some s when s.Contains '=' -> s.Substring(s.IndexOf '=' + 1).Trim() |> Some
+            | _ -> None
+
         { min = min
           max = max
           strictMin = strictmin
@@ -360,6 +365,7 @@ module private RulesParserImpl =
           keyRequiredQuotes = keyRequiredQuotes
           valueRequiredQuotes = valueRequiredQuotes
           typeHint = None
+          completionType = completionType
           errorIfOnlyMatch = errorIfMatched }
 
     let fastStartsWith (x: string) y =
@@ -638,6 +644,7 @@ module private RulesParserImpl =
           keyRequiredQuotes = false
           valueRequiredQuotes = false
           typeHint = None
+          completionType = None
           errorIfOnlyMatch = None }
 
     let private hsvRule =
@@ -656,6 +663,7 @@ module private RulesParserImpl =
           keyRequiredQuotes = false
           valueRequiredQuotes = false
           typeHint = None
+          completionType = None
           errorIfOnlyMatch = None }
 
     let private configLeaf parseScope allScopes anyScope scopeGroup (leaf: Leaf) (comments: string list) (key: string) =
@@ -1170,6 +1178,12 @@ module private RulesParserImpl =
                         None
                 | None -> None
 
+            let rootCompletionFromSubtypes =
+                match comments |> List.tryFind (fun s -> s.Contains "root_completion") with
+                | Some c when c.Contains '=' ->
+                    c.Substring(c.IndexOf '=' + 1).Trim().Equals("subtypes", StringComparison.OrdinalIgnoreCase)
+                | _ -> false
+
             let graphData =
                 match comments |> List.tryFind (fun s -> s.Contains "graph_related_types") with
                 | Some c ->
@@ -1198,6 +1212,7 @@ module private RulesParserImpl =
                       conditions = None
                       subtypes = subtypes
                       typeKeyFilter = typekeyfilter
+                      rootCompletionFromSubtypes = rootCompletionFromSubtypes
                       skipRootKey = skiprootkey
                       warningOnly = warningOnly
                       localisation = localisation

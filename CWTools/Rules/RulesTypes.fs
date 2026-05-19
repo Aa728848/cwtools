@@ -28,6 +28,7 @@ type Options =
       keyRequiredQuotes: bool
       valueRequiredQuotes: bool
       typeHint: (string * bool) option
+      completionType: string option
       errorIfOnlyMatch: string option }
 
     static member DefaultOptions =
@@ -45,6 +46,7 @@ type Options =
           keyRequiredQuotes = false
           valueRequiredQuotes = false
           typeHint = None
+          completionType = None
           errorIfOnlyMatch = None }
 
 type ValueType =
@@ -132,6 +134,7 @@ and TypeDefinition =
       conditions: Node option
       subtypes: SubTypeDefinition list
       typeKeyFilter: (string list * bool) option
+      rootCompletionFromSubtypes: bool
       skipRootKey: SkipRootKey list
       startsWith: string option
       type_per_file: bool

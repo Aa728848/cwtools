@@ -149,6 +149,7 @@ let createStarbaseTypeDefLazy =
           conditions = None
           subtypes = []
           typeKeyFilter = None
+          rootCompletionFromSubtypes = false
           skipRootKey = []
           warningOnly = false
           type_per_file = false
@@ -266,6 +267,7 @@ let shipBehaviorTypeLazy =
           conditions = None
           subtypes = []
           typeKeyFilter = None
+          rootCompletionFromSubtypes = false
           skipRootKey = []
           warningOnly = false
           type_per_file = false
@@ -289,6 +291,7 @@ let shipSizeTypeLazy =
           conditions = None
           subtypes = []
           typeKeyFilter = None
+          rootCompletionFromSubtypes = false
           skipRootKey = []
           warningOnly = false
           type_per_file = false
@@ -857,6 +860,120 @@ let testsv =
                   let expected = [ "create_starbase"; "create_starbase" ] |> Seq.sort
                   Expect.sequenceEqual suggestions expected "Completion should match"
               | Failure(e, _, _) -> Expect.isTrue false e
+
+          testWithCapturedLogs "test scalar completion type hint"
+          <| fun () ->
+              let input =
+                  "fire_on_action = {\n\
+                            on_action = o\n\
+                            }"
+
+              match CKParser.parseString input "test.txt" with
+              | Success(r, _, _) ->
+                  let node = (STLProcess.shipProcess.ProcessNode () "root" range.Zero r)
+
+                  let entity =
+                      { filepath = "events/test.txt"
+                        logicalpath = "events/test.txt"
+                        rawEntity = node
+                        entity = node
+                        validate = true
+                        entityType = EntityType.Events
+                        overwrite = Overwrite.No }
+
+                  let onAction =
+                      NewRule(
+                          LeafRule(specificField "on_action", ScalarField ScalarValue),
+                          { requiredSingle with
+                              completionType = Some "on_action" }
+                      )
+
+                  let fireOnAction =
+                      NewRule(NodeRule(specificField "fire_on_action", [| onAction |]), optionalMany)
+
+                  let typeinfo =
+                      [ "on_action", createStringSet [ "on_game_start"; "custom_on_action" ] ]
+                      |> Map.ofList
+
+                  let comp =
+                      CompletionService(
+                          RulesWrapper [| TypeRule("fire_on_action", fireOnAction) |],
+                          [ { createStarbaseTypeDefLazy.Value with name = "fire_on_action" } ],
+                          typeinfo.ToFrozenDictionary(),
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          [||],
+                          FrozenSet.Empty,
+                          effectMap,
+                          effectMap,
+                          [],
+                          changeScope,
+                          defaultContext,
+                          (scopeManager.ParseScope () "Any"),
+                          [],
+                          STL STLLang.Default,
+                          emptyDataTypesLazy.Value,
+                          processLocalisationLazy.Value,
+                          validateLocalisationLazy.Value
+                      )
+
+                  let pos = mkPos 2 13
+
+                  let suggestions =
+                      comp.Complete(pos, entity, None, None)
+                      |> Seq.map (function
+                          | Simple(c, _, _) -> c
+                          | Snippet(l, _, _, _, _) -> l
+                          | Detailed _ -> failwith "todo")
+                      |> Seq.sort
+
+                  let expected = [ "custom_on_action"; "on_game_start" ] |> Seq.sort
+                  Expect.sequenceEqual suggestions expected "Completion should match"
+              | Failure(e, _, _) -> Expect.isTrue false e
+
+          testWithCapturedLogs "test on_action root subtype completion"
+          <| fun () ->
+              let configtext =
+                  [ "./testfiles/configtests/config/on_actions.cwt",
+                    "types = {\n\
+                          ## root_completion = subtypes\n\
+                          type[on_action] = {\n\
+                              path = \"game/common/on_actions\"\n\
+                              ## type_key_filter = on_game_start\n\
+                              subtype[on_game_start] = { }\n\
+                              ## type_key_filter = on_monthly_pulse\n\
+                              subtype[on_monthly_pulse] = { }\n\
+                          }\n\
+                      }" ]
+
+              let folder = "./testfiles/configtests/completiontests"
+              let settings = emptyStellarisSettings folder
+
+              let settings =
+                  { settings with
+                      embedded = FromConfig([], [])
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let input = "on"
+              let pos = mkPos 1 2
+
+              let suggestions =
+                  stl.Complete pos "common/on_actions/test.txt" input
+                  |> Seq.map (function
+                      | Simple(c, _, _) -> c
+                      | Snippet(l, _, _, _, _) -> l
+                      | Detailed _ -> failwith "todo")
+                  |> Seq.toList
+
+              Expect.contains suggestions "on_game_start" "Completion should include vanilla on_action key"
+              Expect.contains suggestions "on_monthly_pulse" "Completion should include vanilla on_action key"
+              Expect.isFalse (suggestions |> List.contains "on_action") "Subtype-only root completion should not suggest the type name"
 
           testWithCapturedLogs "test test ship_behavior"
           <| fun () ->

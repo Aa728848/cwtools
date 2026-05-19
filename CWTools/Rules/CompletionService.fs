@@ -727,71 +727,80 @@ type CompletionService
                 | SubtypeRule _ -> [||]
                 | _ -> [||]
         //TODO: Add leafvalue
-        let fieldToRules (field: NewField) (value: string) (scopeContext: ScopeContext) =
+        let typeCompletionItems (typeName: string) =
+            types.TryFind(typeName)
+            |> Option.defaultValue []
+            |> Seq.map CompletionResponse.CreateSimple
+            |> Seq.toArray
+
+        let fieldToRules (field: NewField) (value: string) (scopeContext: ScopeContext) (completionType: string option) =
             //            log (sprintf "%A %A" field value)
             //            eprintfn "%A" value
-            match field with
-            | NewField.ValueField(Enum e) ->
-                enums.TryFind(e)
-                |> Option.map (fun (_, s) -> s.StringValues |> Array.ofSeq)
-                |> Option.defaultValue [||]
-                |> Array.map CompletionResponse.CreateSimple
-            | NewField.ValueField v ->
-                FieldValidators.getValidValues v
-                |> Option.defaultValue [||]
-                |> Seq.map CompletionResponse.CreateSimple
-                |> Seq.toArray
-            | NewField.TypeField(TypeType.Simple t) ->
-                types.TryFind(t)
-                |> Option.defaultValue []
-                |> Seq.map CompletionResponse.CreateSimple
-                |> Seq.toArray
-            | NewField.TypeField(TypeType.Complex(p, t, s)) ->
-                types.TryFind(t)
-                |> Option.map (fun ns -> List.map (fun n -> p + n + s) ns)
-                |> Option.defaultValue []
-                |> Seq.map CompletionResponse.CreateSimple
-                |> Seq.toArray
-            | NewField.LocalisationField(s, _) ->
-                match s, value.Contains '[' with
-                | false, true -> (allPossibles |> Array.map CompletionResponse.CreateSimple)
-                | true, _ ->
-                    localisation
-                    |> Array.tryFind (fun (lang, _) -> lang = (STL STLLang.Default))
-                    |> Option.map (snd >> Set.toArray)
+            match completionType with
+            | Some typeName -> typeCompletionItems typeName
+            | None ->
+                match field with
+                | NewField.ValueField(Enum e) ->
+                    enums.TryFind(e)
+                    |> Option.map (fun (_, s) -> s.StringValues |> Array.ofSeq)
                     |> Option.defaultValue [||]
                     |> Array.map CompletionResponse.CreateSimple
-                | false, _ ->
-                    localisation
-                    |> Array.tryFind (fun (lang, _) -> lang <> (STL STLLang.Default))
-                    |> Option.map (snd >> Set.toArray)
+                | NewField.ValueField v ->
+                    FieldValidators.getValidValues v
+                    |> Option.defaultValue [||]
+                    |> Seq.map CompletionResponse.CreateSimple
+                    |> Seq.toArray
+                | NewField.TypeField(TypeType.Simple t) ->
+                    types.TryFind(t)
+                    |> Option.defaultValue []
+                    |> Seq.map CompletionResponse.CreateSimple
+                    |> Seq.toArray
+                | NewField.TypeField(TypeType.Complex(p, t, s)) ->
+                    types.TryFind(t)
+                    |> Option.map (fun ns -> List.map (fun n -> p + n + s) ns)
+                    |> Option.defaultValue []
+                    |> Seq.map CompletionResponse.CreateSimple
+                    |> Seq.toArray
+                | NewField.LocalisationField(s, _) ->
+                    match s, value.Contains '[' with
+                    | false, true -> (allPossibles |> Array.map CompletionResponse.CreateSimple)
+                    | true, _ ->
+                        localisation
+                        |> Array.tryFind (fun (lang, _) -> lang = (STL STLLang.Default))
+                        |> Option.map (snd >> Set.toArray)
+                        |> Option.defaultValue [||]
+                        |> Array.map CompletionResponse.CreateSimple
+                    | false, _ ->
+                        localisation
+                        |> Array.tryFind (fun (lang, _) -> lang <> (STL STLLang.Default))
+                        |> Option.map (snd >> Set.toArray)
+                        |> Option.defaultValue [||]
+                        |> Array.map CompletionResponse.CreateSimple
+                | NewField.FilepathField _ -> files.Select(CompletionResponse.CreateSimple).ToArray()
+                | NewField.ScopeField x ->
+                    completionForRHSScopeChain value scopeContext (CompletionScopeExpectation.Scopes x)
+                    |> List.toArray
+                | NewField.VariableGetField v ->
+                    varMap.TryFind v
+                    |> Option.map (fun ss -> ss.StringValues |> Array.ofSeq)
                     |> Option.defaultValue [||]
                     |> Array.map CompletionResponse.CreateSimple
-            | NewField.FilepathField _ -> files.Select(CompletionResponse.CreateSimple).ToArray()
-            | NewField.ScopeField x ->
-                completionForRHSScopeChain value scopeContext (CompletionScopeExpectation.Scopes x)
-                |> List.toArray
-            | NewField.VariableGetField v ->
-                varMap.TryFind v
-                |> Option.map (fun ss -> ss.StringValues |> Array.ofSeq)
-                |> Option.defaultValue [||]
-                |> Array.map CompletionResponse.CreateSimple
-            | NewField.VariableSetField v ->
-                varMap.TryFind v
-                |> Option.map (fun ss -> ss.StringValues |> Array.ofSeq)
-                |> Option.defaultValue [||]
-                |> Array.map CompletionResponse.CreateSimple
-            | NewField.VariableField _ -> (completionForRHSVariableChain value scopeContext) |> List.toArray
-            | NewField.ValueScopeField _ ->
-                (completionForRHSValueChain value scopeContext)
-                    .Concat(
-                        enums.TryFind("static_values")
-                        |> Option.map (fun (_, s) -> s.StringValues |> List.ofSeq)
-                        |> Option.defaultValue []
-                        |> List.map CompletionResponse.CreateSimple
-                    )
-                    .ToArray()
-            | _ -> [||]
+                | NewField.VariableSetField v ->
+                    varMap.TryFind v
+                    |> Option.map (fun ss -> ss.StringValues |> Array.ofSeq)
+                    |> Option.defaultValue [||]
+                    |> Array.map CompletionResponse.CreateSimple
+                | NewField.VariableField _ -> (completionForRHSVariableChain value scopeContext) |> List.toArray
+                | NewField.ValueScopeField _ ->
+                    (completionForRHSValueChain value scopeContext)
+                        .Concat(
+                            enums.TryFind("static_values")
+                            |> Option.map (fun (_, s) -> s.StringValues |> List.ofSeq)
+                            |> Option.defaultValue []
+                            |> List.map CompletionResponse.CreateSimple
+                        )
+                        .ToArray()
+                | _ -> [||]
 
         let p =
             { varMap = varMap
@@ -883,7 +892,7 @@ type CompletionService
                 | [||] -> expandedRules |> Array.collect (convRuleToCompletion key count scopeContext)
                 | fs ->
                     //log "%s %A" key fs
-                    let res = fs |> Array.collect (fun (_, f, _) -> fieldToRules f value scopeContext)
+                    let res = fs |> Array.collect (fun (_, f, o) -> fieldToRules f value scopeContext o.completionType)
                     //log "res %A" res
                     res
             | (key, count, _, NodeRHS) :: rest ->
@@ -1043,18 +1052,23 @@ type CompletionService
                 |> Seq.toList
         //TODO: Expand this to use a snippet not just the name of the type
         let createSnippetForType (typeDef: TypeDefinition) =
-            let rootSnippets =
-                match typeDef.typeKeyFilter with
-                | Some(keys: string list, false) -> keys
-                | _ -> [ typeDef.name ]
+            let subtypeSnippets =
+                typeDef.subtypes
+                |> List.choose (fun st ->
+                    if st.typeKeyField.IsSome then
+                        Some st.typeKeyField.Value
+                    else
+                        None)
 
-            rootSnippets
-            @ (typeDef.subtypes
-               |> List.choose (fun st ->
-                   if st.typeKeyField.IsSome then
-                       (Some st.typeKeyField.Value)
-                   else
-                       None))
+            let rootSnippets =
+                if typeDef.rootCompletionFromSubtypes then
+                    []
+                else
+                    match typeDef.typeKeyFilter with
+                    | Some(keys: string list, false) -> keys
+                    | _ -> [ typeDef.name ]
+
+            rootSnippets @ subtypeSnippets
             |> List.map (fun s -> createSnippetForClause (fun _ -> 1) [||] None s)
 
         let rootTypeItems =
@@ -1208,14 +1222,19 @@ type CompletionService
                 |> Seq.toList
 
         let createSnippetForType (typeDef: TypeDefinition) =
+            let subtypeSnippets =
+                typeDef.subtypes
+                |> List.choose (fun st -> if st.typeKeyField.IsSome then Some st.typeKeyField.Value else None)
+
             let rootSnippets =
-                match typeDef.typeKeyFilter with
-                | Some(keys: string list, false) -> keys
-                | _ -> [ typeDef.name ]
-            rootSnippets
-            @ (typeDef.subtypes
-               |> List.choose (fun st ->
-                   if st.typeKeyField.IsSome then Some st.typeKeyField.Value else None))
+                if typeDef.rootCompletionFromSubtypes then
+                    []
+                else
+                    match typeDef.typeKeyFilter with
+                    | Some(keys: string list, false) -> keys
+                    | _ -> [ typeDef.name ]
+
+            rootSnippets @ subtypeSnippets
             |> List.map (fun s -> createSnippetForClause (fun _ -> 1) [||] None s)
 
         // Only show root type items when there's NO intermediate caller path.
