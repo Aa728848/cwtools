@@ -201,6 +201,15 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 let ges = globalLocalisation (this)
                 this.LocalisationManager.globalLocalisationErrors <- Some ges
                 []
+            | x when PdxShaderFeatures.isShaderFile x ->
+                let file =
+                    fileText |> Option.defaultWith (fun () -> File.ReadAllText(filepath, encoding))
+
+                let resource =
+                    LanguageFeatures.makeFileWithContentResourceInput fileManager filepath file
+
+                this.Resources.UpdateFile resource |> ignore
+                PdxShaderFeatures.validate this.Resources filepath file
             | _ ->
                 let file =
                     fileText |> Option.defaultWith (fun () -> File.ReadAllText(filepath, encoding))
@@ -397,14 +406,17 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         errorCache.TryRemove(filepath) |> ignore
 
     member this.InfoAtPos pos file text =
-        LanguageFeatures.symbolInformationAtPos
-            this.FileManager
-            this.ResourceManager
-            this.InfoService
-            this.Lookup
-            pos
-            file
-            text
+        if PdxShaderFeatures.isShaderFile file then
+            PdxShaderFeatures.infoAtPos this.Resources pos file text
+        else
+            LanguageFeatures.symbolInformationAtPos
+                this.FileManager
+                this.ResourceManager
+                this.InfoService
+                this.Lookup
+                pos
+                file
+                text
 
     member _.ReplaceConfigRules rules = rulesManager.LoadBaseConfig rules
     member _.RefreshCaches() = updateRulesCache ()

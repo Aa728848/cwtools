@@ -70,7 +70,7 @@ module LanguageFeatures =
               validate = true }
 
 
-    let completion
+    let private scriptCompletion
         (fileManager: FileManager)
         (completionService: CompletionService option)
         (infoService: InfoService option)
@@ -1059,6 +1059,20 @@ module LanguageFeatures =
                     | _, Some e, Some completion, None -> completion.Complete(pos, e, None, Some globalVars)
                     | _, _, _, _ -> []
 
+    let completion
+        (fileManager: FileManager)
+        (completionService: CompletionService option)
+        (infoService: InfoService option)
+        (resourceManager: ResourceManager<_>)
+        (pos: pos)
+        (filepath: string)
+        (filetext: string)
+        =
+        if PdxShaderFeatures.isShaderFile filepath then
+            PdxShaderFeatures.completion resourceManager pos filepath filetext
+        else
+            scriptCompletion fileManager completionService infoService resourceManager pos filepath filetext
+
 
     let getInfoAtPos
         (fileManager: FileManager)
@@ -1071,113 +1085,116 @@ module LanguageFeatures =
         (filepath: string)
         (filetext: string)
         =
-        let resource = makeEntityResourceInput fileManager filepath filetext
+        if PdxShaderFeatures.isShaderFile filepath then
+            PdxShaderFeatures.goToDefinition resourceManager.Api pos filepath filetext
+        else
+            let resource = makeEntityResourceInput fileManager filepath filetext
 
-        let primaryResult =
-            match resourceManager.ManualProcessResource resource, infoService with
-            | Some e, Some info ->
-                logDiag (sprintf "getInfo %s %s" (fileManager.ConvertPathToLogicalPath filepath) filepath)
+            let primaryResult =
+                match resourceManager.ManualProcessResource resource, infoService with
+                | Some e, Some info ->
+                    logDiag (sprintf "getInfo %s %s" (fileManager.ConvertPathToLogicalPath filepath) filepath)
 
-                match info.GetInfo(pos, e) with
-                | Some(_, (_, Some(LocRef(tv)), _)) ->
-                    match
-                        localisationManager.LocalisationEntries()
-                        |> Seq.tryFind (fun (l, _) -> l = lang)
-                    with
-                    | Some(_, entries) ->
-                        match entries |> Array.tryFind (fun struct (k, _) -> k = tv) with
-                        | Some(_, entry) -> Some entry.position
-                        | _ -> None
-                    | None -> None
-                | Some(_, (_, Some(TypeRef(t, tv)), _)) ->
-                    lookup.typeDefInfo
-                    |> Map.tryFind t
-                    |> Option.defaultValue [||]
-                    |> Array.tryPick (fun tdi -> if tdi.id = tv then Some tdi.range else None)
-                | Some(_, (_, Some(EnumRef(enumName, enumValue)), _)) ->
-                    let enumValues = lookup.enumDefs[enumName] |> snd
-                    enumValues |> Array.tryPick (fun (ev, r) -> if ev == enumValue then r else None)
-                | Some(_, (_, Some(FileRef f), _)) ->
-                    let fNorm = f.Replace("\\", "/")
-                    resourceManager.Api.AllEntities()
-                    |> Seq.map structFst
-                    |> Seq.tryFind (fun x -> x.logicalpath.Replace("\\", "/").Equals(fNorm, StringComparison.OrdinalIgnoreCase))
-                    |> Option.map (fun x -> mkRange x.filepath pos0 pos0)
-                | _ -> None
-            | _, _ -> None
+                    match info.GetInfo(pos, e) with
+                    | Some(_, (_, Some(LocRef(tv)), _)) ->
+                        match
+                            localisationManager.LocalisationEntries()
+                            |> Seq.tryFind (fun (l, _) -> l = lang)
+                        with
+                        | Some(_, entries) ->
+                            match entries |> Array.tryFind (fun struct (k, _) -> k = tv) with
+                            | Some(_, entry) -> Some entry.position
+                            | _ -> None
+                        | None -> None
+                    | Some(_, (_, Some(TypeRef(t, tv)), _)) ->
+                        lookup.typeDefInfo
+                        |> Map.tryFind t
+                        |> Option.defaultValue [||]
+                        |> Array.tryPick (fun tdi -> if tdi.id = tv then Some tdi.range else None)
+                    | Some(_, (_, Some(EnumRef(enumName, enumValue)), _)) ->
+                        let enumValues = lookup.enumDefs[enumName] |> snd
+                        enumValues |> Array.tryPick (fun (ev, r) -> if ev == enumValue then r else None)
+                    | Some(_, (_, Some(FileRef f), _)) ->
+                        let fNorm = f.Replace("\\", "/")
+                        resourceManager.Api.AllEntities()
+                        |> Seq.map structFst
+                        |> Seq.tryFind (fun x -> x.logicalpath.Replace("\\", "/").Equals(fNorm, StringComparison.OrdinalIgnoreCase))
+                        |> Option.map (fun x -> mkRange x.filepath pos0 pos0)
+                    | _ -> None
+                | _, _ -> None
 
-        // Fallback 1: inline_script navigation
-        // When the entity has inline_script nodes expanded, GetInfo can't resolve them.
-        // Check if the current line contains an inline_script reference and navigate to the target file.
-        let inlineScriptFallback () =
-            try
-                let split = filetext.Split('\n')
-                let lineIdx = pos.Line - 1
-                if lineIdx < 0 || lineIdx >= split.Length then None
-                else
-                    let line = split.[lineIdx]
-                    // Match: inline_script = { script = path/to/script ... }
-                    // Use \bscript (word boundary) to avoid matching the "script" inside "inline_script"
-                    let scriptPattern = System.Text.RegularExpressions.Regex(@"\bscript\s*=\s*([^\s}|]+)")
-                    let inlinePattern = System.Text.RegularExpressions.Regex(@"inline_script\s*=")
-                    if inlinePattern.IsMatch(line) then
-                        let m = scriptPattern.Match(line)
-                        if m.Success then
-                            let scriptPath = m.Groups.[1].Value.Trim()
-                            // Skip parameterized paths (contain $) - they can't be resolved statically
-                            if scriptPath.Contains("$") then None
-                            else
-                                // Normalize path separators
-                                let normalizedPath = scriptPath.Replace('\\', '/')
-                                // Search all entities for the inline_script file
-                                resourceManager.Api.AllEntities()
-                                |> Seq.map structFst
-                                |> Seq.tryFind (fun e ->
-                                    let lp = e.logicalpath.Replace('\\', '/')
-                                    (lp.Contains("common/inline_scripts", StringComparison.OrdinalIgnoreCase)) &&
-                                    (lp.EndsWith(normalizedPath + ".txt", StringComparison.OrdinalIgnoreCase) ||
-                                     lp.EndsWith(normalizedPath, StringComparison.OrdinalIgnoreCase)))
-                                |> Option.map (fun e -> mkRange e.filepath pos0 pos0)
-                        else None
-                    else None
-            with _ -> None
-
-        // Fallback 2: For inline_script files, extract word at cursor and search type registry
-        let wordLookupFallback () =
-            let isInlineScript =
-                filepath.Contains("inline_scripts", StringComparison.OrdinalIgnoreCase)
-            if not isInlineScript then None
-            else
+            // Fallback 1: inline_script navigation
+            // When the entity has inline_script nodes expanded, GetInfo can't resolve them.
+            // Check if the current line contains an inline_script reference and navigate to the target file.
+            let inlineScriptFallback () =
                 try
                     let split = filetext.Split('\n')
                     let lineIdx = pos.Line - 1
                     if lineIdx < 0 || lineIdx >= split.Length then None
                     else
                         let line = split.[lineIdx]
-                        let col = pos.Column
-                        // Extract word at cursor position (include '/' for inline_script paths)
-                        let wordChars c = System.Char.IsLetterOrDigit(c) || c = '_' || c = ':' || c = '.' || c = '/'
-                        let mutable startIdx = col
-                        while startIdx > 0 && wordChars line.[startIdx - 1] do startIdx <- startIdx - 1
-                        let mutable endIdx = col
-                        while endIdx < line.Length && wordChars line.[endIdx] do endIdx <- endIdx + 1
-                        if startIdx >= endIdx then None
-                        else
-                            let word = line.Substring(startIdx, endIdx - startIdx)
-                            // Search all type definitions for a matching identifier
-                            lookup.typeDefInfo
-                            |> Map.toSeq
-                            |> Seq.tryPick (fun (_, infos) ->
-                                infos |> Array.tryPick (fun tdi ->
-                                    if tdi.id = word then Some tdi.range else None))
+                        // Match: inline_script = { script = path/to/script ... }
+                        // Use \bscript (word boundary) to avoid matching the "script" inside "inline_script"
+                        let scriptPattern = System.Text.RegularExpressions.Regex(@"\bscript\s*=\s*([^\s}|]+)")
+                        let inlinePattern = System.Text.RegularExpressions.Regex(@"inline_script\s*=")
+                        if inlinePattern.IsMatch(line) then
+                            let m = scriptPattern.Match(line)
+                            if m.Success then
+                                let scriptPath = m.Groups.[1].Value.Trim()
+                                // Skip parameterized paths (contain $) - they can't be resolved statically
+                                if scriptPath.Contains("$") then None
+                                else
+                                    // Normalize path separators
+                                    let normalizedPath = scriptPath.Replace('\\', '/')
+                                    // Search all entities for the inline_script file
+                                    resourceManager.Api.AllEntities()
+                                    |> Seq.map structFst
+                                    |> Seq.tryFind (fun e ->
+                                        let lp = e.logicalpath.Replace('\\', '/')
+                                        (lp.Contains("common/inline_scripts", StringComparison.OrdinalIgnoreCase)) &&
+                                        (lp.EndsWith(normalizedPath + ".txt", StringComparison.OrdinalIgnoreCase) ||
+                                         lp.EndsWith(normalizedPath, StringComparison.OrdinalIgnoreCase)))
+                                    |> Option.map (fun e -> mkRange e.filepath pos0 pos0)
+                            else None
+                        else None
                 with _ -> None
 
-        match primaryResult with
-        | Some _ -> primaryResult
-        | None ->
-            match inlineScriptFallback () with
-            | Some _ as r -> r
-            | None -> wordLookupFallback ()
+            // Fallback 2: For inline_script files, extract word at cursor and search type registry
+            let wordLookupFallback () =
+                let isInlineScript =
+                    filepath.Contains("inline_scripts", StringComparison.OrdinalIgnoreCase)
+                if not isInlineScript then None
+                else
+                    try
+                        let split = filetext.Split('\n')
+                        let lineIdx = pos.Line - 1
+                        if lineIdx < 0 || lineIdx >= split.Length then None
+                        else
+                            let line = split.[lineIdx]
+                            let col = pos.Column
+                            // Extract word at cursor position (include '/' for inline_script paths)
+                            let wordChars c = System.Char.IsLetterOrDigit(c) || c = '_' || c = ':' || c = '.' || c = '/'
+                            let mutable startIdx = col
+                            while startIdx > 0 && wordChars line.[startIdx - 1] do startIdx <- startIdx - 1
+                            let mutable endIdx = col
+                            while endIdx < line.Length && wordChars line.[endIdx] do endIdx <- endIdx + 1
+                            if startIdx >= endIdx then None
+                            else
+                                let word = line.Substring(startIdx, endIdx - startIdx)
+                                // Search all type definitions for a matching identifier
+                                lookup.typeDefInfo
+                                |> Map.toSeq
+                                |> Seq.tryPick (fun (_, infos) ->
+                                    infos |> Array.tryPick (fun tdi ->
+                                        if tdi.id = word then Some tdi.range else None))
+                    with _ -> None
+
+            match primaryResult with
+            | Some _ -> primaryResult
+            | None ->
+                match inlineScriptFallback () with
+                | Some _ as r -> r
+                | None -> wordLookupFallback ()
 
     let findAllRefsFromPos
         (fileManager: FileManager)

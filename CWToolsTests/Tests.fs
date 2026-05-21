@@ -187,6 +187,145 @@ let getNodeComments (clause: IClause) =
 //             |_ -> ()
 //     ]
 
+[<Tests>]
+let pdxShaderFeatureTests =
+    let source filepath filetext : PdxShaderFeatures.ShaderSource =
+        { filepath = filepath
+          logicalpath = filepath
+          filetext = filetext }
+
+    let cursorAtMarker (text: string) =
+        let marker = text.IndexOf('|')
+        Expect.isGreaterThan marker -1 "test shader cursor marker was not found"
+        let before = text.Substring(0, marker)
+        let line = (before |> Seq.filter ((=) '\n') |> Seq.length) + 1
+        let lastLineBreak = before.LastIndexOf('\n')
+        let column = if lastLineBreak < 0 then marker else marker - lastLineBreak - 1
+        text.Remove(marker, 1), mkPos line column
+
+    let label =
+        function
+        | CompletionResponse.Simple(label, _, _) -> label
+        | CompletionResponse.Detailed(label, _, _, _) -> label
+        | CompletionResponse.Snippet(label, _, _, _, _) -> label
+
+    let sharedSource =
+        source
+            "gfx/FX/shared.fxh"
+            """
+VertexShader =
+{
+    MainCode VanillaVertex
+    [[
+        float4 main() { return float4(1.0f); }
+    ]]
+}
+
+BlendState VanillaBlend
+{
+    BlendEnable = yes
+}
+"""
+
+    testList
+        "pdx shader features"
+        [ test "complete vanilla cached shader symbols" {
+              let text, cursor =
+                  cursorAtMarker
+                      """
+Effect Example
+{
+    VertexShader = "Van|"
+}
+"""
+
+              let labels =
+                  PdxShaderFeatures.completeFromSources [ sharedSource ] Set.empty cursor "gfx/FX/current.shader" text
+                  |> List.map label
+
+              Expect.contains labels "VanillaVertex" "cached FX MainCodes should feed LSP completion"
+          }
+          test "complete DSL field types" {
+              let text, cursor =
+                  cursorAtMarker
+                      """
+VertexStruct VS_INPUT
+{
+    flo|
+}
+"""
+
+              let labels =
+                  PdxShaderFeatures.completeFromSources [] Set.empty cursor "gfx/FX/current.shader" text
+                  |> List.map label
+
+              Expect.contains labels "float4" "vertex struct members should complete FX field types"
+          }
+          test "validate against cached FX symbols" {
+              let text =
+                  """
+Includes = { "shared.fxh" }
+
+Effect Example
+{
+    VertexShader = "VanillaVertex"
+    PixelShader = "MissingPixel"
+    BlendState = "VanillaBlend"
+}
+"""
+
+              let errors =
+                  PdxShaderFeatures.validateFromSources [ sharedSource ] Set.empty "gfx/FX/current.shader" text
+
+              Expect.exists
+                  errors
+                  (fun e -> e.code = "CWFX001" && e.message.Contains("MissingPixel"))
+                  "missing FX references should still be diagnosed"
+
+              Expect.isFalse
+                  (errors |> List.exists (fun e -> e.message.Contains("VanillaVertex") || e.message.Contains("shared.fxh")))
+                  "cached vanilla definitions and include files should satisfy FX validation"
+          }
+          test "document symbols expose FX declarations" {
+              let text =
+                  """
+VertexShader =
+{
+    MainCode ExampleVertex
+    [[
+        float4 main() { return float4(1.0f); }
+    ]]
+}
+
+Effect ExampleEffect
+{
+    VertexShader = "ExampleVertex"
+}
+"""
+
+              let symbols = PdxShaderFeatures.documentSymbols "gfx/FX/current.shader" text
+              let shaderBlock = symbols |> List.find (fun symbol -> symbol.name = "VertexShader")
+
+              Expect.exists symbols (fun symbol -> symbol.name = "ExampleEffect") "effects should appear in FX outline"
+              Expect.exists shaderBlock.children (fun symbol -> symbol.name = "ExampleVertex") "MainCode should nest under the shader block"
+          }
+          test "goto definition resolves cached FX references" {
+              let text, cursor =
+                  cursorAtMarker
+                      """
+Effect Example
+{
+    VertexShader = "Vanilla|Vertex"
+}
+"""
+
+              let target =
+                  PdxShaderFeatures.goToDefinitionFromSources [ sharedSource ] cursor "gfx/FX/current.shader" text
+
+              Expect.isSome target "cached FX definitions should be available to goto definition"
+              Expect.equal target.Value.FileName "gfx/FX/shared.fxh" "goto definition should target the cached source"
+          } ]
+
 let getCompletionTests (clause: IClause) =
     let findComments t s (a: Child) =
         match (s, a) with

@@ -77,6 +77,7 @@
         <Compile Include="Rules/RulesHelpers.fs"/>
         <Compile Include="Game/Compute.fs"/>
         <Compile Include="Game/RulesManager.fs"/>
+        <Compile Include="Game/PdxShaderFeatures.fs"/>
         <Compile Include="Game/LanguageFeatures.fs"/>
         <Compile Include="Game/ValidationManager.fs"/>
         <Compile Include="Validation/Common/CommonValidation.fs"/>

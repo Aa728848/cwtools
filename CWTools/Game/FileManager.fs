@@ -235,9 +235,23 @@ module Files =
                               filetext = fileTextThunk ()
                               validate = true }
                     )
+            | ".shader"
+            | ".fxh" ->
+                Some(
+                    FileWithContentResourceInput
+                        { scope = scope
+                          filepath = filepath
+                          logicalpath =
+                            FileManagerHelper.ConvertPathToLogicalPath(
+                                rootedPath,
+                                expandedRootDirectories,
+                                scriptFolders
+                            )
+                          filetext = fileTextThunk ()
+                          validate = true }
+                )
             | ".dds"
             | ".tga"
-            | ".shader"
             | ".lua"
             | ".png"
             | ".mesh"
