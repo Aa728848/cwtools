@@ -225,6 +225,16 @@ BlendState VanillaBlend
 {
     BlendEnable = yes
 }
+
+PixelShader =
+{
+    MainCode PixelPdxMeshWhiteHole
+    [[
+        #ifdef WHITE_HOLE
+        float4 main() { return float4(1.0f); }
+        #endif
+    ]]
+}
 """
 
     testList
@@ -261,6 +271,53 @@ VertexStruct VS_INPUT
 
               Expect.contains labels "float4" "vertex struct members should complete FX field types"
           }
+          test "complete cached shader symbols directly after assignment" {
+              let text, cursor =
+                  cursorAtMarker
+                      """
+Effect Example
+{
+    PixelShader = |
+}
+"""
+
+              let labels =
+                  PdxShaderFeatures.completeFromSources [ sharedSource ] Set.empty cursor "gfx/FX/current.shader" text
+                  |> List.map label
+
+              Expect.contains labels "PixelPdxMeshWhiteHole" "FX references should complete before opening a quoted value"
+          }
+          test "complete Effect Defines from cached shader conditions" {
+              let text, cursor =
+                  cursorAtMarker
+                      """
+Effect Example
+{
+    Defines = { "WH|" }
+}
+"""
+
+              let labels =
+                  PdxShaderFeatures.completeFromSources [ sharedSource ] Set.empty cursor "gfx/FX/current.shader" text
+                  |> List.map label
+
+              Expect.contains labels "WHITE_HOLE" "Effect Defines should complete preprocessor condition names"
+
+              let bareText, bareCursor =
+                  cursorAtMarker
+                      """
+Effect Example
+{
+    Defines = { | }
+}
+"""
+
+              let bareLabels =
+                  PdxShaderFeatures.completeFromSources [ sharedSource ] Set.empty bareCursor "gfx/FX/current.shader" bareText
+                  |> List.map label
+
+              Expect.contains bareLabels "WHITE_HOLE" "Effect Defines should complete before opening a quoted value"
+          }
           test "validate against cached FX symbols" {
               let text =
                   """
@@ -285,6 +342,22 @@ Effect Example
               Expect.isFalse
                   (errors |> List.exists (fun e -> e.message.Contains("VanillaVertex") || e.message.Contains("shared.fxh")))
                   "cached vanilla definitions and include files should satisfy FX validation"
+          }
+          test "validate MainCode references case-insensitively" {
+              let text =
+                  """
+Effect PdxMeshWhitehole
+{
+    PixelShader = "PixelPdxMeshWhitehole"
+}
+"""
+
+              let errors =
+                  PdxShaderFeatures.validateFromSources [ sharedSource ] Set.empty "gfx/FX/current.shader" text
+
+              Expect.isFalse
+                  (errors |> List.exists (fun e -> e.message.Contains("PixelPdxMeshWhitehole")))
+                  "Effect references should match MainCode names even when casing differs"
           }
           test "document symbols expose FX declarations" {
               let text =

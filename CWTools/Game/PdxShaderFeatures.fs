@@ -25,6 +25,7 @@ module PdxShaderFeatures =
           blendStates: Set<string>
           depthStencilStates: Set<string>
           rasterizerStates: Set<string>
+          defines: Set<string>
           includeFiles: Set<string> }
 
     type ShaderDocumentSymbolKind =
@@ -153,11 +154,20 @@ module PdxShaderFeatures =
     let private includesPattern =
         regex keywordOptions @"\bIncludes\s*=\s*\{([^}]*)\}"
 
+    let private definesPattern =
+        regex keywordOptions @"\bDefines\s*=\s*\{([^}]*)\}"
+
     let private identifierPattern =
         regex RegexOptions.None @"[A-Za-z_][A-Za-z0-9_]*"
 
     let private quotedValuePattern =
         regex RegexOptions.None @"""([^""]+)"""
+
+    let private conditionalDefinePattern =
+        regex (RegexOptions.IgnoreCase ||| RegexOptions.Multiline) @"(?:@|#)\s*ifn?def\s+([A-Za-z_][A-Za-z0-9_]*)\b"
+
+    let private definedCallPattern =
+        regex (RegexOptions.IgnoreCase ||| RegexOptions.Multiline) @"\bdefined\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)"
 
     let private recentWindowSize = 16 * 1024
 
@@ -168,6 +178,7 @@ module PdxShaderFeatures =
           blendStates = Set.empty
           depthStencilStates = Set.empty
           rasterizerStates = Set.empty
+          defines = Set.empty
           includeFiles = Set.empty }
 
     let isShaderFile (filepath: string) =
@@ -301,6 +312,20 @@ module PdxShaderFeatures =
                 if m.Groups.Count > 1 && m.Groups[1].Success then Some m.Groups[1].Value else None))
         |> Set.ofSeq
 
+    let private shaderDefineNames (rawText: string) (cleaned: string) =
+        seq {
+            yield! matchNames conditionalDefinePattern rawText
+            yield! matchNames definedCallPattern rawText
+
+            for m in definesPattern.Matches(cleaned) |> Seq.cast<Match> do
+                let values = m.Groups[1]
+
+                for value in quotedValuePattern.Matches(values.Value) |> Seq.cast<Match> do
+                    let define = value.Groups[1]
+                    if define.Success then yield define.Value
+        }
+        |> Set.ofSeq
+
     let private extractSymbolsFromText (source: ShaderSource) =
         let cleaned = cleanDslText source.filetext
 
@@ -310,6 +335,7 @@ module PdxShaderFeatures =
           blendStates = matchNames blendStatePattern cleaned
           depthStencilStates = matchNames depthStencilStatePattern cleaned
           rasterizerStates = matchNames rasterizerStatePattern cleaned
+          defines = shaderDefineNames source.filetext cleaned
           includeFiles =
             if String.IsNullOrWhiteSpace source.filepath then
                 Set.empty
@@ -323,6 +349,7 @@ module PdxShaderFeatures =
           blendStates = Set.union a.blendStates b.blendStates
           depthStencilStates = Set.union a.depthStencilStates b.depthStencilStates
           rasterizerStates = Set.union a.rasterizerStates b.rasterizerStates
+          defines = Set.union a.defines b.defines
           includeFiles = Set.union a.includeFiles b.includeFiles }
 
     let symbolsFromSources sources =
@@ -809,17 +836,22 @@ module PdxShaderFeatures =
                       targetFilepath = target })
             | _ -> None)
 
+    let private containsIgnoreCase (values: Set<string>) target =
+        values |> Set.exists (fun value -> value.Equals(target, StringComparison.OrdinalIgnoreCase))
+
     let private symbolExists symbols (reference: ShaderReference) =
         match reference.kind with
-        | VertexMainCode -> Set.contains reference.target symbols.vertexMainCodes
-        | PixelMainCode -> Set.contains reference.target symbols.pixelMainCodes
-        | ConstantBuffer -> Set.contains reference.target symbols.constantBuffers
-        | BlendState -> Set.contains reference.target symbols.blendStates
-        | DepthStencilState -> Set.contains reference.target symbols.depthStencilStates
-        | RasterizerState -> Set.contains reference.target symbols.rasterizerStates
+        | VertexMainCode -> containsIgnoreCase symbols.vertexMainCodes reference.target
+        | PixelMainCode -> containsIgnoreCase symbols.pixelMainCodes reference.target
+        | ConstantBuffer -> containsIgnoreCase symbols.constantBuffers reference.target
+        | BlendState -> containsIgnoreCase symbols.blendStates reference.target
+        | DepthStencilState -> containsIgnoreCase symbols.depthStencilStates reference.target
+        | RasterizerState -> containsIgnoreCase symbols.rasterizerStates reference.target
         | IncludeFile ->
-            Set.contains reference.target symbols.includeFiles
-            || Set.contains (fileName reference.target) symbols.includeFiles
+            containsIgnoreCase symbols.includeFiles reference.target
+            || symbols.includeFiles
+               |> Set.exists (fun includeFile ->
+                   (fileName includeFile).Equals(fileName reference.target, StringComparison.OrdinalIgnoreCase))
 
     let private missingReferenceError filepath text (reference: ShaderReference) =
         let code, message =
@@ -988,26 +1020,58 @@ module PdxShaderFeatures =
     let private tailMatches (pattern: string) (text: string) =
         Regex.IsMatch(text, pattern, RegexOptions.IgnoreCase ||| RegexOptions.Singleline)
 
-    let private referenceCompletions symbols recentText =
-        if tailMatches @"\bVertexShader\s*=\s*""[^""]*$" recentText then
-            Some(symbols.vertexMainCodes, "Vertex MainCode")
-        elif tailMatches @"\bPixelShader\s*=\s*""[^""]*$" recentText then
-            Some(symbols.pixelMainCodes, "Pixel MainCode")
-        elif tailMatches @"\bConstantBuffers\s*=\s*\{[^}]*[A-Za-z0-9_]*$" recentText then
-            Some(symbols.constantBuffers, "ConstantBuffer")
-        elif tailMatches @"\bBlendState\s*=\s*""[^""]*$" recentText then
-            Some(symbols.blendStates, "BlendState")
-        elif tailMatches @"\bDepthStencilState\s*=\s*""[^""]*$" recentText then
-            Some(symbols.depthStencilStates, "DepthStencilState")
-        elif tailMatches @"\bRasterizerState\s*=\s*""[^""]*$" recentText then
-            Some(symbols.rasterizerStates, "RasterizerState")
-        elif tailMatches @"\bIncludes\s*=\s*\{[^}]*""[^""}]*$" recentText then
-            Some(symbols.includeFiles, "FX include file")
+    let private propertyReferenceCompletions property names detail recentText =
+        let valuePattern = sprintf @"\b%s\s*=\s*""[^""]*$" property
+        let emptyPattern = sprintf @"\b%s\s*=\s*$" property
+
+        if tailMatches valuePattern recentText then
+            Some(names, detail, false)
+        elif tailMatches emptyPattern recentText then
+            Some(names, detail, true)
         else
             None
 
+    let private referenceCompletions symbols recentText =
+        propertyReferenceCompletions "VertexShader" symbols.vertexMainCodes "Vertex MainCode" recentText
+        |> Option.orElseWith (fun () ->
+            propertyReferenceCompletions "PixelShader" symbols.pixelMainCodes "Pixel MainCode" recentText)
+        |> Option.orElseWith (fun () ->
+            if tailMatches @"\bConstantBuffers\s*=\s*\{[^}]*[A-Za-z0-9_]*$" recentText then
+                Some(symbols.constantBuffers, "ConstantBuffer", false)
+            else
+                None)
+        |> Option.orElseWith (fun () ->
+            propertyReferenceCompletions "BlendState" symbols.blendStates "BlendState" recentText)
+        |> Option.orElseWith (fun () ->
+            propertyReferenceCompletions "DepthStencilState" symbols.depthStencilStates "DepthStencilState" recentText)
+        |> Option.orElseWith (fun () ->
+            propertyReferenceCompletions "RasterizerState" symbols.rasterizerStates "RasterizerState" recentText)
+        |> Option.orElseWith (fun () ->
+            if tailMatches @"\bIncludes\s*=\s*\{[^}]*""[^""}]*$" recentText then
+                Some(symbols.includeFiles, "FX include file", false)
+            elif tailMatches @"\bIncludes\s*=\s*\{[^}]*$" recentText then
+                Some(symbols.includeFiles, "FX include file", true)
+            else
+                None)
+        |> Option.orElseWith (fun () ->
+            if tailMatches @"\bDefines\s*=\s*\{[^}]*""[^""}]*$" recentText then
+                Some(symbols.defines, "FX preprocessor define", false)
+            elif tailMatches @"\bDefines\s*=\s*\{[^}]*$" recentText then
+                Some(symbols.defines, "FX preprocessor define", true)
+            else
+                None)
+
     let private completionItem label detail category =
         CompletionResponse.Detailed(label, Some detail, None, category)
+
+    let private quotedValueCompletion label detail =
+        CompletionResponse.CreateSnippet(label, sprintf "\"%s\"" label, Some detail)
+
+    let private referenceCompletion requiresQuotes name detail =
+        if requiresQuotes then
+            quotedValueCompletion name detail
+        else
+            completionItem name detail CompletionCategory.Link
 
     let private valueCompletion label detail =
         completionItem label detail CompletionCategory.Value
@@ -1263,10 +1327,10 @@ module PdxShaderFeatures =
         let linePrefix = linePrefixAt filetext pos
 
         match referenceCompletions symbols recentText with
-        | Some(names, detail) ->
+        | Some(names, detail, requiresQuotes) ->
             names
             |> Set.toList
-            |> List.map (fun name -> completionItem name detail CompletionCategory.Link)
+            |> List.map (fun name -> referenceCompletion requiresQuotes name detail)
         | None ->
             let scope = scopeContextBefore filetext (offsetAt filetext pos)
 
