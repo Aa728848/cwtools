@@ -186,6 +186,39 @@ module PdxShaderFeatures =
         extension.Equals(".shader", StringComparison.OrdinalIgnoreCase)
         || extension.Equals(".fxh", StringComparison.OrdinalIgnoreCase)
 
+    /// Lazily-loaded FX sources from the vanilla game installation.
+    /// Populated once via `loadVanillaFxSources` when the game starts up.
+    let mutable private vanillaFxSources: ShaderSource list = []
+
+    /// Scan a vanilla game directory for .shader/.fxh files and cache their
+    /// contents.  Scans gfx/FX first, then the entire gfx tree.
+    let loadVanillaFxSources (vanillaPath: string) =
+        try
+            let candidates =
+                [| Path.Combine(vanillaPath, "gfx", "FX")
+                   Path.Combine(vanillaPath, "gfx") |]
+            let scanDir dir =
+                if Directory.Exists dir then
+                    Directory.GetFiles(dir, "*", SearchOption.AllDirectories)
+                    |> Array.filter isShaderFile
+                else
+                    [||]
+            let allFiles =
+                candidates
+                |> Array.collect scanDir
+                |> Array.distinct
+            vanillaFxSources <-
+                allFiles
+                |> Array.choose (fun fp ->
+                    try
+                        Some
+                            { filepath = fp
+                              logicalpath = fp
+                              filetext = File.ReadAllText fp }
+                    with _ -> None)
+                |> Array.toList
+        with _ -> ()
+
     let private fileName (path: string) =
         let normalized = path.Replace('\\', '/')
         let lastSlash = normalized.LastIndexOf('/')
@@ -382,21 +415,49 @@ module PdxShaderFeatures =
                         { filepath = resource.filepath
                           logicalpath = resource.logicalpath
                           filetext = resource.filetext }
+            | FileResource(_, resource) when isShaderFile resource.filepath ->
+                let candidatePath =
+                    try Path.GetFullPath resource.filepath
+                    with _ -> resource.filepath
+
+                if candidatePath.Equals(currentPath, StringComparison.OrdinalIgnoreCase) then
+                    None
+                else
+                    try
+                        if File.Exists resource.filepath then
+                            Some
+                                { filepath = resource.filepath
+                                  logicalpath = resource.logicalpath
+                                  filetext = File.ReadAllText resource.filepath }
+                        else
+                            None
+                    with _ -> None
             | _ -> None)
         |> Seq.append [ sourceForCurrentFile filepath filetext ]
+        |> Seq.append (
+            vanillaFxSources
+            |> List.filter (fun s ->
+                let sp =
+                    try Path.GetFullPath s.filepath
+                    with _ -> s.filepath
+                not (sp.Equals(currentPath, StringComparison.OrdinalIgnoreCase))))
         |> Seq.toList
 
     let private resourceIncludeNames (resources: IResourceAPI<_>) =
-        resources.GetResources()
-        |> Seq.choose (function
-            | FileResource(_, resource) when isShaderFile resource.filepath -> Some(fileName resource.filepath)
-            | FileWithContentResource(_, resource) when
-                resource.overwrite <> Overwrite.Overwritten
-                && isShaderFile resource.filepath
-                ->
-                Some(fileName resource.filepath)
-            | _ -> None)
-        |> Set.ofSeq
+        let fromResources =
+            resources.GetResources()
+            |> Seq.choose (function
+                | FileResource(_, resource) when isShaderFile resource.filepath -> Some(fileName resource.filepath)
+                | FileWithContentResource(_, resource) when
+                    resource.overwrite <> Overwrite.Overwritten
+                    && isShaderFile resource.filepath
+                    ->
+                    Some(fileName resource.filepath)
+                | _ -> None)
+            |> Set.ofSeq
+        let fromVanilla =
+            vanillaFxSources |> List.map (fun s -> fileName s.filepath) |> Set.ofList
+        Set.union fromResources fromVanilla
 
     let private symbolsWithIncludeNames sources includeNames =
         let symbols = symbolsFromSources sources
@@ -1022,11 +1083,11 @@ module PdxShaderFeatures =
 
     let private propertyReferenceCompletions property names detail recentText =
         let valuePattern = sprintf @"\b%s\s*=\s*""[^""]*$" property
-        let emptyPattern = sprintf @"\b%s\s*=\s*$" property
+        let emptyOrPartialPattern = sprintf @"\b%s\s*=\s*[A-Za-z0-9_]*$" property
 
         if tailMatches valuePattern recentText then
             Some(names, detail, false)
-        elif tailMatches emptyPattern recentText then
+        elif tailMatches emptyOrPartialPattern recentText then
             Some(names, detail, true)
         else
             None
