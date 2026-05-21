@@ -1269,6 +1269,117 @@ module PdxShaderFeatures =
           "TEXCOORD4"
           "TEXCOORD5" ]
 
+    let private hlslTypes =
+        [ "float"; "float2"; "float3"; "float4"
+          "float2x2"; "float3x3"; "float4x4"
+          "half"; "half2"; "half3"; "half4"
+          "int"; "int2"; "int3"; "int4"
+          "uint"; "uint2"; "uint3"; "uint4"
+          "bool"; "void"; "static"; "const"; "inout"; "in"; "out"
+          "struct"; "Texture2D"; "Texture2DArray"; "TextureCube"
+          "sampler2D"; "sampler2DShadow"; "samplerCUBE"
+          "SamplerState"; "SamplerComparisonState" ]
+
+    let private hlslControlFlow =
+        [ "if"; "else"; "for"; "while"; "do"; "break"; "continue"; "return"; "discard" ]
+
+    let private hlslBuiltinSnippets =
+        [ // Math
+          CompletionResponse.CreateSnippet("mul", "mul(${1:matrix}, ${2:vector})", Some "Multiply matrices/vectors")
+          CompletionResponse.CreateSnippet("dot", "dot(${1:a}, ${2:b})", Some "Dot product")
+          CompletionResponse.CreateSnippet("cross", "cross(${1:a}, ${2:b})", Some "Cross product of two 3D vectors")
+          CompletionResponse.CreateSnippet("normalize", "normalize(${1:vector})", Some "Normalize a vector")
+          CompletionResponse.CreateSnippet("length", "length(${1:vector})", Some "Length of a vector")
+          CompletionResponse.CreateSnippet("distance", "distance(${1:a}, ${2:b})", Some "Distance between two points")
+          CompletionResponse.CreateSnippet("lerp", "lerp(${1:a}, ${2:b}, ${3:t})", Some "Linear interpolation")
+          CompletionResponse.CreateSnippet("smoothstep", "smoothstep(${1:min}, ${2:max}, ${3:x})", Some "Hermite interpolation")
+          CompletionResponse.CreateSnippet("step", "step(${1:edge}, ${2:x})", Some "Step function (0 or 1)")
+          CompletionResponse.CreateSnippet("clamp", "clamp(${1:value}, ${2:min}, ${3:max})", Some "Clamp value to range")
+          CompletionResponse.CreateSnippet("saturate", "saturate(${1:value})", Some "Clamp value to [0.0, 1.0]")
+          CompletionResponse.CreateSnippet("abs", "abs(${1:value})", Some "Absolute value")
+          CompletionResponse.CreateSnippet("sign", "sign(${1:value})", Some "Sign of value (-1, 0, or 1)")
+          CompletionResponse.CreateSnippet("max", "max(${1:a}, ${2:b})", Some "Maximum")
+          CompletionResponse.CreateSnippet("min", "min(${1:a}, ${2:b})", Some "Minimum")
+          CompletionResponse.CreateSnippet("floor", "floor(${1:value})", Some "Floor")
+          CompletionResponse.CreateSnippet("ceil", "ceil(${1:value})", Some "Ceiling")
+          CompletionResponse.CreateSnippet("round", "round(${1:value})", Some "Round to nearest integer")
+          CompletionResponse.CreateSnippet("trunc", "trunc(${1:value})", Some "Truncate to integer part")
+          CompletionResponse.CreateSnippet("frac", "frac(${1:value})", Some "Fractional part")
+          CompletionResponse.CreateSnippet("pow", "pow(${1:base}, ${2:exp})", Some "Power")
+          CompletionResponse.CreateSnippet("sqrt", "sqrt(${1:value})", Some "Square root")
+          CompletionResponse.CreateSnippet("exp", "exp(${1:value})", Some "e raised to power")
+          CompletionResponse.CreateSnippet("exp2", "exp2(${1:value})", Some "2 raised to power")
+          CompletionResponse.CreateSnippet("log", "log(${1:value})", Some "Natural logarithm")
+          CompletionResponse.CreateSnippet("log2", "log2(${1:value})", Some "Base-2 logarithm")
+          // Trigonometry
+          CompletionResponse.CreateSnippet("sin", "sin(${1:value})", Some "Sine")
+          CompletionResponse.CreateSnippet("cos", "cos(${1:value})", Some "Cosine")
+          CompletionResponse.CreateSnippet("tan", "tan(${1:value})", Some "Tangent")
+          CompletionResponse.CreateSnippet("asin", "asin(${1:value})", Some "Arcsine")
+          CompletionResponse.CreateSnippet("acos", "acos(${1:value})", Some "Arccosine")
+          CompletionResponse.CreateSnippet("atan2", "atan2(${1:y}, ${2:x})", Some "Two-argument arctangent")
+          // Vector / geometric
+          CompletionResponse.CreateSnippet("reflect", "reflect(${1:incident}, ${2:normal})", Some "Reflect vector around normal")
+          CompletionResponse.CreateSnippet("refract", "refract(${1:incident}, ${2:normal}, ${3:eta})", Some "Refract vector")
+          // Derivative
+          CompletionResponse.CreateSnippet("ddx", "ddx(${1:value})", Some "Partial derivative in x")
+          CompletionResponse.CreateSnippet("ddy", "ddy(${1:value})", Some "Partial derivative in y")
+          // Clip / test
+          CompletionResponse.CreateSnippet("clip", "clip(${1:value})", Some "Discard pixel if value < 0")
+          CompletionResponse.CreateSnippet("any", "any(${1:value})", Some "True if any component is non-zero")
+          CompletionResponse.CreateSnippet("all", "all(${1:value})", Some "True if all components are non-zero")
+          // Texture sampling (legacy DX9 / PDX compat)
+          CompletionResponse.CreateSnippet("tex2D", "tex2D(${1:sampler}, ${2:uv})", Some "2D texture lookup")
+          CompletionResponse.CreateSnippet("tex2Dlod", "tex2Dlod(${1:sampler}, ${2:float4(uv, 0, lod)})", Some "2D texture lookup with LOD")
+          CompletionResponse.CreateSnippet("tex2Dgrad", "tex2Dgrad(${1:sampler}, ${2:uv}, ${3:ddx}, ${4:ddy})", Some "2D texture lookup with gradients")
+          CompletionResponse.CreateSnippet("tex2Dproj", "tex2Dproj(${1:sampler}, ${2:uvProj})", Some "2D projective texture lookup")
+          CompletionResponse.CreateSnippet("tex2Dbias", "tex2Dbias(${1:sampler}, ${2:float4(uv, 0, bias)})", Some "2D texture lookup with bias")
+          CompletionResponse.CreateSnippet("texCUBE", "texCUBE(${1:sampler}, ${2:dir})", Some "Cube texture lookup")
+          CompletionResponse.CreateSnippet("texCUBElod", "texCUBElod(${1:sampler}, ${2:float4(dir, lod)})", Some "Cube texture lookup with LOD")
+          CompletionResponse.CreateSnippet("texCUBEbias", "texCUBEbias(${1:sampler}, ${2:float4(dir, bias)})", Some "Cube texture lookup with bias")
+          // DX11+ style
+          CompletionResponse.CreateSnippet("Sample", "Sample(${1:sampler}, ${2:uv})", Some "Texture.Sample(sampler, uv)")
+          CompletionResponse.CreateSnippet("SampleLevel", "SampleLevel(${1:sampler}, ${2:uv}, ${3:lod})", Some "Texture.SampleLevel") ]
+
+    /// PDX platform semantics and common conditional macros from vanilla shaders
+    let private hlslPdxDirectives =
+        [ // Platform semantics (defines_hlsl.fxh)
+          "PDX_POSITION"; "PDX_COLOR"
+          "PDX_DIRECTX_9"; "PDX_DIRECTX_11"; "PDX_OPENGL"; "PDX_ORBIS"
+          // Mesh features
+          "PDX_MESH_UV1"; "PDX_FOUR_SPLITS"
+          // Lighting model selection
+          "PDX_LEGACY_BLINN_PHONG"; "PDX_IMPROVED_BLINN_PHONG"
+          // Debug toggles
+          "PDX_DEBUG_NORMAL"; "PDX_DEBUG_DIFFUSE"; "PDX_DEBUG_SPEC"
+          "PDX_DEBUG_GLOSSINESS"; "PDX_DEBUG_SHADOW"
+          "PDX_DEBUG_SUN_LIGHT"; "PDX_DEBUG_SUN_LIGHT_WITH_SHADOW"
+          "PDX_DEBUG_SYSTEM_LIGHT"; "PDX_DEBUG_AMBIENT"; "PDX_DEBUG_CAMERA_LIGHTS"
+          // PDX compat helpers (defines_hlsl.fxh)
+          "vec2"; "vec3"; "vec4"
+          "CastTo3x3"; "Create3x3"; "GetMatrixData"
+          "uintIfSupported"; "tex2Dlod0"
+          // Common feature flags (used in Defines = { })
+          "PIXEL_SHADER"; "VERTEX_SHADER"
+          "IS_SHADOW"; "IS_PLANET"; "IS_STAR"; "IS_RING"; "IS_CLOUDS"
+          "IS_NEBULA"; "IS_HOLOGRAM"; "IS_NEUTRON_STAR_SHELL"
+          "IS_BORDER"; "IS_CHARACTER"; "IS_CITY"; "IS_ENVIRONMENT"; "IS_ROOM"; "IS_TRAIL"
+          "EMISSIVE"; "EMISSIVE_FLOW"; "EMISSIVE_NOISE"; "GLOSSY_EMISSIVE"
+          "DISSOLVE"; "DISSOLVE_USE_EROSION"
+          "ALPHA_TEST"; "ALPHA_OVERRIDE"
+          "ANIMATE_UV"; "ANIMATE_UV_ALPHA"; "ANIMATE_UV_UP"; "ANIMATED"
+          "ADD_COLOR"; "COLORED"; "BLOOM"; "HDR"; "CLOAKED"
+          "USE_EMPIRE_COLOR"; "USE_EMPIRE_COLOR_MASK_FOR_EMISSIVE"
+          "USE_FLOWMAP"; "USE_HUE_SHIFT_MASK"; "USE_NORMALMAP_AS_ALPHA"
+          "GUI_ICON"; "CUSTOM_DIFFUSE"; "HAIR"; "CLOTHES"
+          "MASKING"; "HUE_SHIFT"; "RIM_LIGHT"
+          "NO_BILLBOARD"; "NO_PLANET_EMISSIVE"; "NO_ALPHA_MULTIPLIED_EMISSIVE"
+          "SHADOW_PCF"; "SHADOW_MULTI_TAP"
+          "HEALTH_BAR"; "PROGRESS_BAR"; "BUTTON_STATES"; "DISABLED"
+          "UNIFORM_WIDTH"; "RIPPLE_UV"; "FLOWMAP"
+          "BLEND_TO_DIFFUSE_ALPHA"; "APPLY_EMISSIVE_TO_ALPHA"
+          "COLOR_LUT"; "PLANET_LIGHTS_EMISSIVE"; "YCOCG" ]
+
     let private propertyValues =
         Map.ofList
             [ "MagFilter", [ "Linear"; "Point"; "Anisotropic" ]
@@ -1396,7 +1507,22 @@ module PdxShaderFeatures =
             let scope = scopeContextBefore filetext (offsetAt filetext pos)
 
             if scope.insideHlsl then
-                []
+                let typeCompletions =
+                    hlslTypes |> List.map (fun t -> valueCompletion t "HLSL type")
+                
+                let mutable parenDepth = 0
+                for c in linePrefix do
+                    if c = '(' then parenDepth <- parenDepth + 1
+                    elif c = ')' then parenDepth <- max 0 (parenDepth - 1)
+                
+                if parenDepth > 0 then
+                    typeCompletions @ hlslBuiltinSnippets
+                else
+                    let controlFlowCompletions =
+                        hlslControlFlow |> List.map (fun kw -> completionItem kw "HLSL keyword" CompletionCategory.Value)
+                    let pdxDirectiveCompletions =
+                        hlslPdxDirectives |> List.map (fun d -> completionItem d "Paradox directive" CompletionCategory.Global)
+                    typeCompletions @ controlFlowCompletions @ pdxDirectiveCompletions @ hlslBuiltinSnippets
             elif Regex.IsMatch(linePrefix, @":\s*[A-Za-z0-9_]*$") && inBlock @"\bVertexStruct\s+\w+\s*$" scope then
                 vertexSemantics |> List.map (fun semantic -> valueCompletion semantic "Vertex semantic")
             else
