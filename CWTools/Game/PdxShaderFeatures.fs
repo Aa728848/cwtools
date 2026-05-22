@@ -1139,6 +1139,11 @@ module PdxShaderFeatures =
 
     let private snippets =
         [ CompletionResponse.CreateSnippet(
+              "MainCode",
+              "MainCode ${1:ShaderName}\n\tConstantBuffers = { ${2:CommonAlternative} }\n[[\n\t$0\n]]",
+              Some "Define a MainCode block with HLSL brackets body"
+          )
+          CompletionResponse.CreateSnippet(
               "Includes",
               "Includes = {\n\t\"${1:file.fxh}\"\n}",
               Some "Include FX shader files"
@@ -1283,7 +1288,7 @@ module PdxShaderFeatures =
     let private hlslControlFlow =
         [ "if"; "else"; "for"; "while"; "do"; "break"; "continue"; "return"; "discard" ]
 
-    let private hlslBuiltinSnippets =
+    let hlslBuiltinSnippets =
         [ // Math
           CompletionResponse.CreateSnippet("mul", "mul(${1:matrix}, ${2:vector})", Some "Multiply matrices/vectors")
           CompletionResponse.CreateSnippet("dot", "dot(${1:a}, ${2:b})", Some "Dot product")
@@ -1339,7 +1344,29 @@ module PdxShaderFeatures =
           CompletionResponse.CreateSnippet("texCUBEbias", "texCUBEbias(${1:sampler}, ${2:float4(dir, bias)})", Some "Cube texture lookup with bias")
           // DX11+ style
           CompletionResponse.CreateSnippet("Sample", "Sample(${1:sampler}, ${2:uv})", Some "Texture.Sample(sampler, uv)")
-          CompletionResponse.CreateSnippet("SampleLevel", "SampleLevel(${1:sampler}, ${2:uv}, ${3:lod})", Some "Texture.SampleLevel") ]
+          CompletionResponse.CreateSnippet("SampleLevel", "SampleLevel(${1:sampler}, ${2:uv}, ${3:lod})", Some "Texture.SampleLevel")
+          // Paradox PBR Lighting & Special VFX Helpers
+          CompletionResponse.CreateSnippet("ApplyPlanetDissolve", "ApplyPlanetDissolve(${1:vPrimaryColor}, ${2:vColor}, ${3:vNormal}, ${4:vUV}, ${5:vDissolve})", Some "float3: Applies planetary explosion/dissolve glowing edge effect")
+          CompletionResponse.CreateSnippet("ApplyDissolve", "ApplyDissolve(${1:vPrimaryColor}, ${2:vProgress}, ${3:vColor}, ${4:vAddColor}, ${5:vUV})", Some "float3: Applies model dissolve/materialization holographic transition effect")
+          CompletionResponse.CreateSnippet("FastHueShift", "FastHueShift(${1:vColor}, ${2:vShift})", Some "float3: Shifts color hue efficiently in HSV color space")
+          CompletionResponse.CreateSnippet("VoronoiNoise2D", "VoronoiNoise2D(${1:vPosition}, ${2:vScale}, ${3:vSpeed})", Some "float2: Generates 2D cellular Voronoi noise for hologram scanlines")
+          CompletionResponse.CreateSnippet("GreyOutDotLerp", "GreyOutDotLerp(${1:vColor}, ${2:vAmount})", Some "float3: Desaturates color to grey scale based on amount")
+          CompletionResponse.CreateSnippet("AreEqual", "AreEqual(${1:a}, ${2:b}, ${3:precision})", Some "bool: High-precision comparison between two float vectors")
+          CompletionResponse.CreateSnippet("UnpackRRxGNormal", "UnpackRRxGNormal(${1:vNormalMap})", Some "float3: Unpacks and reconstructs tangent space normal vector from compressed texture map")
+          CompletionResponse.CreateSnippet("GetEnvmapMipLevel", "GetEnvmapMipLevel(${1:glossiness})", Some "float: Calculates optimal environmental cubemap mipmap level based on glossiness")
+          CompletionResponse.CreateSnippet("FresnelGlossy", "FresnelGlossy(${1:specularColor}, ${2:eyeDir}, ${3:normal}, ${4:glossiness})", Some "float3: Computes specular fresnel reflection coefficient with glossiness correction")
+          CompletionResponse.CreateSnippet("MetalnessToDiffuse", "MetalnessToDiffuse(${1:metalness}, ${2:color})", Some "float3: Re-maps base diffuse color vector based on PBR metalness")
+          CompletionResponse.CreateSnippet("MetalnessToSpec", "MetalnessToSpec(${1:metalness}, ${2:color}, ${3:specular})", Some "float3: Re-maps base specular highlight color vector based on PBR metalness")
+          CompletionResponse.CreateSnippet("ToGamma", "ToGamma(${1:linearColor})", Some "float3: Converts linear space color to gamma space color")
+          CompletionResponse.CreateSnippet("ToLinear", "ToLinear(${1:gammaColor})", Some "float3: Converts gamma space color to linear space color")
+          CompletionResponse.CreateSnippet("ComposeLight", "ComposeLight(${1:lightingProperties}, ${2:shadowTerm}, ${3:diffuseLight}, ${4:specularLight})", Some "float3: Combines diffuse and specular lighting components into final pixel color")
+          CompletionResponse.CreateSnippet("CalculateSystemPointLight", "CalculateSystemPointLight(${1:lightingProperties}, ${2:intensity}, ${3:diffuse}, ${4:specular})", Some "void: Computes global system point light illumination contribution")
+          CompletionResponse.CreateSnippet("CalculatePointLights", "CalculatePointLights(${1:lightingProperties}, ${2:lightDataMap}, ${3:lightIndexMap}, ${4:diffuse}, ${5:specular})", Some "void: Computes multiple dynamic tiled point lights illumination contribution")
+          // Additional PDX helper functions
+          CompletionResponse.CreateSnippet("GetPointLight", "GetPointLight(${1:posRadius}, ${2:colorFalloff})", Some "PointLight: Constructs a PointLight struct from packed float4 parameters")
+          CompletionResponse.CreateSnippet("GetNonLinearGlossiness", "GetNonLinearGlossiness(${1:glossiness})", Some "float: Remaps linear glossiness to non-linear perceptual glossiness")
+          CompletionResponse.CreateSnippet("CreateScaleMatrix", "CreateScaleMatrix(${1:scale})", Some "float4x4: Creates a 4x4 uniform or non-uniform scale matrix")
+          CompletionResponse.CreateSnippet("tex2Dlod0", "tex2Dlod0(${1:sampler}, ${2:uv})", Some "float4: 2D texture lookup at mipmap LOD level 0 (vertex shader safe)") ]
 
     /// PDX platform semantics and common conditional macros from vanilla shaders
     let private hlslPdxDirectives =
@@ -1380,6 +1407,142 @@ module PdxShaderFeatures =
           "BLEND_TO_DIFFUSE_ALPHA"; "APPLY_EMISSIVE_TO_ALPHA"
           "COLOR_LUT"; "PLANET_LIGHTS_EMISSIVE"; "YCOCG" ]
 
+    /// Paradox system-injected global variables (matrices, lighting, camera variables)
+    let hlslPdxGlobals =
+        [ // System transformation matrices
+          CompletionResponse.CreateSnippet("WorldMatrix", "WorldMatrix", Some "4x4 Matrix: Transforms local coordinates to world coordinates")
+          CompletionResponse.CreateSnippet("ViewMatrix", "ViewMatrix", Some "4x4 Matrix: Transforms world coordinates to view coordinates")
+          CompletionResponse.CreateSnippet("ProjectionMatrix", "ProjectionMatrix", Some "4x4 Matrix: Transforms view coordinates to clip coordinates")
+          CompletionResponse.CreateSnippet("ViewProjectionMatrix", "ViewProjectionMatrix", Some "4x4 Matrix: Combined View and Projection matrix")
+          CompletionResponse.CreateSnippet("InvViewMatrix", "InvViewMatrix", Some "4x4 Matrix: Inverse View matrix (Camera world position matrix)")
+          CompletionResponse.CreateSnippet("ShadowProjectionMatrix", "ShadowProjectionMatrix", Some "4x4 Matrix: Projection matrix for shadow mapping")
+          CompletionResponse.CreateSnippet("ShadowMatrix", "ShadowMatrix", Some "4x4 Matrix: Combined World View Projection for light space")
+          // Camera & Environment
+          CompletionResponse.CreateSnippet("CameraPosition", "CameraPosition", Some "float3: World position of the camera/view point")
+          CompletionResponse.CreateSnippet("CameraDirection", "CameraDirection", Some "float3: Forward viewing direction of the camera")
+          CompletionResponse.CreateSnippet("HdrRange_Time_ClipHeight", "HdrRange_Time_ClipHeight", Some "float4: System params (x: HDR range, y: Game Time in seconds, z: Clip height)")
+          // Lighting
+          CompletionResponse.CreateSnippet("LightPosition", "LightPosition", Some "float3: Position of the primary light source")
+          CompletionResponse.CreateSnippet("LightDirection", "LightDirection", Some "float3: Direction vector of the primary light source")
+          CompletionResponse.CreateSnippet("SunColor", "SunColor", Some "float3: Color and intensity of the sun/primary light source")
+          CompletionResponse.CreateSnippet("AmbientColor", "AmbientColor", Some "float3: Global ambient color of the scene")
+          // Geometry & Vertex Attributes
+          CompletionResponse.CreateSnippet("vPosition", "vPosition", Some "float4: Vertex local position in object space")
+          CompletionResponse.CreateSnippet("vPos", "vPos", Some "float3/float4: Interpolated vertex position in world space or screen-space pixel position")
+          CompletionResponse.CreateSnippet("vNormal", "vNormal", Some "float3: Vertex normal vector for basic lighting calculation")
+          CompletionResponse.CreateSnippet("vTangent", "vTangent", Some "float4: Vertex tangent vector for TBN rotation matrix and normal mapping")
+          CompletionResponse.CreateSnippet("vBitangent", "vBitangent", Some "float3: Vertex bitangent vector for TBN rotation matrix and normal mapping")
+          CompletionResponse.CreateSnippet("vSphere", "vSphere", Some "float4: Spherical projection/mapping vector for shield hit ripple and planet glow")
+          CompletionResponse.CreateSnippet("vUV0", "vUV0", Some "float2: First texture UV coordinates (Diffuse, Normal mapping)")
+          CompletionResponse.CreateSnippet("vUV1", "vUV1", Some "float2: Second texture UV coordinates (Empire paint mask, scrolling特效)")
+          CompletionResponse.CreateSnippet("vObjectNormal", "vObjectNormal", Some "float3: Original object-space vertex normal")
+          CompletionResponse.CreateSnippet("vBoneWeight", "vBoneWeight", Some "float4: Bone weights for skeletal animation skinning")
+          CompletionResponse.CreateSnippet("vBoneIndex", "vBoneIndex", Some "float4: Bone indices for skeletal animation skinning (indices into matBones)")
+          CompletionResponse.CreateSnippet("vSkinnedPosition", "vSkinnedPosition", Some "float4: Blended skinned vertex position from skeletal animation")
+          CompletionResponse.CreateSnippet("vSkinnedNormal", "vSkinnedNormal", Some "float3: Blended skinned vertex normal from skeletal animation")
+          CompletionResponse.CreateSnippet("vSkinnedTangent", "vSkinnedTangent", Some "float3: Blended skinned vertex tangent from skeletal animation")
+          CompletionResponse.CreateSnippet("vSkinnedBitangent", "vSkinnedBitangent", Some "float3: Blended skinned vertex bitangent from skeletal animation")
+          CompletionResponse.CreateSnippet("vOffset", "vOffset", Some "float: Offset parameter for normal debugging")
+          // Material constants & Special parameters
+          CompletionResponse.CreateSnippet("scrollingSpeed", "scrollingSpeed", Some "float2: Speed/direction vector for scrolling UV textures (Shield, energy flow)")
+          CompletionResponse.CreateSnippet("scrollingUV", "scrollingUV", Some "float2: Calculated dynamic scrolling UV texture coordinates")
+          CompletionResponse.CreateSnippet("matBones", "matBones", Some "float4x4[50]: Array of transformation matrices for skeletal bone animation")
+          CompletionResponse.CreateSnippet("vUVAnimationDir", "vUVAnimationDir", Some "float2: Material property: Direction vector for UV animation scrolling")
+          CompletionResponse.CreateSnippet("vUVAnimationTime", "vUVAnimationTime", Some "float: Material property: Running time factor for UV animation scrolling")
+          CompletionResponse.CreateSnippet("vBloomFactor", "vBloomFactor", Some "float: Material property: Bloom/emissive intensity adjustment multiplier")
+          CompletionResponse.CreateSnippet("vDamage", "vDamage", Some "float: Material property: Damage/scratch intensity factor (controls burns/cracks)")
+          CompletionResponse.CreateSnippet("PrimaryColor", "PrimaryColor", Some "float4: Material property: Primary color vector of the mesh or effect")
+          CompletionResponse.CreateSnippet("AtmosphereColor", "AtmosphereColor", Some "float4: Material property: Glowing color vector for planet atmosphere")
+          CompletionResponse.CreateSnippet("AtmosphereIntensity", "AtmosphereIntensity", Some "float: Material property: Glowing intensity multiplier for planet atmosphere")
+          CompletionResponse.CreateSnippet("AtmosphereWidth", "AtmosphereWidth", Some "float: Material property: Width/thickness boundary for planet atmosphere")
+          CompletionResponse.CreateSnippet("vPlanetDissolveTime", "vPlanetDissolveTime", Some "float: Runtime progression factor for planet dissolve/explosion effect")
+          CompletionResponse.CreateSnippet("vPlanetDissolveColorMult", "vPlanetDissolveColorMult", Some "float3: Glowing edge lava color multiplier for planet dissolve effect")
+          CompletionResponse.CreateSnippet("vProgressBarValue", "vProgressBarValue", Some "float: Progress fill percentage factor for progress bars")
+          CompletionResponse.CreateSnippet("vHPBarPadding", "vHPBarPadding", Some "float: Horizontal layout padding adjustment parameter for HP bars")
+          CompletionResponse.CreateSnippet("vHealth", "vHealth", Some "float: Current entity health ratio (0.0 to 1.0)")
+          CompletionResponse.CreateSnippet("vAlphaOverrideMult", "vAlphaOverrideMult", Some "float: Material alpha override opacity multiplier")
+          CompletionResponse.CreateSnippet("vConstructionProgress", "vConstructionProgress", Some "float: Progress factor for mesh construction laser sweep effect")
+          CompletionResponse.CreateSnippet("vAuraColor", "vAuraColor", Some "float4: Glowing light emission color vector of the entity's aura")
+          CompletionResponse.CreateSnippet("vAuraRadius", "vAuraRadius", Some "float: Physical radius boundary parameter of the entity's glowing aura")
+          CompletionResponse.CreateSnippet("LavaBrightColor", "LavaBrightColor", Some "float3: Star material: Color vector of the high-intensity lava eruption layer")
+          CompletionResponse.CreateSnippet("LavaHotStoneColor", "LavaHotStoneColor", Some "float3: Star material: Color vector of the warm stone/magma cooled crust layer")
+          CompletionResponse.CreateSnippet("LavaColdStoneColor", "LavaColdStoneColor", Some "float3: Star material: Color vector of the low-intensity cooled dark stone layer")
+          CompletionResponse.CreateSnippet("StarAtmosphereIntensity", "StarAtmosphereIntensity", Some "float: Star material: Glowing intensity for the star atmosphere/corona")
+          CompletionResponse.CreateSnippet("StarAtmosphereWidth", "StarAtmosphereWidth", Some "float: Star material: Thickness/width boundary for the star atmosphere/corona")
+          CompletionResponse.CreateSnippet("StarAtmosphereColor", "StarAtmosphereColor", Some "float4: Star material: Glowing color vector for the star atmosphere/corona")
+          // Mined from Kuat Ancient Empire meshes & WPO/UI custom shader constants
+          CompletionResponse.CreateSnippet("WPODirection", "WPODirection", Some "float2: Direction vector for World Position Offset (WPO) vertex animation")
+          CompletionResponse.CreateSnippet("WPOSpeed", "WPOSpeed", Some "float: Animation speed factor for World Position Offset (WPO) waves")
+          CompletionResponse.CreateSnippet("OffsetStrength", "OffsetStrength", Some "float: Overall physical offset strength multiplier for vertex displacement")
+          CompletionResponse.CreateSnippet("WPOScale", "WPOScale", Some "float: High-frequency noise scale parameter for WPO vertex shader")
+          CompletionResponse.CreateSnippet("WPOBigScale", "WPOBigScale", Some "float: Low-frequency macro noise scale parameter for WPO vertex shader")
+          CompletionResponse.CreateSnippet("WPOTime", "WPOTime", Some "float: Accumulated game runtime factor for WPO vertex wave progression")
+          CompletionResponse.CreateSnippet("vEmissiveRecolorCrunch", "vEmissiveRecolorCrunch", Some "float: Contrast/crunch multiplier for emissive map color recoloring on ships")
+          CompletionResponse.CreateSnippet("Glossiness_", "Glossiness_", Some "float: Global override parameter for glossiness/smoothness multiplier")
+          CompletionResponse.CreateSnippet("Specular_", "Specular_", Some "float: Global override parameter for specular reflectivity multiplier")
+          CompletionResponse.CreateSnippet("Metalness_", "Metalness_", Some "float: Global override parameter for metalness multiplier")
+          CompletionResponse.CreateSnippet("Sensor", "Sensor", Some "float: Planet active sensor scan overlay sweep progression factor")
+          CompletionResponse.CreateSnippet("Colonized", "Colonized", Some "float: Planet colony growth factor, controls building lights distribution on darkside")
+          CompletionResponse.CreateSnippet("vEmissiveRecolorCrunch_Construction", "vEmissiveRecolorCrunch_Construction", Some "float: Recolor crunch contrast control for ship construction glow")
+          CompletionResponse.CreateSnippet("ConstructionColor", "ConstructionColor", Some "float4: Emissive color vector of the laser scanning boundary during construction")
+          CompletionResponse.CreateSnippet("PrimaryColor_Construction", "PrimaryColor_Construction", Some "float4: Base primary hull color vector applied during mesh construction")
+          CompletionResponse.CreateSnippet("PortraitScale", "PortraitScale", Some "float3: 3D scale adjustment vector for character portraits rendering")
+          CompletionResponse.CreateSnippet("PortraitMipLevel", "PortraitMipLevel", Some "float: Texture mipmap level limit factor for character portraits rendering")
+          CompletionResponse.CreateSnippet("CustomDiffuseTexture", "CustomDiffuseTexture", Some "float: Toggle parameter for custom diffuse texture override on mesh")
+          CompletionResponse.CreateSnippet("FlowMapIntensity", "FlowMapIntensity", Some "float: Dynamic scrolling flowmap deformation intensity multiplier")
+          CompletionResponse.CreateSnippet("HueShift", "HueShift", Some "float: Color hue shift progression factor for spectrum cycling effects")
+          CompletionResponse.CreateSnippet("UVStep", "UVStep", Some "float2: UV step/tiling spacing factor for texture coordinate repeat offsets")
+          CompletionResponse.CreateSnippet("vOverValue", "vOverValue", Some "float: UI element hover state emission/transparency intensity value")
+          CompletionResponse.CreateSnippet("vDownValue", "vDownValue", Some "float: UI element pressed state emission/transparency intensity value")
+          CompletionResponse.CreateSnippet("vSelectedValue", "vSelectedValue", Some "float: UI element selected/active state emission/transparency intensity value")
+          CompletionResponse.CreateSnippet("vIntelValue", "vIntelValue", Some "float: UI element espionage/intel state transparency intensity value")
+          CompletionResponse.CreateSnippet("ObjectPos", "ObjectPos", Some "float3: Origin world position coordinates of the shield collision ellipsoid")
+          CompletionResponse.CreateSnippet("ObjectDir", "ObjectDir", Some "float3: Direction vector of the incoming laser impact on shield ellipsoid")
+          CompletionResponse.CreateSnippet("ObjectScale", "ObjectScale", Some "float3: Ellipsoid-to-sphere boundary scaling factor for shield hit animation")
+          CompletionResponse.CreateSnippet("vNumLoops", "vNumLoops", Some "float: Repetitive animation loop limit parameter for effects")
+          CompletionResponse.CreateSnippet("vTimePerLoop", "vTimePerLoop", Some "float: Time duration threshold allocated for each animation cycle loop")
+          CompletionResponse.CreateSnippet("vObjectTime", "vObjectTime", Some "float: Running local time tracker for shield collision animation")
+          // Mined planetary textures, volumetric maps and light sources
+          CompletionResponse.CreateSnippet("Time", "Time", Some "float: Running game time factor for star fluid wave animations")
+          CompletionResponse.CreateSnippet("SystemLightPosRadius", "SystemLightPosRadius", Some "float4: Global system primary light source coordinates (xyz) and lighting range (w)")
+          CompletionResponse.CreateSnippet("SystemLightColorFalloff", "SystemLightColorFalloff", Some "float4: Global system primary light source color (rgb) and falloff attenuation (w)")
+          CompletionResponse.CreateSnippet("LavaNoise", "LavaNoise", Some "TextureCube: 3D cubemap noise texture for animated star magma")
+          CompletionResponse.CreateSnippet("LavaDiffuse", "LavaDiffuse", Some "Texture2D: Diffuse color map for flowing star lava")
+          CompletionResponse.CreateSnippet("StoneDiffuse", "StoneDiffuse", Some "Texture2D: Diffuse color map for cooled star crust/stone")
+          CompletionResponse.CreateSnippet("NormalMap", "NormalMap", Some "Texture2D: Global tangent space normal map for planetary surface details")
+          CompletionResponse.CreateSnippet("SpecularMap", "SpecularMap", Some "Texture2D: Global PBR parameters map (specular, glossiness, metalness, empire mask)")
+          // Camera state vectors
+          CompletionResponse.CreateSnippet("vCamPos", "vCamPos", Some "float3: Camera world space position coordinates")
+          CompletionResponse.CreateSnippet("vCamLookAtDir", "vCamLookAtDir", Some "float3: Camera forward look-at direction vector")
+          CompletionResponse.CreateSnippet("vCamRightDir", "vCamRightDir", Some "float3: Camera right-side direction vector for billboarding")
+          CompletionResponse.CreateSnippet("vCamUpDir", "vCamUpDir", Some "float3: Camera up direction vector for billboarding")
+          // Erosion & dissolve control
+          CompletionResponse.CreateSnippet("Erosion", "Erosion", Some "float4: Dissolve/erosion control vector for mesh fade effects")
+          // Progress bar & map icon colors
+          CompletionResponse.CreateSnippet("BARPrimaryColor", "BARPrimaryColor", Some "float4: Primary color vector for health/progress bar rendering")
+          CompletionResponse.CreateSnippet("ProgressBarPrimaryColor", "ProgressBarPrimaryColor", Some "float4: Primary color vector for map icon progress indicators")
+          // Cubemap & ship state
+          CompletionResponse.CreateSnippet("CubemapIntensity", "CubemapIntensity", Some "float: Environmental cubemap reflection intensity multiplier")
+          CompletionResponse.CreateSnippet("ShipVars", "ShipVars", Some "float4: Packed ship state variables (dissolve progress, cloaking, etc.)")
+          // Core texture samplers
+          CompletionResponse.CreateSnippet("DiffuseMap", "DiffuseMap", Some "Texture2D: Primary diffuse/albedo color texture sampler")
+          CompletionResponse.CreateSnippet("CustomTexture", "CustomTexture", Some "Texture2D: Custom auxiliary texture sampler (city lights, noise, etc.)")
+          CompletionResponse.CreateSnippet("CustomTexture2", "CustomTexture2", Some "Texture2D: Secondary custom auxiliary texture sampler")
+          CompletionResponse.CreateSnippet("LightDataMap", "LightDataMap", Some "Texture2D: Tiled point light data texture for deferred lighting")
+          CompletionResponse.CreateSnippet("LightIndexMap", "LightIndexMap", Some "Texture2D: Tiled point light index lookup texture")
+          CompletionResponse.CreateSnippet("WPOTexture", "WPOTexture", Some "Texture2D: World Position Offset noise texture sampler")
+          CompletionResponse.CreateSnippet("EnvironmentMap", "EnvironmentMap", Some "TextureCube: Global skybox cubemap for environmental reflections")
+          // Portrait texture samplers
+          CompletionResponse.CreateSnippet("PortraitClothes", "PortraitClothes", Some "Texture2D: Portrait clothing layer texture sampler")
+          CompletionResponse.CreateSnippet("PortraitHair", "PortraitHair", Some "Texture2D: Portrait hair layer texture sampler")
+          CompletionResponse.CreateSnippet("PortraitCharacter", "PortraitCharacter", Some "Texture2D: Portrait base character body texture sampler")
+          CompletionResponse.CreateSnippet("PortraitEvolutionDecal", "PortraitEvolutionDecal", Some "Texture2D: Portrait evolution decal overlay texture sampler")
+          // Transform matrices
+          CompletionResponse.CreateSnippet("Transform", "Transform", Some "float4x4: Local-to-world transform matrix for simple vertex shaders")
+          CompletionResponse.CreateSnippet("ViewProjectionMatrix_Duplicate", "ViewProjectionMatrix_Duplicate", Some "float4x4: Duplicate View-Projection matrix for alternative constant buffers")
+          // Generic UV
+          CompletionResponse.CreateSnippet("vUV", "vUV", Some "float2: Generic UV texture coordinate variable") ]
+
     let private propertyValues =
         Map.ofList
             [ "MagFilter", [ "Linear"; "Point"; "Anisotropic" ]
@@ -1393,38 +1556,22 @@ module PdxShaderFeatures =
               "BlendEnable", [ "yes"; "no" ]
               "AlphaTest", [ "yes"; "no" ]
               "SourceBlend",
-              [ "SRC_ALPHA"
-                "INV_SRC_ALPHA"
-                "ONE"
-                "ZERO"
-                "SRC_COLOR"
-                "INV_SRC_COLOR"
-                "DEST_ALPHA"
-                "INV_DEST_ALPHA"
-                "DEST_COLOR"
-                "INV_DEST_COLOR" ]
+              [ "SRC_ALPHA"; "INV_SRC_ALPHA"; "ONE"; "ZERO"; "SRC_COLOR"; "INV_SRC_COLOR"; "DEST_ALPHA"; "INV_DEST_ALPHA"; "DEST_COLOR"; "INV_DEST_COLOR"
+                "\"SRC_ALPHA\""; "\"INV_SRC_ALPHA\""; "\"ONE\""; "\"ZERO\""; "\"SRC_COLOR\""; "\"INV_SRC_COLOR\""; "\"DEST_ALPHA\""; "\"INV_DEST_ALPHA\""; "\"DEST_COLOR\""; "\"INV_DEST_COLOR\"" ]
               "DestBlend",
-              [ "SRC_ALPHA"
-                "INV_SRC_ALPHA"
-                "ONE"
-                "ZERO"
-                "SRC_COLOR"
-                "INV_SRC_COLOR"
-                "DEST_ALPHA"
-                "INV_DEST_ALPHA"
-                "DEST_COLOR"
-                "INV_DEST_COLOR" ]
-              "SourceAlpha", [ "SRC_ALPHA"; "INV_SRC_ALPHA"; "ONE"; "ZERO" ]
-              "DestAlpha", [ "SRC_ALPHA"; "INV_SRC_ALPHA"; "ONE"; "ZERO" ]
+              [ "SRC_ALPHA"; "INV_SRC_ALPHA"; "ONE"; "ZERO"; "SRC_COLOR"; "INV_SRC_COLOR"; "DEST_ALPHA"; "INV_DEST_ALPHA"; "DEST_COLOR"; "INV_DEST_COLOR"
+                "\"SRC_ALPHA\""; "\"INV_SRC_ALPHA\""; "\"ONE\""; "\"ZERO\""; "\"SRC_COLOR\""; "\"INV_SRC_COLOR\""; "\"DEST_ALPHA\""; "\"INV_DEST_ALPHA\""; "\"DEST_COLOR\""; "\"INV_DEST_COLOR\"" ]
+              "SourceAlpha", [ "SRC_ALPHA"; "INV_SRC_ALPHA"; "ONE"; "ZERO"; "\"SRC_ALPHA\""; "\"INV_SRC_ALPHA\""; "\"ONE\""; "\"ZERO\"" ]
+              "DestAlpha", [ "SRC_ALPHA"; "INV_SRC_ALPHA"; "ONE"; "ZERO"; "\"SRC_ALPHA\""; "\"INV_SRC_ALPHA\""; "\"ONE\""; "\"ZERO\"" ]
               "BlendOp", [ "ADD"; "SUBTRACT"; "REV_SUBTRACT"; "MIN"; "MAX" ]
               "BlendOpAlpha", [ "ADD"; "SUBTRACT"; "REV_SUBTRACT"; "MIN"; "MAX" ]
-              "WriteMask", [ "RED"; "GREEN"; "BLUE"; "ALPHA"; "0x0F"; "0x0E"; "0x0C"; "0x08"; "0x00" ]
-              "CullMode", [ "none"; "cw"; "ccw" ]
-              "FillMode", [ "solid"; "wireframe" ]
+              "WriteMask", [ "RED"; "GREEN"; "BLUE"; "ALPHA"; "RED|GREEN|BLUE"; "RED|GREEN|BLUE|ALPHA"; "\"RED|GREEN|BLUE\""; "\"RED|GREEN|BLUE|ALPHA\""; "0x0F"; "0x0E"; "0x0C"; "0x08"; "0x00"; "\"0x0F\""; "\"0x0E\""; "\"0x0C\""; "\"0x08\""; "\"0x00\"" ]
+              "CullMode", [ "none"; "cw"; "ccw"; "CULL_NONE"; "CULL_BACK"; "CULL_FRONT"; "\"CULL_NONE\""; "\"CULL_BACK\""; "\"CULL_FRONT\"" ]
+              "FillMode", [ "solid"; "wireframe"; "FILL_SOLID"; "FILL_WIREFRAME"; "\"FILL_SOLID\""; "\"FILL_WIREFRAME\"" ]
               "FrontCCW", [ "yes"; "no" ]
               "DepthEnable", [ "yes"; "no" ]
               "DepthWriteEnable", [ "yes"; "no" ]
-              "DepthWriteMask", [ "DEPTH_WRITE_ALL"; "DEPTH_WRITE_ZERO" ]
+              "DepthWriteMask", [ "DEPTH_WRITE_ALL"; "DEPTH_WRITE_ZERO"; "\"DEPTH_WRITE_ALL\""; "\"DEPTH_WRITE_ZERO\"" ]
               "DepthFunction", [ "LESS"; "LESS_EQUAL"; "EQUAL"; "GREATER"; "GREATER_EQUAL"; "ALWAYS"; "NEVER" ]
               "StencilEnable", [ "yes"; "no" ]
               "FrontStencilFunc",
@@ -1489,6 +1636,246 @@ module PdxShaderFeatures =
             let pattern = sprintf @"\b%s\s*=\s*""?[A-Za-z0-9_-]*$" (Regex.Escape property)
             if headerMatches pattern linePrefix then Some(property, values) else None)
 
+    let private inferLocalVariables (filetext: string) =
+        let mutable varMap = Map.empty
+        // 1. Match function parameters (e.g. VS_INPUT v)
+        let paramRegex = Regex(@"\b(VS_INPUT|PS_INPUT|VS_OUTPUT|PS_OUTPUT|VS_OUPUT|VS_OUT|PS_OUT|v2f)\s+(\w+)\b", RegexOptions.Compiled)
+        for m in paramRegex.Matches(filetext) do
+            if m.Groups.Count >= 3 then
+                let typeName = m.Groups.[1].Value
+                let varName = m.Groups.[2].Value
+                varMap <- Map.add varName typeName varMap
+        // 2. Match local declarations (e.g. VS_OUTPUT Out;)
+        let declRegex = Regex(@"\b(VS_INPUT|PS_INPUT|VS_OUTPUT|PS_OUTPUT|VS_OUPUT|VS_OUT|PS_OUT|v2f)\s+(\w+)\s*;", RegexOptions.Compiled)
+        for m in declRegex.Matches(filetext) do
+            if m.Groups.Count >= 3 then
+                let typeName = m.Groups.[1].Value
+                let varName = m.Groups.[2].Value
+                varMap <- Map.add varName typeName varMap
+        varMap
+
+    let private parseVertexStructs (sources: seq<ShaderSource>) =
+        let mutable structMap = Map.empty
+        let structStartRegex = Regex(@"\bVertexStruct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{", RegexOptions.Compiled)
+        let fieldRegex = Regex(@"\b(?:float|int|uint|half|bool)(?:2|3|4|2x2|3x3|4x4)?\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::|;)", RegexOptions.Compiled)
+        for source in sources do
+            let matches = structStartRegex.Matches(source.filetext)
+            for m in matches do
+                if m.Groups.Count >= 2 then
+                    let structName = m.Groups.[1].Value
+                    let startIndex = m.Index + m.Length
+                    let mutable depth = 1
+                    let mutable curr = startIndex
+                    let text = source.filetext
+                    while curr < text.Length && depth > 0 do
+                        if text.[curr] = '{' then depth <- depth + 1
+                        elif text.[curr] = '}' then depth <- depth - 1
+                        curr <- curr + 1
+                    if depth = 0 then
+                        let structContent = text.Substring(startIndex, curr - startIndex - 1)
+                        let mutable fields = []
+                        for fm in fieldRegex.Matches(structContent) do
+                            if fm.Groups.Count >= 2 then
+                                fields <- fm.Groups.[1].Value :: fields
+                        structMap <- Map.add structName (List.rev fields) structMap
+        structMap
+
+    let builtinVariablesSet = 
+        lazy (
+            let hs = System.Collections.Generic.HashSet<string>()
+            for g in hlslPdxGlobals do
+                match g with
+                | CompletionResponse.Snippet(label, _, _, _, _) -> hs.Add(label) |> ignore
+                | CompletionResponse.Simple(label, _, _) -> hs.Add(label) |> ignore
+                | CompletionResponse.Detailed(label, _, _, _) -> hs.Add(label) |> ignore
+            hs
+        )
+
+    let builtinFunctionsSet = 
+        lazy (
+            let hs = System.Collections.Generic.HashSet<string>()
+            for f in hlslBuiltinSnippets do
+                match f with
+                | CompletionResponse.Snippet(label, _, _, _, _) -> hs.Add(label) |> ignore
+                | CompletionResponse.Simple(label, _, _) -> hs.Add(label) |> ignore
+                | CompletionResponse.Detailed(label, _, _, _) -> hs.Add(label) |> ignore
+            hs
+        )
+
+    type private ParsedCacheEntry =
+        { fileHash: int
+          variables: Set<string>
+          functions: CompletionResponse list }
+
+    let private shaderParseCache = System.Collections.Concurrent.ConcurrentDictionary<string, ParsedCacheEntry>()
+
+    let private parseSingleSource (source: ShaderSource) =
+        let hash = if isNull source.filetext then 0 else source.filetext.GetHashCode()
+        match shaderParseCache.TryGetValue(source.filepath) with
+        | true, entry when entry.fileHash = hash ->
+            entry.variables, entry.functions
+        | _ ->
+            let mutable vars = Set.empty
+            let cbufferBlockRegex = Regex(@"\bConstantBuffer\s*\([^)]+\)\s*\{([^}]+)\}", RegexOptions.Compiled ||| RegexOptions.Singleline)
+            let varDeclRegex = Regex(@"\b(?:float|int|uint|half|bool)(?:2|3|4|2x2|3x3|4x4)?\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::|;)", RegexOptions.Compiled)
+            
+            for m in cbufferBlockRegex.Matches(source.filetext) do
+                if m.Groups.Count >= 2 then
+                    let cbContent = m.Groups.[1].Value
+                    for fm in varDeclRegex.Matches(cbContent) do
+                        if fm.Groups.Count >= 2 then
+                            vars <- Set.add fm.Groups.[1].Value vars
+                            
+            let globalVarRegex = Regex(@"^\s*(?:float|int|uint|half|bool)(?:2|3|4|2x2|3x3|4x4)?\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::|;)\s*$", RegexOptions.Compiled ||| RegexOptions.Multiline)
+            for m in globalVarRegex.Matches(source.filetext) do
+                if m.Groups.Count >= 2 then
+                    vars <- Set.add m.Groups.[1].Value vars
+                    
+            let samplerStartRegex = Regex(@"\bSamplers\s*=\s*\{", RegexOptions.Compiled)
+            let sMatches = samplerStartRegex.Matches(source.filetext)
+            for m in sMatches do
+                let startIndex = m.Index + m.Length
+                let mutable depth = 1
+                let mutable curr = startIndex
+                let text = source.filetext
+                while curr < text.Length && depth > 0 do
+                    if text.[curr] = '{' then depth <- depth + 1
+                    elif text.[curr] = '}' then depth <- depth - 1
+                    curr <- curr + 1
+                if depth = 0 then
+                    let sContent = text.Substring(startIndex, curr - startIndex - 1)
+                    let mutable subDepth = 0
+                    let mutable j = 0
+                    let mutable nameStart = 0
+                    let sLen = sContent.Length
+                    while j < sLen do
+                        let c = sContent.[j]
+                        if c = '{' then
+                            if subDepth = 0 then
+                                let candidate = sContent.Substring(nameStart, j - nameStart)
+                                let nm = Regex.Match(candidate, @"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*$", RegexOptions.Multiline)
+                                if nm.Success && nm.Groups.Count >= 2 then
+                                    vars <- Set.add nm.Groups.[1].Value vars
+                            subDepth <- subDepth + 1
+                        elif c = '}' then
+                            subDepth <- subDepth - 1
+                            if subDepth = 0 then
+                                nameStart <- j + 1
+                        j <- j + 1
+
+            let mutable funcs = Map.empty
+            let hlslBlockRegex = Regex(@"\[\[([\s\S]*?)\]\]", RegexOptions.Compiled)
+            let funcDeclRegex = Regex(@"\b(void|float[234]?|int[234]?|uint[234]?|half[234]?|bool[234]?|PointLight|LightingProperties|float[234]x[234]|double[234]?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)", RegexOptions.Compiled)
+            let paramWordRegex = Regex(@"\b([A-Za-z_][A-Za-z0-9_]*)\s*$", RegexOptions.Compiled)
+            
+            for hlslMatch in hlslBlockRegex.Matches(source.filetext) do
+                let hlslContent = hlslMatch.Groups.[1].Value
+                for m in funcDeclRegex.Matches(hlslContent) do
+                    if m.Groups.Count >= 4 then
+                        let retType = m.Groups.[1].Value
+                        let funcName = m.Groups.[2].Value
+                        let paramsStr = m.Groups.[3].Value
+                        
+                        let paramsList = 
+                            paramsStr.Split([|','|], StringSplitOptions.RemoveEmptyEntries)
+                            |> Array.map (fun p -> p.Trim())
+                            |> Array.choose (fun p ->
+                                let pm = paramWordRegex.Match(p)
+                                if pm.Success then Some pm.Groups.[1].Value else None
+                            )
+                            |> Array.toList
+                        
+                        let snippetText =
+                            if List.isEmpty paramsList then
+                                sprintf "%s()" funcName
+                            else
+                                let placeholders = 
+                                    paramsList 
+                                    |> List.mapi (fun idx p -> sprintf "${%d:%s}" (idx + 1) p)
+                                    |> String.concat ", "
+                                sprintf "%s(%s)" funcName placeholders
+                                
+                        let desc = sprintf "%s: Dynamic helper function parsed from includes" retType
+                        let item = CompletionResponse.CreateSnippet(funcName, snippetText, Some desc)
+                        funcs <- Map.add funcName item funcs
+            
+            let funcList = funcs |> Map.toList |> List.map snd
+            let newEntry = { fileHash = hash; variables = vars; functions = funcList }
+            shaderParseCache.[source.filepath] <- newEntry
+            vars, funcList
+
+    let parseGlobalVariables (sources: seq<ShaderSource>) =
+        sources
+        |> Seq.map parseSingleSource
+        |> Seq.map fst
+        |> Set.unionMany
+
+    let parseGlobalFunctions (sources: seq<ShaderSource>) =
+        sources
+        |> Seq.map parseSingleSource
+        |> Seq.map snd
+        |> Seq.toList
+        |> List.concat
+
+
+    let getShaderSources (resources: seq<Resource>) filepath filetext =
+        let currentPath =
+            try Path.GetFullPath filepath
+            with _ -> filepath
+
+        let modSources =
+            resources
+            |> Seq.choose (function
+                | FileResource(_, resource) when isShaderFile resource.filepath ->
+                    let candidatePath =
+                        try Path.GetFullPath resource.filepath
+                        with _ -> resource.filepath
+
+                    if candidatePath.Equals(currentPath, StringComparison.OrdinalIgnoreCase) then
+                        None
+                    else
+                        try
+                            if File.Exists resource.filepath then
+                                Some
+                                    { filepath = resource.filepath
+                                      logicalpath = resource.logicalpath
+                                      filetext = File.ReadAllText resource.filepath }
+                            else
+                                None
+                        with _ -> None
+                | FileWithContentResource(_, resource) when resource.overwrite <> Overwrite.Overwritten && isShaderFile resource.filepath ->
+                    let candidatePath =
+                        try Path.GetFullPath resource.filepath
+                        with _ -> resource.filepath
+
+                    if candidatePath.Equals(currentPath, StringComparison.OrdinalIgnoreCase) then
+                        None
+                    else
+                        try
+                            if File.Exists resource.filepath then
+                                Some
+                                    { filepath = resource.filepath
+                                      logicalpath = resource.logicalpath
+                                      filetext = File.ReadAllText resource.filepath }
+                            else
+                                None
+                        with _ -> None
+                | _ -> None)
+
+        modSources
+        |> Seq.append [ sourceForCurrentFile filepath filetext ]
+        |> Seq.append (
+            vanillaFxSources
+            |> List.filter (fun s ->
+                let sp =
+                    try Path.GetFullPath s.filepath
+                    with _ -> s.filepath
+                not (sp.Equals(currentPath, StringComparison.OrdinalIgnoreCase))))
+        |> Seq.toList
+
+
+
+
     let completeFromSources sources includeNames pos filepath filetext =
         let symbols =
             symbolsWithIncludeNames
@@ -1507,22 +1894,54 @@ module PdxShaderFeatures =
             let scope = scopeContextBefore filetext (offsetAt filetext pos)
 
             if scope.insideHlsl then
-                let typeCompletions =
-                    hlslTypes |> List.map (fun t -> valueCompletion t "HLSL type")
-                
-                let mutable parenDepth = 0
-                for c in linePrefix do
-                    if c = '(' then parenDepth <- parenDepth + 1
-                    elif c = ')' then parenDepth <- max 0 (parenDepth - 1)
-                
-                if parenDepth > 0 then
-                    typeCompletions @ hlslBuiltinSnippets
+                let dotMatch = Regex.Match(linePrefix, @"\b([A-Za-z_][A-Za-z0-9_]*)\.$")
+                if dotMatch.Success then
+                    let varName = dotMatch.Groups.[1].Value
+                    let localVars = inferLocalVariables filetext
+                    match localVars.TryFind(varName) with
+                    | Some(typeName) ->
+                        let structs = parseVertexStructs (Seq.append sources [ sourceForCurrentFile filepath filetext ])
+                        match structs.TryFind(typeName) with
+                        | Some(fields) ->
+                            fields |> List.map (fun field -> valueCompletion field "Vertex field")
+                        | None -> []
+                    | None -> []
                 else
-                    let controlFlowCompletions =
-                        hlslControlFlow |> List.map (fun kw -> completionItem kw "HLSL keyword" CompletionCategory.Value)
-                    let pdxDirectiveCompletions =
-                        hlslPdxDirectives |> List.map (fun d -> completionItem d "Paradox directive" CompletionCategory.Global)
-                    typeCompletions @ controlFlowCompletions @ pdxDirectiveCompletions @ hlslBuiltinSnippets
+                    let typeCompletions =
+                        hlslTypes |> List.map (fun t -> valueCompletion t "HLSL type")
+                    
+                    let mutable parenDepth = 0
+                    for c in linePrefix do
+                        if c = '(' then parenDepth <- parenDepth + 1
+                        elif c = ')' then parenDepth <- max 0 (parenDepth - 1)
+                    
+                    let pdxGlobalCompletions = hlslPdxGlobals
+                    let pdxGlobalNames =
+                        hlslPdxGlobals
+                        |> List.choose (function
+                            | CompletionResponse.Snippet(label, _, _, _, _) -> Some label
+                            | CompletionResponse.Simple(label, _, _) -> Some label
+                            | CompletionResponse.Detailed(label, _, _, _) -> Some label)
+                        |> Set.ofList
+
+                    let allSources = Seq.append sources [ sourceForCurrentFile filepath filetext ]
+                    let parsedGlobals = parseGlobalVariables allSources
+                    let parsedGlobalCompletions =
+                        parsedGlobals
+                        |> Set.filter (fun v -> not (Set.contains v pdxGlobalNames))
+                        |> Set.toList
+                        |> List.map (fun v -> completionItem v "HLSL variable" CompletionCategory.Value)
+
+                    let parsedFunctions = parseGlobalFunctions allSources
+
+                    if parenDepth > 0 then
+                        typeCompletions @ hlslPdxGlobals @ parsedGlobalCompletions @ parsedFunctions @ hlslBuiltinSnippets
+                    else
+                        let controlFlowCompletions =
+                            hlslControlFlow |> List.map (fun kw -> completionItem kw "HLSL keyword" CompletionCategory.Value)
+                        let pdxDirectiveCompletions =
+                            hlslPdxDirectives |> List.map (fun d -> completionItem d "Paradox directive" CompletionCategory.Global)
+                        typeCompletions @ controlFlowCompletions @ pdxDirectiveCompletions @ pdxGlobalCompletions @ parsedGlobalCompletions @ parsedFunctions @ hlslBuiltinSnippets
             elif Regex.IsMatch(linePrefix, @":\s*[A-Za-z0-9_]*$") && inBlock @"\bVertexStruct\s+\w+\s*$" scope then
                 vertexSemantics |> List.map (fun semantic -> valueCompletion semantic "Vertex semantic")
             else
@@ -1555,7 +1974,7 @@ module PdxShaderFeatures =
                 | None when blankOrPartialIdentifier linePrefix && inBlock @"\bRasterizerState\s+\w+\s*$" scope ->
                     rasterizerProperties
                     |> List.map (fun property -> completionItem property "RasterizerState property" CompletionCategory.Value)
-                | None when blankOrPartialIdentifier linePrefix && List.isEmpty scope.headers -> snippets
+                | None when blankOrPartialIdentifier linePrefix -> snippets
                 | None -> []
 
     let completion (resourceManager: ResourceManager<_>) pos filepath filetext =
