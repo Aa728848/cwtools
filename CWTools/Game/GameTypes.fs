@@ -80,6 +80,8 @@ type IGame =
     abstract Complete: pos -> string -> string -> CompletionResponse list
     abstract GoToType: pos -> string -> string -> range option
     abstract FindAllRefs: pos -> string -> string -> range list option
+    abstract FindAllRefsByType: string -> string -> range list
+    abstract TypeReferenceIndex: unit -> Map<string * string, range list>
     abstract ReplaceConfigRules: (string * string) list -> unit
     abstract RefreshCaches: unit -> unit
     abstract RefreshLocalisationCaches: unit -> unit

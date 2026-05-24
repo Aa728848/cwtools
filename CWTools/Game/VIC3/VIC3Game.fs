@@ -266,6 +266,12 @@ type VIC3Game(setupSettings: VIC3Settings) =
         member _.FindAllRefs pos file text =
             findAllRefsFromPos fileManager game.ResourceManager game.InfoService pos file text
 
+        member _.FindAllRefsByType typeName id =
+            findAllRefsByType game.ResourceManager game.InfoService typeName id
+
+        member _.TypeReferenceIndex() =
+            getOrBuildTypeReferenceIndex game.ResourceManager game.InfoService
+
         member _.InfoAtPos pos file text = game.InfoAtPos pos file text
 
         member _.ReplaceConfigRules rules =

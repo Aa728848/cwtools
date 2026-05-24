@@ -18,9 +18,80 @@ module LanguageFeatures =
     /// when the file content hasn't changed.
     let private completionEntityCache = ConcurrentDictionary<string, struct (int * Entity)>()
 
+    let private typeReferenceIndexCache =
+        ConcurrentDictionary<struct (int * int), Map<string * string, range list>>()
+
     /// Clear the completion entity cache. Call during RefreshCaches to release
     /// stale Entity ASTs for files that are no longer relevant.
     let clearCompletionEntityCache () = completionEntityCache.Clear()
+
+    let private isSameText (left: string) (right: string) =
+        String.Equals(left, right, StringComparison.Ordinal)
+
+    let private trimReferenceValue (value: string) =
+        if isNull value then "" else value.Trim().Trim('"')
+
+    let private addRangeToIndex key position (index: Map<string * string, range list>) =
+        let existing = index |> Map.tryFind key |> Option.defaultValue []
+        index |> Map.add key (position :: existing)
+
+    let private buildTypeReferenceIndex
+        (resourceManager: ResourceManager<_>)
+        (infoService: InfoService option)
+        =
+        let referenceData (e: Entity) (lazyData: Lazy<#ComputedData>) : Map<string, ReferenceDetails list> =
+            let referencedTypes = lazyData.Force().Referencedtypes
+
+            if referencedTypes.IsSome then
+                referencedTypes.Value
+            else
+                match infoService with
+                | Some info ->
+                    info.GetReferencedTypes e
+                    |> Seq.map (fun kvp -> kvp.Key, kvp.Value |> Seq.toList)
+                    |> Map.ofSeq
+                | None -> Map.empty
+
+        resourceManager.Api.ValidatableEntities()
+        |> Seq.collect (fun struct (e, lazyData) ->
+            referenceData e lazyData
+            |> Map.toSeq
+            |> Seq.collect (fun (typeName, refs) ->
+                let baseTypeName = typeName.Split('.').[0]
+                refs
+                |> Seq.choose (fun ref ->
+                    match ref.referenceType with
+                    | ReferenceType.TypeDef
+                    | ReferenceType.TypeDefFuzzy ->
+                        let value = ref.name.GetString()
+                        if String.IsNullOrWhiteSpace value then None
+                        else Some((baseTypeName, value), ref.position)
+                    | _ -> None)))
+        |> Seq.fold (fun index (key, position) -> addRangeToIndex key position index) Map.empty
+        |> Map.map (fun _ positions -> positions |> List.rev)
+
+    let getOrBuildTypeReferenceIndex
+        (resourceManager: ResourceManager<_>)
+        (infoService: InfoService option)
+        =
+        let managerId = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(resourceManager)
+        let version = ResourceManagerEager.currentVersion ()
+        let cacheKey = struct (managerId, version)
+
+        let index =
+            typeReferenceIndexCache.GetOrAdd(
+                cacheKey,
+                fun _ ->
+                    if typeReferenceIndexCache.Count > 4 then
+                        for key in typeReferenceIndexCache.Keys |> Seq.toArray do
+                            let struct (cachedManagerId, cachedVersion) = key
+                            if cachedManagerId = managerId && cachedVersion <> version then
+                                typeReferenceIndexCache.TryRemove(key) |> ignore
+
+                    buildTypeReferenceIndex resourceManager infoService
+            )
+
+        index
 
     let getNodeForTypeDefAndType
         (resourceManager: ResourceManager<_>)
@@ -1196,6 +1267,46 @@ module LanguageFeatures =
                 | Some _ as r -> r
                 | None -> wordLookupFallback ()
 
+    let findAllRefsByType
+        (resourceManager: ResourceManager<_>)
+        (infoService: InfoService option)
+        (typename: string)
+        (typeValue: string)
+        =
+        let typename = typename.Split('.').[0]
+        let typeValue = trimReferenceValue typeValue
+
+        let refsFromTypes =
+            getOrBuildTypeReferenceIndex resourceManager infoService
+            |> Map.tryFind (typename, typeValue)
+            |> Option.defaultValue []
+
+        if refsFromTypes.Length > 0 then
+            refsFromTypes
+        else
+            let rec searchNode (node: Node) =
+                [ yield!
+                      node.Leaves
+                      |> Seq.choose (fun l ->
+                          if isSameText l.Key typeValue || isSameText (trimReferenceValue l.ValueText) typeValue then
+                              Some l.Position
+                          else
+                              None)
+                  yield!
+                      node.LeafValues
+                      |> Seq.choose (fun lv ->
+                          if isSameText (trimReferenceValue lv.ValueText) typeValue then
+                              Some lv.Position
+                          else
+                              None)
+                  yield!
+                      node.Nodes
+                      |> Seq.choose (fun n -> if isSameText n.Key typeValue then Some n.Position else None)
+                  yield! node.Nodes |> Seq.collect searchNode ]
+
+            resourceManager.Api.ValidatableEntities()
+            |> List.collect (fun struct (e, _) -> searchNode e.entity)
+
     let findAllRefsFromPos
         (fileManager: FileManager)
         (resourceManager: ResourceManager<_>)
@@ -1210,41 +1321,7 @@ module LanguageFeatures =
         | Some e, Some info ->
             match info.GetInfo(pos, e) with
             | Some(_, (_, Some(TypeRef(t: string, tv)), _)) ->
-                //log "tv %A %A" t tv
-                let t = t.Split('.').[0]
-
-                let refsFromTypes =
-                    resourceManager.Api.ValidatableEntities()
-                    |> List.choose (fun struct (e, l) ->
-                        let x = l.Force().Referencedtypes in
-
-                        if x.IsSome then
-                            (x.Value.TryFind t)
-                        else
-                            let contains, value = (info.GetReferencedTypes e).TryGetValue t in
-                            if contains then Some(value |> List.ofSeq) else None)
-                    |> List.collect id
-                    |> List.choose (fun ref ->
-                        if ref.name.GetString() == tv && ref.referenceType = ReferenceType.TypeDef then
-                            Some ref.position
-                        else
-                            None)
-
-                // Fallback: direct AST key search when Referencedtypes yields no results
-                let results =
-                    if refsFromTypes.Length > 0 then
-                        refsFromTypes
-                    else
-                        let rec searchNode (node: Node) =
-                            [   yield! node.Leaves |> Seq.choose (fun l ->
-                                    if l.Key == tv then Some l.Position else None)
-                                yield! node.Nodes |> Seq.choose (fun n ->
-                                    if n.Key == tv then Some n.Position else None)
-                                yield! node.Nodes |> Seq.collect searchNode ]
-                        resourceManager.Api.ValidatableEntities()
-                        |> List.collect (fun struct (e, _) -> searchNode e.entity)
-
-                results |> Some
+                findAllRefsByType resourceManager infoService t tv |> Some
             | _ -> None
         | _, _ -> None
 
