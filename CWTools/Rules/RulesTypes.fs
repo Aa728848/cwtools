@@ -159,6 +159,8 @@ and NewField =
     | IconField of string
     /// The keys of an alias rule
     | AliasValueKeysField of string
+    /// Marker used by info services to resolve parameter fields from a sibling alias selector
+    | AliasParamsField of aliasName: string * selectorField: string
     | AliasField of string
     | SingleAliasField of string
     | SingleAliasClauseField of string * string

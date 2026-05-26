@@ -551,6 +551,15 @@ module private RulesParserImpl =
             match getSettingFromString x "alias_keys_field" with
             | Some aliasKey -> AliasValueKeysField aliasKey
             | None -> ScalarField ScalarValue
+        | x when fastStartsWith x "alias_params_field" ->
+            match getSettingFromString x "alias_params_field" with
+            | Some setting ->
+                match setting.Split(',', 2) |> Array.map (fun p -> p.Trim()) with
+                | [| aliasName; selectorField |] when aliasName <> "" && selectorField <> "" ->
+                    AliasParamsField(aliasName, selectorField)
+                | [| aliasName |] when aliasName <> "" -> AliasParamsField(aliasName, aliasName)
+                | _ -> ScalarField ScalarValue
+            | None -> ScalarField ScalarValue
         | x when fastStartsWith x "stellaris_name_format" ->
             match getSettingFromString x "stellaris_name_format" with
             | Some aliasKey -> ValueField(STLNameFormat aliasKey)

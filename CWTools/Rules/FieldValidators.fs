@@ -942,7 +942,8 @@ module internal FieldValidators =
                             severity)
                         leafornode
                     <&&&> errors
-            | AliasField _ -> errors
+            | AliasField _
+            | AliasParamsField _ -> errors
             | MarkerField _
             | SingleAliasField _
             | SubtypeField _
@@ -1019,6 +1020,7 @@ module internal FieldValidators =
             | ScalarField _ -> true
             | SpecificField(SpecificValue v) -> v.lower = keyIDs.lower
             | AliasField _
+            | AliasParamsField _
             | MarkerField _
             | SingleAliasField _
             | SubtypeField _

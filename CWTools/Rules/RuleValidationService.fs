@@ -474,7 +474,8 @@ type RuleValidationService
                     innerErrors
             | NodeRule(AliasField _, _), _
             | LeafRule(AliasField _, _), _
-            | LeafValueRule(AliasField _), _ -> innerErrors
+            | LeafValueRule(AliasField _), _
+            | LeafValueRule(AliasParamsField _), _ -> innerErrors
             | NodeRule(l, _), opts ->
                 let total =
                     clause.Nodes
