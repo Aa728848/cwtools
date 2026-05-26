@@ -166,7 +166,6 @@ type InfoService
             match stringManager.GetStringForID key.normal with
             | "amount"
             | "count"
-            | "cost"
             | "value" -> true
             | _ -> false
 

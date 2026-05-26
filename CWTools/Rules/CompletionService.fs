@@ -152,7 +152,6 @@ type CompletionService
             match stringManager.GetStringForID key.normal with
             | "amount"
             | "count"
-            | "cost"
             | "value" -> true
             | _ -> false
 
@@ -844,6 +843,15 @@ type CompletionService
                 | NewField.VariableSetField v ->
                     varMap.TryFind v
                     |> Option.map (fun ss -> ss.StringValues |> Array.ofSeq)
+                    |> Option.defaultValue [||]
+                    |> Array.map CompletionResponse.CreateSimple
+                | NewField.AliasValueKeysField aliasKey ->
+                    aliasKeyMap
+                    |> Map.tryFind aliasKey
+                    |> Option.map (fun values ->
+                        values
+                        |> Seq.map stringManager.GetStringForID
+                        |> Seq.toArray)
                     |> Option.defaultValue [||]
                     |> Array.map CompletionResponse.CreateSimple
                 | NewField.VariableField _ -> (completionForRHSVariableChain value scopeContext) |> List.toArray
