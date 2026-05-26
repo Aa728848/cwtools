@@ -121,6 +121,47 @@ type CompletionService
         |> List.map (fun (key, rules) -> key, (rules |> Seq.collect ruleToCompletionListHelper |> HashSet<StringToken>))
         |> Map.ofList
 
+    let aliasParamMarkers =
+        let rec collectRule ((ruleType, _): NewRule) =
+            seq {
+                match ruleType with
+                | LeafValueRule(AliasParamsField(aliasName, selectorField)) -> yield aliasName, selectorField
+                | LeafRule(AliasParamsField(aliasName, selectorField), _)
+                | LeafRule(_, AliasParamsField(aliasName, selectorField))
+                | NodeRule(AliasParamsField(aliasName, selectorField), _) ->
+                    yield aliasName, selectorField
+                | NodeRule(_, rules)
+                | ValueClauseRule rules
+                | SubtypeRule(_, _, rules) ->
+                    yield! rules |> Seq.collect collectRule
+                | _ -> ()
+            }
+
+        seq {
+            for _, rules in rootRules.Aliases |> Map.toSeq do
+                yield! rules |> Seq.collect collectRule
+
+            for _, rule in rootRules.TypeRules do
+                yield! collectRule rule
+        }
+        |> Seq.distinct
+        |> Array.ofSeq
+
+    let trySelectedAliasRules aliasName selectedAlias =
+        rootRules.Aliases.TryFind aliasName
+        |> Option.bind (fun rules ->
+            let selectedRules =
+                rules
+                |> Array.choose (function
+                    | NodeRule(SpecificField(SpecificValue key), rules), _ when
+                        String.Equals(stringManager.GetStringForID key.normal, selectedAlias, StringComparison.OrdinalIgnoreCase)
+                        ->
+                        Some rules
+                    | _ -> None)
+                |> Array.collect id
+
+            if selectedRules.Length = 0 then None else Some selectedRules)
+
     let linkMap = links
 
     let wildCardLinks =
@@ -969,6 +1010,34 @@ type CompletionService
     let complete (pos: pos) (entity: Entity) (scopeContext: ScopeContext option) (extraGlobalVars: string list option) =
         let scopeContext = Option.defaultValue defaultContext scopeContext
         let path = getRulePath pos [] entity.entity |> List.rev
+
+        let tryFindNodePathAtPos (pos: pos) (root: Node) =
+            let rec loop path (node: Node) =
+                match node.Nodes |> Seq.tryFind (fun child -> rangeContainsPos child.Position pos) with
+                | Some child -> loop (node :: path) child
+                | None -> Some(List.rev (node :: path))
+
+            loop [] root
+
+        let tryFindParameterOwner (path: Node list) =
+            path
+            |> List.mapi (fun i node -> i, node)
+            |> List.rev
+            |> List.tryPick (fun (i, node) ->
+                if i > 0 && String.Equals(node.Key, "parameters", StringComparison.OrdinalIgnoreCase) then
+                    Some path.[i - 1]
+                else
+                    None)
+
+        let tryPathAfterParameters path =
+            path
+            |> List.mapi (fun i (key, _, _, _, _) -> i, key)
+            |> List.rev
+            |> List.tryPick (fun (i, key) ->
+                if String.Equals(key, "parameters", StringComparison.OrdinalIgnoreCase) then
+                    Some(path |> List.skip (i + 1))
+                else
+                    None)
         
         // Combine initialization-time globalScriptVariables with runtime-provided extraGlobalVars
         let effectiveGlobalVars = 
@@ -996,6 +1065,32 @@ type CompletionService
             getAllKeysInFile entity.entity @ effectiveGlobalVars |> Set.ofList
 
         let scoreFunction = scoreFunction allUsedKeys
+
+        let tryAliasParameterCompletions () =
+            match aliasParamMarkers.Length, tryPathAfterParameters path, tryFindNodePathAtPos pos entity.entity with
+            | 0, _, _
+            | _, None, _
+            | _, _, None -> None
+            | _, Some parameterPath, Some nodePath ->
+                match tryFindParameterOwner nodePath with
+                | None -> None
+                | Some owner ->
+                    aliasParamMarkers
+                    |> Seq.tryPick (fun (aliasName, selectorField) ->
+                        let selectedAlias = owner.TagText selectorField
+
+                        match String.IsNullOrWhiteSpace selectedAlias, trySelectedAliasRules aliasName selectedAlias with
+                        | true, _
+                        | _, None -> None
+                        | false, Some rules ->
+                            let completions =
+                                getCompletionFromPath scoreFunction rules parameterPath scopeContext
+                                |> Array.distinct
+
+                            if completions.Length = 0 then
+                                None
+                            else
+                                Some(completions |> Array.toList))
 
         let rec validateTypeSkipRoot
             (t: TypeDefinition)
@@ -1047,9 +1142,12 @@ type CompletionService
                 allVars |> List.distinct |> List.map (fun s -> CompletionResponse.CreateSimple s)
             | Some(_, _, _, CompletionContext.NodeLHS, _), 1 -> []
             | _ ->
-                pathFilteredTypes
-                |> Seq.collect (fun t -> validateTypeSkipRoot t t.skipRootKey path)
-                |> Seq.toList
+                match tryAliasParameterCompletions () with
+                | Some items -> items
+                | None ->
+                    pathFilteredTypes
+                    |> Seq.collect (fun t -> validateTypeSkipRoot t t.skipRootKey path)
+                    |> Seq.toList
         //TODO: Expand this to use a snippet not just the name of the type
         let createSnippetForType (typeDef: TypeDefinition) =
             let subtypeSnippets =

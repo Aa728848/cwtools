@@ -989,7 +989,7 @@ type InfoService
             |> List.rev
             |> List.tryPick (fun (i, node) ->
                 if i > 0 && String.Equals(node.Key, "parameters", StringComparison.OrdinalIgnoreCase) then
-                    Some path.[i - 1]
+                    Some(path.[i - 1], i)
                 else
                     None)
 
@@ -1009,45 +1009,72 @@ type InfoService
                 if selectedRules.Length = 0 then None else Some selectedRules)
 
         let tryAliasParameterInfo (ruleCtx: RuleContext) =
-            if aliasParamMarkers.Length = 0 then
-                None
-            else
-                tryFindLeafAtPos pos entity.entity
-                |> Option.bind (fun (path, leaf) ->
-                    tryFindParameterOwner path
-                    |> Option.bind (fun owner ->
-                        aliasParamMarkers
-                        |> Seq.tryPick (fun (aliasName, selectorField) ->
-                            let selectedAlias = owner.TagText selectorField
+            let rec tryRulesForPath (rules: NewRule array) (nodes: Node list) =
+                match nodes with
+                | [] -> Some rules
+                | node :: rest ->
+                    let noderules, _, _, _, nodeSpecificDict, _ = memoizeRules rules ruleCtx.subtypes
+                    let found, specificRules = nodeSpecificDict.TryGetValue node.KeyId.lower
 
-                            if String.IsNullOrWhiteSpace selectedAlias then
-                                None
-                            else
-                                trySelectedAliasRules aliasName selectedAlias
-                                |> Option.bind (fun rules ->
-                                    let _, leafrules, _, _, _, leafSpecificDict = memoizeRules rules ruleCtx.subtypes
-                                    let found, specificRules = leafSpecificDict.TryGetValue leaf.KeyId.lower
+                    let candidates: seq<NewRule> =
+                        if found then
+                            seq {
+                                yield! specificRules
+                                yield! noderules
+                            }
+                        else
+                            noderules :> seq<NewRule>
 
-                                    let candidates: seq<NewRule> =
-                                        if found then
-                                            seq {
-                                                yield! specificRules
-                                                yield! leafrules
-                                            }
-                                        else
-                                            leafrules :> seq<NewRule>
+                    candidates
+                    |> Seq.tryPick (function
+                        | NodeRule(l, innerRules), _ when
+                            FieldValidators.checkLeftField p Severity.Error ruleCtx l node.KeyId
+                            ->
+                            tryRulesForPath innerRules rest
+                        | _ -> None)
 
-                                    candidates
-                                    |> Seq.tryPick (function
-                                        | LeafRule(l, _), _ as rule when
-                                            FieldValidators.checkLeftField p Severity.Error ruleCtx l leaf.KeyId
-                                            ->
-                                            let result = fLeaf (ruleCtx, (None, None, None)) leaf rule
+            let tryLeafInfo (rules: NewRule array) (leaf: Leaf) =
+                let _, leafrules, _, _, _, leafSpecificDict = memoizeRules rules ruleCtx.subtypes
+                let found, specificRules = leafSpecificDict.TryGetValue leaf.KeyId.lower
 
-                                            match result with
-                                            | _, (_, Some _, _) -> Some result
-                                            | _ -> None
-                                        | _ -> None)))))
+                let candidates: seq<NewRule> =
+                    if found then
+                        seq {
+                            yield! specificRules
+                            yield! leafrules
+                        }
+                    else
+                        leafrules :> seq<NewRule>
+
+                candidates
+                |> Seq.tryPick (function
+                    | LeafRule(l, _), _ as rule when FieldValidators.checkLeftField p Severity.Error ruleCtx l leaf.KeyId ->
+                        let result = fLeaf (ruleCtx, (None, None, None)) leaf rule
+
+                        match result with
+                        | _, (_, Some _, _) -> Some result
+                        | _ -> None
+                    | _ -> None)
+
+            match aliasParamMarkers.Length, tryFindLeafAtPos pos entity.entity with
+            | 0, _
+            | _, None -> None
+            | _, Some(path, leaf) ->
+                match tryFindParameterOwner path with
+                | None -> None
+                | Some(owner, parameterIndex) ->
+                    aliasParamMarkers
+                    |> Seq.tryPick (fun (aliasName, selectorField) ->
+                        let selectedAlias = owner.TagText selectorField
+
+                        match String.IsNullOrWhiteSpace selectedAlias, trySelectedAliasRules aliasName selectedAlias with
+                        | true, _
+                        | _, None -> None
+                        | false, Some rules ->
+                            path
+                            |> List.skip (parameterIndex + 1)
+                            |> tryRulesForPath rules
+                            |> Option.bind (fun rules -> tryLeafInfo rules leaf))
 
         let ruleCtx = ctx
         let ctx = ruleCtx, (None, None, None)

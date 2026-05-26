@@ -319,6 +319,51 @@ type RuleValidationService
                     innerErrors
                     true)
 
+        let tryAliasParameterRules (parameterRules: NewRule array) =
+            let rec collectMarkers ((ruleType, _): NewRule) =
+                seq {
+                    match ruleType with
+                    | LeafValueRule(AliasParamsField(aliasName, selectorField)) -> yield aliasName, selectorField
+                    | LeafRule(AliasParamsField(aliasName, selectorField), _)
+                    | LeafRule(_, AliasParamsField(aliasName, selectorField))
+                    | NodeRule(AliasParamsField(aliasName, selectorField), _) ->
+                        yield aliasName, selectorField
+                    | NodeRule(_, rules)
+                    | ValueClauseRule rules
+                    | SubtypeRule(_, _, rules) ->
+                        yield! rules |> Seq.collect collectMarkers
+                    | _ -> ()
+                }
+
+            let trySelectedAliasRules aliasName selectedAlias =
+                rootRules.Aliases.TryFind aliasName
+                |> Option.bind (fun rules ->
+                    let selectedRules =
+                        rules
+                        |> Array.choose (function
+                            | NodeRule(SpecificField(SpecificValue key), rules), _ when
+                                String.Equals(
+                                    stringManager.GetStringForID key.normal,
+                                    selectedAlias,
+                                    StringComparison.OrdinalIgnoreCase
+                                )
+                                ->
+                                Some rules
+                            | _ -> None)
+                        |> Array.collect id
+
+                    if selectedRules.Length = 0 then None else Some selectedRules)
+
+            parameterRules
+            |> Seq.collect collectMarkers
+            |> Seq.tryPick (fun (aliasName, selectorField) ->
+                let selectedAlias = startNode.TagText selectorField
+
+                if String.IsNullOrWhiteSpace selectedAlias then
+                    None
+                else
+                    trySelectedAliasRules aliasName selectedAlias)
+
         let inline nodeFun innerErrors (node: Node) =
             let key = node.Key
             let keyIds = node.KeyId
@@ -360,7 +405,16 @@ type RuleValidationService
                 lazyErrorMerge
                     rs
                     (function
-                    | (NodeRule(l, r), o) -> applyNodeRule enforceCardinality ctx o l r node
+                    | (NodeRule(l, r), o) ->
+                        let rules =
+                            if String.Equals(node.Key, "parameters", StringComparison.OrdinalIgnoreCase) then
+                                tryAliasParameterRules r
+                                |> Option.map (fun aliasRules -> Array.append aliasRules r)
+                                |> Option.defaultValue r
+                            else
+                                r
+
+                        applyNodeRule enforceCardinality ctx o l rules node
                     | _ -> failwith "Unexpected")
                     createDefault
                     innerErrors
