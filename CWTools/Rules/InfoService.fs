@@ -161,6 +161,20 @@ type InfoService
         |> Seq.distinct
         |> Array.ofSeq
 
+    let isAliasParameterComparisonValueRule ((ruleType, _): NewRule) =
+        let isComparisonKey (key: StringTokens) =
+            match stringManager.GetStringForID key.normal with
+            | "amount"
+            | "count"
+            | "cost"
+            | "value" -> true
+            | _ -> false
+
+        match ruleType with
+        | LeafRule(SpecificField(SpecificValue key), _)
+        | NodeRule(SpecificField(SpecificValue key), _) -> isComparisonKey key
+        | _ -> false
+
     let monitor = new Object()
 
     let memoizeRulesInner memFunction =
@@ -1005,6 +1019,7 @@ type InfoService
                             Some rules
                         | _ -> None)
                     |> Array.collect id
+                    |> Array.filter (isAliasParameterComparisonValueRule >> not)
 
                 if selectedRules.Length = 0 then None else Some selectedRules)
 
