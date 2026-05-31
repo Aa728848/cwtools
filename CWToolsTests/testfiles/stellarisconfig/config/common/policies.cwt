@@ -112,7 +112,7 @@ policy = {
 		}
 
 		## cardinality = 0..1
-		prerequisites = { <technology> }
+		prerequisites = single_alias_right[technology_prerequisite]
 
 		## cardinality = 0..1
 		AI_weight = {

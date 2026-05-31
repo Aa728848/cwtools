@@ -42,6 +42,11 @@ megastructure = {
 	entity = scalar #TODO entity suffixes
 
 	## cardinality = 0..1
+	scripted_action = {
+		## cardinality = 0..inf
+		<scripted_action>
+	}
+	## cardinality = 0..1
 	rotate_to_center = bool
 	## cardinality = 0..1
 	scale_offset = bool
@@ -96,10 +101,7 @@ megastructure = {
 	## cardinality = 0..1
 	build_system_tooltip = localisation
 	## cardinality = 0..1
-	prerequisites = {
-		## cardinality = 1..inf
-		<technology>
-	}
+	prerequisites = single_alias_right[technology_prerequisite]
 	subtype[has_prereqs] = {
 		## cardinality = 0..1
 		show_prereqs = bool
@@ -238,6 +240,8 @@ megastructure = {
 	}
 	## cardinality = 0..1
 	can_be_dismantled_by_non_owner = bool
+	## cardinality = 0..1
+	can_prevent_crisis_terraformation = bool
 	
 	
 	## cardinality = 0..1
@@ -252,6 +256,16 @@ megastructure = {
 		
 	## cardinality = 0..1
 	on_dismantle_complete = {
+		alias_name[effect] = alias_match_left[effect]
+	}
+	## cardinality = 0..1
+	## replace_scope = { this = system root = system from = country fromfrom = megastructure }
+	on_dismantle_start = {
+		alias_name[effect] = alias_match_left[effect]
+	}
+	## cardinality = 0..1
+	## replace_scope = { this = system root = system from = country fromfrom = megastructure }
+	on_dismantle_cancel = {
 		alias_name[effect] = alias_match_left[effect]
 	}
 	## cardinality = 0..1
@@ -272,9 +286,24 @@ megastructure = {
 	## cardinality = 0..1
 	cycle_icon = <sprite>
 	## cardinality = 0..1
+	## cardinality = 0..1
 	## replace_scope = { this = system root = system from = country fromfrom = megastructure fromfromfrom = fleet }
 	on_cycle_complete = {
 		alias_name[effect] = alias_match_left[effect]
+	}
+
+	## cardinality = 0..1
+	### Whether to show this megastructure in the build menu
+	show_in_build_menu = bool
+
+	## cardinality = 0..1
+	### Icon displayed in the build order
+	order_icon = <sprite>
+
+	## cardinality = 0..1
+	## replace_scope = { this = system root = system from = country fromfrom = megastructure fromfromfrom = fleet }
+	context_menu_potential = {
+		alias_name[trigger] = alias_match_left[trigger]
 	}
 }
 

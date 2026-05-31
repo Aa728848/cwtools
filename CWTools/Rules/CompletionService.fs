@@ -1321,9 +1321,20 @@ type CompletionService
                 // type_per_file: prepend type name + caller path
                 bestOfBoth scoreFunction typerules typeRoot path scopeContext
             | [], false, (head, c, _, _, keyprefix) :: tail ->
-                // Prepend type name + caller path, then the inline path
-                let suffix = (head, c, None, NodeRHS, keyprefix) :: tail
-                bestOfBoth scoreFunction typerules typeRoot suffix scopeContext
+                if fullCallerPath.IsEmpty then
+                    // Inline scripts called at the file root should behave like
+                    // normal files in the caller's folder: the first key is the
+                    // type instance name, not an extra child under the type root.
+                    if FieldValidators.typekeyfilter t head keyprefix then
+                        let typedRoot = (t.name, c, None, NodeRHS, None)
+                        bestOfBoth scoreFunction typerules typedRoot tail scopeContext
+                    else
+                        [||]
+                else
+                    // Inline scripts called inside a parent block are pasted into
+                    // that block, so keep the inline path as fields under callerPath.
+                    let suffix = (head, c, None, NodeRHS, keyprefix) :: tail
+                    bestOfBoth scoreFunction typerules typeRoot suffix scopeContext
             | head :: rest, false, (pathhead, _, _, _, _) :: pathtail ->
                 if skiprootkey head pathhead then
                     validateTypeSkipRootInline t rest pathtail

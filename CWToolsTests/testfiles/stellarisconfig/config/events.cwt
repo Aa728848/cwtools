@@ -112,6 +112,18 @@ types = {
 		## abbreviation = AE
 		subtype[agreement] = {
 		}
+		## type_key_filter = colony_event
+		## push_scope = colony
+		## display_name = Colony Event
+		## abbreviation = CoE
+		subtype[colony] = {
+		}
+		## type_key_filter = carrier_event
+		## push_scope = planet
+		## display_name = Colony Carrier Event
+		## abbreviation = CCE
+		subtype[carrier] = {
+		}
 		## type_key_filter = event
 		subtype[scopeless] = {
 		}
@@ -390,6 +402,7 @@ event = {
 			}
 			## cardinality = 1..inf
 			name = {
+				## cardinality = 0..1
 				exclusive_trigger = {
 					alias_name[trigger] = alias_match_left[trigger]
 				}
@@ -656,6 +669,9 @@ event = {
 	subtype[ship] = {
 		## cardinality = 0..1
 		specimen = <specimen>
+		## cardinality = 0..1
+		event_chain = <event_chain>	
+		alias_name[picture_event_data] = alias_match_left[picture_event_data]
 	}
 
 	subtype[first_contact] = {
@@ -691,30 +707,50 @@ event = {
 
 	subtype[pop] = {
 		## cardinality = 0..1
-		###Like trigger, but only uses certain simple triggers
-		pre_triggers = {
-			alias_name[pop_pre_trigger] = alias_match_left[pop_pre_trigger]
-		}
-	}
-	
-	subtype[pop_group] = {
+		specimen = <specimen>
+		## cardinality = 0..1
+		event_chain = <event_chain>	
 		## cardinality = 0..1
 		###Like trigger, but only uses certain simple triggers
 		pre_triggers = {
 			alias_name[pop_pre_trigger] = alias_match_left[pop_pre_trigger]
 		}
+		alias_name[picture_event_data] = alias_match_left[picture_event_data]
+	}
+	
+	subtype[pop_group] = {
+		## cardinality = 0..1
+		specimen = <specimen>
+		## cardinality = 0..1
+		event_chain = <event_chain>	
+		## cardinality = 0..1
+		###Like trigger, but only uses certain simple triggers
+		pre_triggers = {
+			alias_name[pop_pre_trigger] = alias_match_left[pop_pre_trigger]
+		}
+		alias_name[picture_event_data] = alias_match_left[picture_event_data]
 	}
 	
 	subtype[leader] = {
+		## cardinality = 0..1
+		specimen = <specimen>
+		## cardinality = 0..1
+		event_chain = <event_chain>	
 		## cardinality = 0..1
 		###Like trigger, but only uses certain simple triggers
 		pre_triggers = {
 			alias_name[leader_pre_trigger] = alias_match_left[leader_pre_trigger]
 		}
+		alias_name[picture_event_data] = alias_match_left[picture_event_data]
 	}
 
 	subtype[starbase] = {
-	## cardinality = 0..1
+		alias_name[picture_event_data] = alias_match_left[picture_event_data]
+		## cardinality = 0..1
+		specimen = <specimen>
+		## cardinality = 0..1
+		event_chain = <event_chain>	
+		## cardinality = 0..1
 		###Like trigger, but only uses certain simple triggers
 		pre_triggers = {
 			alias_name[starbase_pre_trigger] = alias_match_left[starbase_pre_trigger]
@@ -723,10 +759,41 @@ event = {
 
 	subtype[system] = {
 		## cardinality = 0..1
+		specimen = <specimen>
+		## cardinality = 0..1
+		event_chain = <event_chain>	
+		## cardinality = 0..1
 		###Like trigger, but only uses certain simple triggers
-	pre_triggers = {
+		pre_triggers = {
 			alias_name[system_pre_trigger] = alias_match_left[system_pre_trigger]
 		}
+		alias_name[picture_event_data] = alias_match_left[picture_event_data]
+	}
+
+	subtype[carrier] = {
+		## cardinality = 0..1
+		specimen = <specimen>
+		## cardinality = 0..1
+		event_chain = <event_chain>	
+		## cardinality = 0..1
+		###Like trigger, but only uses certain simple triggers
+		pre_triggers = {
+			alias_name[carrier_pre_trigger] = alias_match_left[carrier_pre_trigger]
+		}
+		alias_name[picture_event_data] = alias_match_left[picture_event_data]
+	}
+
+	subtype[colony] = {
+		## cardinality = 0..1
+		specimen = <specimen>
+		## cardinality = 0..1
+		event_chain = <event_chain>	
+		## cardinality = 0..1
+		###Like trigger, but only uses certain simple triggers
+		pre_triggers = {
+			alias_name[planet_pre_trigger] = alias_match_left[planet_pre_trigger]
+		}
+		alias_name[picture_event_data] = alias_match_left[picture_event_data]
 	}
 
 	## cardinality = 0..1

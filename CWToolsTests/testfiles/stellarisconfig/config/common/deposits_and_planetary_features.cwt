@@ -83,10 +83,7 @@ deposit = {
 		all_blocker_swap_types = yes
 
 		## cardinality = 0..1
-		prerequisites = {
-			## cardinality = 0..inf
-			<technology>
-		}
+	prerequisites = single_alias_right[technology_prerequisite]
 
 		## cardinality = 0..1
 		## replace_scope = { this = country root = country }

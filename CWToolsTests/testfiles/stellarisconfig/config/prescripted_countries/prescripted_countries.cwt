@@ -2,7 +2,7 @@ types = {
 	type[prescripted_country] = {
 		path = "game/prescripted_countries"
 	}
-	type[prescripted_country_flags] = {
+	type[prescripted_flags] = {
 		path = "game/common/prescripted_flags"
 	}
 }
@@ -16,7 +16,7 @@ prescripted_country = {
 	spawn_enabled = always
 	
 	## cardinality = 0..1
-	flag = <prescripted_country_flags>
+	flag = <prescripted_flags>
 
 	## cardinality = 0..1
 	default = yes
@@ -187,12 +187,12 @@ prescripted_country = {
 	trait = <trait.species_trait>
 }
 
-prescripted_country_flags = {
+prescripted_flags = {
 	## cardinality = 0..1
 	flags = {
 		## cardinality = 0..inf
 		scalar
 	}
 	## cardinality = 0..inf
-	scalar
+	scalar 
 }

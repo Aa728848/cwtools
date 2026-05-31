@@ -49,7 +49,7 @@ resolution_category = {
 	group = localisation
 	icon = <sprite>
 	## cardinality = 0..1
-	multiple_active_resolutions = yes
+	multiple_active_resolutions = bool
 	resolution_types = {
 		## cardinality = 1..inf
 		<resolution>
@@ -118,8 +118,27 @@ resolution = {
 	valid_target = {
 		alias_name[trigger] = alias_match_left[trigger]
 	}
+	## cardinality = 0..inf
+	triggered_modifier = {
+		## cardinality = 0..1
+		potential = {
+			alias_name[trigger] = alias_match_left[trigger]
+		}
+		## cardinality = 0..1
+		alias_name[modifier] = alias_match_left[modifier]
+		## cardinality = 0..1
+		custom_tooltip = localisation
+		## cardinality = 0..1
+		modifier = {
+			alias_name[modifier] = alias_match_left[modifier]
+			## cardinality = 0..1
+			custom_tooltip = localisation
+		}
+	}
 	ai_weight = {
+		## cardinality = 0..1
 		enum[weight_or_base] = float
+		## cardinality = 0..1
 		alias_name[modifier_rule] = alias_match_left[modifier_rule]
 	}
 }

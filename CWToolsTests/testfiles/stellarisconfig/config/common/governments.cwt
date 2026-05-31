@@ -582,9 +582,11 @@ council_agenda = {
 	## cardinality = 0..1
 	### Optional, Overrides COUNCIL_AGENDA_COOLDOWN define, how many days until the agenda can be selected again
 	agenda_cooldown = value_field
+	## cardinality = 0..1
 	potential = {
 		alias_name[trigger] = alias_match_left[trigger]
 	}
+	## cardinality = 0..1
 	allow = {
 		alias_name[trigger] = alias_match_left[trigger]
 	}
@@ -594,6 +596,11 @@ council_agenda = {
 	## cardinality = 0..1
 	###Modifiers applied while the agenda is active (being prepared); usually similar but smaller modifiers compared to the finish_modifier
 	modifier = {
+		## cardinality = 0..1
+		custom_tooltip = localisation
+		## cardinality = 0..1
+		show_only_custom_tooltip = bool
+		## cardinality = 0..1
 		alias_name[modifier] = alias_match_left[modifier]
 	}
 	## cardinality = 0..1

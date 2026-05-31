@@ -298,6 +298,7 @@ job = {
 			building_icon = <building>
 			## cardinality = 0..1
 			condition_string = localisation
+			## cardinality = 0..1
 			weight = int
 		}
 	}
@@ -347,6 +348,8 @@ job = {
 social_strata = {
 	rank = int
 	## cardinality = 0..1
+	job_reshuffle_interval = int
+	## cardinality = 0..1
 	can_change_category = {
 		alias_name[trigger] = alias_match_left[trigger]
 	}
@@ -355,11 +358,24 @@ social_strata = {
 	## cardinality = 0..1
 	clothes_texture_index = int
 
+	## cardinality = 0..1
+	is_civilian_job = bool
+	## cardinality = 0..1
+	is_unemployment_job = bool
+
 	###This is called whenever a Pop is created, moved to a different planet, or gets a new owner
 	## cardinality = 0..1
 	assign_to_pop = {
 		alias_name[trigger] = alias_match_left[trigger]
 	}
+
+	## cardinality = 0..1
+	automation_resources = {
+		## cardinality = 0..1
+		category = <economic_category>
+		alias_name[economic_template] = alias_match_left[economic_template]
+	}
+
 	## cardinality = 0..1
 	weight = {
 		alias_name[modifier_rule] = alias_match_left[modifier_rule]
@@ -414,7 +430,9 @@ social_strata = {
 
 	## cardinality = 0..1
 	resources = {
+		## cardinality = 0..1
 		category = <economic_category>
+		## cardinality = 0..inf
 		alias_name[economic_template] = alias_match_left[economic_template]
 	}
 

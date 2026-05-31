@@ -7,6 +7,7 @@ types = {
 
 ## replace_scope = { root = any this = any }
 script_value = {
+	## cardinality = 0..inf
 	alias_name[modifier_rule] = alias_match_left[modifier_rule]
 	## cardinality = 0..inf
 	mult = float
@@ -40,10 +41,19 @@ script_value = {
 	subtract = trigger:<trigger>
 	## cardinality = 0..inf
 	subtract = enum[order_by]
+	## cardinality = 0..inf	
+	mult = enum[exe_set_variable]
+	## cardinality = 0..inf	
+	divide = enum[exe_set_variable]
+	## cardinality = 0..inf	
+	add = enum[exe_set_variable]
+	## cardinality = 0..inf	
+	subtract = enum[exe_set_variable]
 }
 
 alias[modifier_rule:base] = float
 alias[modifier_rule:enum[complex_maths_enum]] = value_field
+alias[modifier_rule:enum[complex_maths_enum]] = enum[exe_set_variable]
 alias[modifier_rule:enum[simple_maths_enum]] = yes
 
 alias[modifier_rule:modifier] = {
@@ -54,6 +64,10 @@ alias[modifier_rule:modifier] = {
 	alias_name[trigger] = alias_match_left[trigger]
 	## cardinality = 0..1
 	desc = localisation
+	## cardinality = 0..1
+	custom_tooltip = localisation
+	## cardinality = 0..1
+	show_only_custom_tooltip = bool
 }
 
 alias[modifier_rule:scaled_modifier] = {
@@ -71,6 +85,14 @@ alias[modifier_rule:scaled_modifier] = {
 	div = float
 	## cardinality = 0..1
 	mul = float
+	## cardinality = 0..inf	
+	mul = enum[exe_set_variable]
+	## cardinality = 0..inf	
+	div = enum[exe_set_variable]
+	## cardinality = 0..inf	
+	add = enum[exe_set_variable]
+	## cardinality = 0..inf	
+	factor = enum[exe_set_variable]	
 }
 
 alias[modifier_rule:complex_trigger_modifier] = {
@@ -82,9 +104,7 @@ alias[modifier_rule:complex_trigger_modifier] = {
 		## cardinality = 0..1
 		modifier = <modifier>
 		## cardinality = 0..inf
-		job = <job>
-		## cardinality = 0..1
-		threshold = value_field
+		alias_params_field[trigger]
 		## cardinality = 0..1
 		min_distance = int
 		## cardinality = 0..1
@@ -96,39 +116,18 @@ alias[modifier_rule:complex_trigger_modifier] = {
 		## cardinality = 0..1
 		trade_type = scalar
 		## cardinality = 0..1
-		patron = <patrons>
-		## cardinality = 0..1
 		target = scalar
 		## cardinality = 0..1
 		cost = value_field
-		## cardinality = 0..1
-		disabled = bool
-		## cardinality = 0..1
-		species_modifiers_only = bool
 		## cardinality = 0..1
 		tags = {
 			## cardinality = 0..inf
 			<job_tags>
 		}
 		## cardinality = 0..1
-		contains_modifier = {
-			string = enum[scope_type_tokens]
-		}
-		## cardinality = 0..1
-		resource = <resource>
-		## cardinality = 0..1
-		resource = {
-			## cardinality = 0..inf
-			<resource> = float
-		}
-		## cardinality = 0..1
 		category = scalar
 		## cardinality = 0..1
 		who = scalar
-		## cardinality = 0..1
-		type = scalar
-		## cardinality = 0..1
-		ship_size = <ship_size>
 		## cardinality = 0..1
 		setting =  scalar
 		## cardinality = 0..1
@@ -136,25 +135,7 @@ alias[modifier_rule:complex_trigger_modifier] = {
 		## cardinality = 0..1
 		source =  scalar
 		## cardinality = 0..1
-		tier =  int
-		## cardinality = 0..1
-		same_solar_system = bool
-		## cardinality = 0..1
-		is_subclass = bool
-		## cardinality = 0..1
-		negative = bool
-		## cardinality = 0..1
-		count_tiers = bool
-		## cardinality = 0..1
 		alias_name[trigger] = alias_match_left[trigger]
-		## cardinality = 0..1
-		## push_scope = any
-		limit = {
-			## cardinality = 0..inf		
-			alias_name[trigger] = alias_match_left[trigger]
-			## cardinality = 0..inf
-			scalar = int
-		}
 	}
 	mode = enum[complex_maths_enum]
 	## cardinality = 0..1
@@ -167,6 +148,8 @@ alias[modifier_rule:complex_trigger_modifier] = {
 	mult = enum[order_by]
 	## cardinality = 0..1
 	divide = int
+	## cardinality = 0..1
+	divide = enum[exe_set_variable]
 	## cardinality = 0..1
 	divide = trigger:<trigger>
 	## cardinality = 0..1
@@ -193,6 +176,10 @@ alias[modifier_rule_with_loc:modifier] = {
 	enum[simple_maths_enum] = yes
 	desc = localisation
 	alias_name[trigger] = alias_match_left[trigger]
+	## cardinality = 0..1
+	custom_tooltip = localisation
+	## cardinality = 0..1
+	show_only_custom_tooltip = bool
 }
 
 alias[modifier_rule_with_loc:complex_trigger_modifier] = {
@@ -202,16 +189,14 @@ alias[modifier_rule_with_loc:complex_trigger_modifier] = {
 	## cardinality = 0..1
 	parameters = {
 		## cardinality = 0..inf
+		alias_params_field[trigger]
+		## cardinality = 0..inf
 		scalar = {
 			## cardinality = 0..inf
 			scalar = scalar
 		}
 		## cardinality = 0..inf
 		scalar = scalar
-		## cardinality = 0..1
-		limit = {
-			alias_name[trigger] = alias_match_left[trigger]
-		}
 	}
 	mode = enum[complex_maths_enum]
 	## cardinality = 0..1

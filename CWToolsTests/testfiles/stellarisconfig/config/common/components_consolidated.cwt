@@ -32,9 +32,6 @@ types = {
 		## type_key_filter = strike_craft_component_template
 		subtype[strike_craft_component_template] = {
 		}
-		subtype[scripted_action] = {
-			scripted_action_name = <on_action>
-		}
 		localisation = {
 			## required
 			Name = "$"
@@ -70,6 +67,8 @@ enums = {
 		behemoth_turbo_activity_key
 	}
 	enum[component_bio_stack_info_id] = {
+		anti_evasion
+		anti_fire_rate
 		bio_anti_evasion
 		bio_anti_fire_rate
 		bio_evasion
@@ -80,6 +79,7 @@ enums = {
 		evasion
 		fire_rate
 		healing
+		disruptor_regen
 	}
 }
 
@@ -117,10 +117,7 @@ component_template = {
 	## cardinality = 0..1
 	use_ship_main_target = bool
 	## cardinality = 0..1
-	prerequisites = {
-		## cardinality = 0..inf
-		<technology>
-	}
+	prerequisites = single_alias_right[technology_prerequisite]
 	## cardinality = 0..1
 	potential = {
 		## cardinality = 0..1
@@ -183,8 +180,10 @@ component_template = {
 		## cardinality = 0..1
 		null
 	}
-	## cardinality = 0..1
+	## cardinality = 0..inf
 	custom_tooltip = localisation
+	## cardinality = 0..1
+	show_only_custom_tooltip = bool
 	## replace_scope = { root = ship this = ship }
 	alias_name[triggered_ship_modifier] = alias_match_left[triggered_ship_modifier]
 	## cardinality = 0..1
@@ -197,6 +196,11 @@ component_template = {
 	## cardinality = 0..1
 	ai_weight = {
 		alias_name[modifier_rule] = alias_match_left[modifier_rule]
+	}
+	## cardinality = 0..1
+	scripted_action = {
+		## cardinality = 0..inf
+		<scripted_action>
 	}
 	subtype[utility_component_template] = {
 		power = int
@@ -347,61 +351,6 @@ component_template = {
 		}
 		## cardinality = 0..1
 		military_power_multiplier = float
-		## cardinality = 0..1
-		scripted_action = {
-			scope = self
-			scope = planet
-			## cardinality = 0..1
-			finish_anim_state = enum[bio_finish_anim_state]
-			## cardinality = 0..1
-			possible = {
-				alias_name[trigger] = alias_match_left[trigger]
-			}
-			## cardinality = 0..1
-			button_clickable = {
-				alias_name[trigger] = alias_match_left[trigger]
-			}
-			## cardinality = 0..1
-			button_visible = {
-				alias_name[trigger] = alias_match_left[trigger]
-			}
-			name = scalar
-			tooltip = localisation
-			## cardinality = 0..1
-			icon = <sprite>
-			## cardinality = 0..1
-			icon_selected = <sprite>
-			## cardinality = 0..1
-			activity_key = localisation
-			activity_key = enum[scripted_action_activity_key]
-			## cardinality = 0..1
-			context_menu_name = localisation
-			## cardinality = 0..1
-			progress_activity_key = localisation
-			## cardinality = 0..1
-			required_progress = int
-			## cardinality = 0..1
-			on_click_sound = scalar
-			## cardinality = 0..1
-			cooldown = int
-			## cardinality = 0..1
-			cost = { 
-				## cardinality = 0..inf
-				<resource> = int
-			}
-			## cardinality = 0..1
-			shortcut = scalar
-			## cardinality = 0..1
-			slot = int
-			## cardinality = 0..1
-			wait = bool
-			## cardinality = 0..1
-			finished = {
-				alias_name[trigger] = alias_match_left[trigger]
-			}
-			## cardinality = 0..1
-			on_cancel = localisation
-		}
 	}
 	subtype[weapon_component_template] = {
 		size = enum[weapon_slot_size]
@@ -688,35 +637,6 @@ component_template = {
 		build_time = int	
 		## cardinality = 0..1
 		military_power_multiplier = float
-	}
-	subtype[scripted_action] = {
-		scripted_action_name = <on_action>
-		scripted_action_tooltip = localisation
-		scripted_action_icon = <sprite>
-		scripted_action_activity_key = localisation
-		## cardinality = 0..1
-		## replace_scope = { root = planet this = planet }
-		scripted_action_possible = {
-			alias_name[trigger] = alias_match_left[trigger]
-		}
-		## cardinality = 0..1
-		## replace_scope = { root = planet this = planet }
-		scripted_action_button_possible = {
-			alias_name[trigger] = alias_match_left[trigger]
-		}
-		## cardinality = 0..1
-		## replace_scope = { root = planet this = planet }
-		scripted_action_finished = {
-			alias_name[trigger] = alias_match_left[trigger]
-		}
-		## cardinality = 0..1
-		scripted_action_on_cancel = <on_action>
-		## cardinality = 0..1
-		scripted_action_context_menu_name = localisation
-		## cardinality = 0..1
-		scripted_action_progress_activity_key = localisation
-		## cardinality = 0..1
-		scripted_action_required_progress = int
 	}
 }
 

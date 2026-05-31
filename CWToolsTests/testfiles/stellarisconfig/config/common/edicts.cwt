@@ -68,10 +68,7 @@ edict = {
 	}
 
 	## cardinality = 0..1
-	prerequisites = {
-		## cardinality = 0..100
-		<technology>
-	}
+	prerequisites = single_alias_right[technology_prerequisite]
 
 	## cardinality = 0..1
 	show_tech_unlock_if = {

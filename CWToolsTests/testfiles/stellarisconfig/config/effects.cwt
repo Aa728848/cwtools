@@ -49,6 +49,10 @@ alias[effect:else_if] = {
 
 ###Executes enclosed effects if limit criteria of preceding 'if' or 'else_if' is not met
 alias[effect:else] = {
+	## cardinality = 0..1
+	limit = {
+		alias_name[trigger] = alias_match_left[trigger]
+	}
 	alias_name[effect] = alias_match_left[effect]
 }
 
@@ -61,6 +65,7 @@ alias[effect:save_global_event_target_as] = value_set[global_event_target]
 ###Fires a ship event for the scoped ship, with optional DAYS and RANDOM delay
 alias[effect:ship_event] = {
 	id = <event.ship>
+	id = <event.carrier>
 	id = <event.scopeless>
 	## cardinality = 0..1
 	days = int
@@ -290,6 +295,7 @@ alias[effect:fleet_event] = {
 
 ###Fires a planet event for the scoped planet, with optional DAYS and RANDOM delay
 alias[effect:planet_event] = {
+	id = <event.carrier>
 	id = <event.planet>
 	id = <event.scopeless>
 	## cardinality = 0..1
@@ -619,10 +625,12 @@ alias[effect:remove_pop_group_flag] = value_set[pop_group_flag]
 ## severity = warning
 ###Removes a flag from the scoped country
 alias[effect:remove_country_flag] = value[country_flag]
+alias[effect:remove_country_flag] = enum[country_flag_enum]
 alias[effect:remove_country_flag] = enum[inline_script_flags]
 ## severity = warning
 ###Removes a flag from the scoped planet
 alias[effect:remove_planet_flag] = value[planet_flag]
+alias[effect:remove_planet_flag] = enum[country_flag_enum]
 ## severity = warning
 ###Removes a flag from the scoped pop group's faction/pop faction
 alias[effect:remove_pop_faction_flag] = value[pop_faction_flag]
@@ -644,9 +652,11 @@ alias[effect:remove_ship_flag] = value[ship_flag]
 ## severity = warning
 ###Removes a global flag
 alias[effect:remove_global_flag] = value[global_flag]
+alias[effect:remove_global_flag] = enum[global_flags]
 ## severity = warning
 ###Removes a flag from the scoped leader
 alias[effect:remove_leader_flag] = value[leader_flag]
+alias[effect:remove_leader_flag] = enum[leader_flag_enum]
 ## severity = warning
 ###Removes a flag from the scoped ambient object
 alias[effect:remove_ambient_object_flag] = value[ambient_object_flag]
@@ -817,6 +827,7 @@ alias[effect:set_timed_relation_flag] = {
 alias[effect:remove_relation_flag] = {
 	who = scope_group[target_country]
 	flag = value[relation_flag]
+	flag = enum[relation_flag_enum]
 }
 
 ###Change the scoped country's government authority and/or civics
@@ -1058,6 +1069,10 @@ alias[effect:add_monthly_resource_mult] = {
 	mult = value[variable]
 	## cardinality = 0..inf
 	mult = value_field
+	## cardinality = 0..inf
+	multiplier = value[variable]
+	## cardinality = 0..inf
+	multiplier = value_field
 }
 
 ###Adds a specific trait to the scoped leader or a random common/negative trait
@@ -1355,6 +1370,16 @@ alias[effect:create_species] = {
 	name = random
 	alias_name[name] = alias_match_left[name]
 	## cardinality = 0..1
+	name_list = <name_list>
+	## cardinality = 0..1
+	name_list = scope_group[target_country]
+	## cardinality = 0..1
+	name_list = scope[species]
+	## cardinality = 0..1
+	name_list = random
+	## cardinality = 0..1
+	name_list = random_class
+	## cardinality = 0..1
 	plural = scalar
 	## cardinality = 0..1
 	plural = scope_group[target_species]
@@ -1523,6 +1548,12 @@ alias[effect:create_country] = {
 	alias_name[name] = alias_match_left[name]
 	## cardinality = 0..1
 	adjective = scope[any]
+	## cardinality = 0..1
+	nomadic = bool
+	## cardinality = 0..1
+	remove_invalid_civics = bool
+	## cardinality = 0..1
+	nomadic = scope[any]
 	## cardinality = 0..1
 	adjective = random
 	## cardinality = 0..1
@@ -2064,6 +2095,8 @@ alias[effect:enable_special_project] = {
 	owner = scope_group[target_country]
 	## cardinality = 0..1
 	location = scope_group[spatial_object]
+	## cardinality = 0..1
+	location = scope_group[celestial_coordinate]
 }
 
 ###Aborts a specific special project for the country, removing it from the situation log
@@ -2071,6 +2104,8 @@ alias[effect:abort_special_project] = {
 	type = <special_project>
 	## cardinality = 0..1
 	location = scope_group[spatial_object]
+	## cardinality = 0..1
+	location = scope_group[celestial_coordinate]
 }
 
 ###Makes the scoped country remember that it has encountered the bypass type
@@ -2079,7 +2114,17 @@ alias[effect:add_seen_bypass_type] = <bypass>
 alias[effect:spawn_natural_wormhole] = {
 	bypass_type = <bypass>
 	## cardinality = 0..1
+	relative_to = scope[system]
+	## cardinality = 0..1
 	in_place_of = scope[system]
+	## cardinality = 0..1
+	relative_to = scope[planet]
+	## cardinality = 0..1
+	in_place_of = scope[planet]
+	## cardinality = 0..1
+	relative_to = prev
+	## cardinality = 0..1
+	in_place_of = prev
 	## cardinality = 0..1
 	orbit_distance = float #no variables here atm
 	## cardinality = 0..1
@@ -2384,6 +2429,8 @@ alias[effect:create_ambient_object] = {
 	effect = {
 		alias_name[effect] = alias_match_left[effect]
 	}
+	## cardinality = 0..1
+	is_wreck = bool
 }
 
 enums = {
@@ -2415,6 +2462,16 @@ alias[effect:create_army_transport] = {
 
 ### Creates a bypass in the parent SpatialObject (stored in FromFrom), of the type passed in "type".
 alias[effect:create_bypass] = <bypass>
+alias[effect:create_bypass] = {
+	## cardinality = 0..1
+	owner = scope[any]
+	type = <bypass>
+	## cardinality = 0..1
+	## push_scope = bypass
+	effect = {
+		alias_name[effect] = alias_match_left[effect]
+	}
+}
 ### Creates a cluster centered around the specified spatial object
 alias[effect:create_cluster] = {
 	id = scalar
@@ -2500,7 +2557,18 @@ alias[effect:create_random_fleet] = {
 	can_overflow = bool
 	## cardinality = 0..1
 	ship_designs = {
+		## cardinality = 0..inf
 		<global_ship_design>
+		## cardinality = 0..inf
+		{ 
+			design = <global_ship_design> 
+			## cardinality = 0..1
+			weight = value_field 
+			## cardinality = 0..1
+			weight = float 
+			## cardinality = 0..1
+			max = int_value_field 
+		}
 	}
 	## push_scope = fleet
 	## cardinality = 0..1
@@ -2524,6 +2592,10 @@ alias[effect:create_message] = {
 	## cardinality = 0..1
 	custom_toast_content_text = localisation
 	## cardinality = 0..1
+	custom_message_text = localisation
+	## cardinality = 0..1
+	custom_toast_icon = <sprite>
+	## cardinality = 0..1
 	custom_toast_content_icon = <sprite>
 	# note: the variable sections were combined as cwtools could not handle them separated in biogenesis_origin_events.txt
 	## cardinality = 0..inf
@@ -2545,9 +2617,7 @@ alias[effect:create_message] = {
 		## cardinality = 0..1
 		varname =  this.trophy_hunter_gained_<resource>
 		## cardinality = 0..1
-		varname =  this.experimental_progress
-		## cardinality = 0..1
-		varname =  this.destroyed_colony_pop
+		varname =  enum[varname_enum]
 		## cardinality = 0..1
 		value = localisation
 		## cardinality = 0..1
@@ -2601,8 +2671,10 @@ alias[effect:create_point_of_interest] = {
 	desc = localisation
 	## cardinality = 0..1
 	event_chain = <event_chain>
-	## severity = warning
+	## cardinality = 0..1
 	location = scope_group[spatial_object]
+	## cardinality = 0..1
+	location = scope_group[celestial_coordinate]
 	## cardinality = 0..1
 	location = scope[system]
 	## cardinality = 0..1
@@ -2892,8 +2964,9 @@ alias[effect:order_forced_return] = yes
 ### Play the defined sound effect
 alias[effect:play_sound] = {
 	sound = <sound_effect>
-	location = scope_group[spatial_object]
+	location = scope_group[celestial_coordinate]
 }
+alias[effect:play_sound] = <sound_effect>
 ### Adds a specific ethic to the scoped pop regardless if pop-species allows ethic divergence or not.
 alias[effect:pop_force_add_ethic] = {
 	## cardinality = 0..1
@@ -3193,6 +3266,8 @@ alias[effect:spawn_planet] = {
 	flags = { #planet flags
 		## cardinality = 0..inf
 		value_set[planet_flag]
+		## cardinality = 0..inf
+		value_set[carrier_flag]
 	}
 	## cardinality = 0..1
 	size = int
@@ -3639,6 +3714,8 @@ alias[effect:complete_special_project] = {
 	type = <special_project>
 	## cardinality = 0..1
 	location = scope_group[spatial_object]
+	## cardinality = 0..1
+	location = scope_group[celestial_coordinate]
 }
 
 ###Force a truce with target country of a specified type, or a war
@@ -3718,7 +3795,8 @@ alias[effect:set_star_class] = <star_class>
 
 ###Fires an on_action (including custom-made ones), can set scopes like in fire event effects
 alias[effect:fire_on_action] = {
-	on_action = <on_action>
+	## completion_type = on_action
+	on_action = scalar
 	## cardinality = 0..1
 	scopes = {
 		## cardinality = 0..1
@@ -3933,13 +4011,10 @@ alias[effect:export_trigger_value_to_variable] = {
 	## cardinality = 0..1
 	###specify extra parameters for triggers with { }, e.g. resource = energy
 	parameters = {
-		## cardinality = 0..1
-		## push_scope = any
-		limit = {
-			alias_name[trigger] = alias_match_left[trigger]
-		}
 		## cardinality = 0..inf
 		scalar = scalar
+		## cardinality = 0..inf
+		alias_params_field[trigger]
 	}
 	trigger = alias_keys_field[trigger]
 	variable = value_set[variable]
@@ -4031,7 +4106,9 @@ alias[effect:add_blocker] = {
 
 ###Sets an arbitrarily-named date flag for the scoped object. Acts both as an <scope object>_flag and as a means for saving a date. The flag can then be referred to in localisations [This.<flag>] to produce the date.
 alias[effect:set_saved_date] = {
-	###Refer to this in locs; note: this is actually a <country/whatever>_flag
+	## cardinality = 0..1
+	key = value_set[carrier_flag]
+	## cardinality = 0..1
 	key = scalar #todo: actually a flag of the current scope type
 	## cardinality = 0..1
 	###Time until the date you wish to save. Default is present
@@ -4392,9 +4469,16 @@ alias[effect:export_modifier_duration_to_variable] = {
 
 ###Deletes the target dimensional fleet
 alias[effect:delete_dimensional_fleet] = scope[any]
+alias[effect:delete_dimensional_fleet] = {
+	target = scope[any]
+}
 
 ###Spawns a new astral rift in the scoped system.
 alias[effect:spawn_astral_rift] = {
+	## cardinality = 0..1
+	relative_to = scope[system]
+	## cardinality = 0..1
+	in_place_of = scope[system]
 	## cardinality = 0..1
 	relative_to = prev
 	## cardinality = 0..1
@@ -4436,7 +4520,7 @@ alias[effect:renew_bypass_lock] = yes
 
 ###Lock a Bypass for exclusive access for a given country
 alias[effect:lock_bypass] = {
-	country = owner
+	country = scope[any]
 	duration = int
 }
 
@@ -4546,6 +4630,14 @@ alias[effect:reduce_shield] = int_value_field
 
 ###Damages ship by a specific amount
 alias[effect:damage_ship] = int_value_field
+alias[effect:damage_ship] = {
+	amount = int_value_field
+	## cardinality = 0..1
+	attacker = scope[country]
+}
+
+### Finish the current operation phase
+alias[effect:finish_current_operation_stage] = bool
 
 ###Creates a cosmic storm
 alias[effect:create_cosmic_storm] = {
@@ -4722,7 +4814,7 @@ alias[effect:set_emergency_fund_contribution_rate] = float
 
 ###Increments (or decrements with negative values) a mission counter for the scoped country by a specific amount
 alias[effect:add_mission_counter] = {
-	mission = <cosmic_storm_mission>
+	mission = <mission>
 	## cardinality = 0..1
 	counter = enum[event_chain_counter]
 	## cardinality = 0..1
@@ -4735,7 +4827,7 @@ alias[effect:set_storm_flag] = value_set[storm_flag]
 
 ###Sets a mission counter for the scoped country to a specific amount
 alias[effect:set_mission_counter] = { 
-	mission = <cosmic_storm_mission>
+	mission = <mission>
 	## cardinality = 0..1
 	counter = enum[event_chain_counter]
 	## cardinality = 0..1
@@ -4745,7 +4837,7 @@ alias[effect:set_mission_counter] = {
 
 ###Stops the mission with the given status, triggering the relevant effects.
 alias[effect:stop_mission] = { 
-	mission = <cosmic_storm_mission>
+	mission = <mission>
 	status = success
 }
 
@@ -4765,7 +4857,7 @@ alias[effect:lock_storm_in_place] = bool
 
 ###Enables a mission for target country
 alias[effect:enable_mission] = { 
-	name = <cosmic_storm_mission>
+	name = <mission>
 	## cardinality = 0..1
 	location = scope_group[celestial_coordinate]
 }
@@ -4794,6 +4886,9 @@ alias[effect:give_specimen] = {
 	key = <specimen>
 	## cardinality = 0..1
 	origin = localisation
+
+	## cardinality = 0..1
+	targets = { scope[any] }
 }
 
 ###Removes specified specimen from the target country. This will destroy the specimen
@@ -4982,6 +5077,7 @@ alias[effect:set_faction_auto_delete] = bool
 ###Copies the traditions of the target country into the scoped country. Traditions are added to the existing traditions, and the potential/possible triggers are respected.the traditions listed in the exceptions list are not copied.
 alias[effect:copy_traditions_from] = {
     target = scope_group[target_country]
+	## cardinality = 0..1
     exceptions = { 
 		## cardinality = 0..inf
 		<tradition>
@@ -5026,7 +5122,7 @@ alias[effect:add_pop_amount] = {
 	## cardinality = 0..1
 	amount = int
 	## cardinality = 0..1
-	amount =enum[exe_set_variable]
+	amount = enum[exe_set_variable]
 	## cardinality = 0..1
 	random = int
 	## cardinality = 0..1
@@ -5191,6 +5287,8 @@ alias[effect:set_trade_conversions] = {
 alias[effect:set_resource] = {
 	resource = <resource>
 	value = value_field
+	## cardinality = 0..1
+	value = enum[exe_set_variable]
 }
 
 ###Creates a new pop group based on an existing one with overrides. If no existing pop group is passed, species is mandatory.
@@ -5261,6 +5359,15 @@ alias[effect:clear_planet_purge_type] = bool
 
 ###Destroys up to navel_cap worth of ships in the target fleet (with death graphics)
 alias[effect:destroy_fleet_naval_cap] = {
+	## cardinality = 0..1
+	target = scope[fleet]
+	naval_cap= int
+	## cardinality = 0..1
+	kill_leader=bool
+}
+
+###Destroys up to navel_cap worth of ships in the target fleet (with death graphics)
+alias[effect:delete_fleet_naval_cap] = {
 	## cardinality = 0..1
 	target = scope[fleet]
 	naval_cap= int
@@ -5339,6 +5446,8 @@ alias[effect:enable_patron_first_contact_project] = {
 	owner = scope_group[target_country]
 	## cardinality = 0..1
 	location = scope_group[spatial_object]
+	## cardinality = 0..1
+	location = scope_group[celestial_coordinate]
 }
 
 ###Spawns a Psionic Aura in scoped system, where country is the aura's owner.
@@ -5441,9 +5550,21 @@ alias[effect:move_system] = {
 	## cardinality = 0..1
 	max_jumps = int
 	## cardinality = 0..1
+	min_jumps = value_field
+	## cardinality = 0..1
+	max_jumps = value_field
+	## cardinality = 0..1
+	min_orientation_angle = int
+	## cardinality = 0..1
+	max_orientation_angle = int
+	## cardinality = 0..1
 	min_distance = int[0..100]
 	## cardinality = 0..1
 	max_distance =  int[0..100]
+	## cardinality = 0..1
+	min_distance = value_field
+	## cardinality = 0..1
+	max_distance = value_field
 	## cardinality = 0..1
 	direction = corewards
 	## cardinality = 0..1
@@ -5479,7 +5600,573 @@ alias[effect:start_terraform_progress] = {
 
 ###Adds terraforming progress to scoped planet, finishes the terraformation, if enough progress is reached
 alias[effect:add_terraform_progress] = value_field
-alias[effect:add_terraform_progress] = value_set[variable]
 
-###Sets terraforming progress of scoped planet, finishes the terraformation, if enough progress is reached
+####Sets terraforming progress of scoped planet, finishes the terraformation, if enough progress is reached
 alias[effect:set_terraform_progress] = value_field
+
+### Sets country's faction properties:
+## supported_scopes = country
+alias[effect:set_faction_properties] = {
+	## cardinality = 0..inf
+	scalar = bool
+}
+
+### Sets an arbitrarily-named flag on the scoped colony carrier
+## supported_scopes = planet ship colony
+alias[effect:set_carrier_flag] = value_set[carrier_flag]
+
+### Sets an arbitrarily-named flag on the scoped mission
+## supported_scopes = mission
+alias[effect:set_mission_flag] = value_set[mission_flag]
+
+### Removes a flag from the scoped colony carrier
+## supported_scopes = planet ship colony
+alias[effect:remove_carrier_flag] = value[carrier_flag]
+
+### Removes a flag from the scoped mission
+## supported_scopes = mission
+alias[effect:remove_mission_flag] = value[mission_flag]
+
+### Sets an arbitrarily-named flag on the scoped colony carrier for a set duration
+## supported_scopes = planet ship colony
+alias[effect:set_timed_carrier_flag] = {
+	flag = value_set[carrier_flag]
+	enum[days_months_years] = int_value_field
+}
+
+### Removes civic from a government without checking the restrictions
+## supported_scopes = country
+alias[effect:force_remove_civic_by_index] = int
+
+### If the target fleet is MIA, returns it from MIA immediately
+## supported_scopes = fleet
+alias[effect:return_from_mia] = scope[fleet]
+
+### Adds specific resources to a ship's stockpile (ship must be able to collect resources; will not add resources above capacity):
+## supported_scopes = ship
+alias[effect:add_resource_to_local_stockpile] = {
+	## cardinality = 0..inf
+	<resource> = int_value_field
+	## cardinality = 0..1
+	mult = value_field
+}
+
+### Adds the specified contract to a target system.
+## supported_scopes = country
+alias[effect:issue_contract] = {
+	contract = <mission>
+	location = scope[any]
+	## cardinality = 0..1
+	target = scope[any]
+}
+
+### Cancels the scoped to contract.
+## supported_scopes = mission
+alias[effect:cancel_contract] = {
+	## cardinality = 0..1
+	refund = bool
+	## cardinality = 0..1
+	show_message = bool
+}
+
+### Transfers all resources from the scoped ship to another ship or country:
+## supported_scopes = ship
+alias[effect:transfer_resource_stockpile] = {
+	target = scope[any]
+	## cardinality = 0..1
+	mult = value_field
+}
+
+### Sets the animation state of the scoped object
+## supported_scopes = megastructure ship fleet
+alias[effect:set_animation_state] = enum[anim_states]
+alias[effect:lock_animation_state] = scalar
+
+### Locks the animation state of the scoped object. This will let it change states until it hits the given state, at which point it won't change states anymore. "none" clears this behavior.
+## supported_scopes = ship fleet
+alias[effect:lock_animation_state] = enum[anim_states]
+alias[effect:lock_animation_state] = none
+
+### Transfer the colony to another carrier
+## supported_scopes = all
+alias[effect:transfer_carrier] = {
+	source = scope[any]
+	target = scope[any]
+	## cardinality = 0..1
+	transfer_ownership = bool
+	## cardinality = 0..1
+	transfer_controller = bool
+	## cardinality = 0..1
+	merge_pops = bool
+	## cardinality = 0..1
+	destroy_colony = bool
+}
+
+### Creates a sector with the scoped colony as capital, if it's not already within a sector
+## supported_scopes = planet ship colony
+alias[effect:create_sector] = yes
+
+### Steals resource output from a planet and gives it to a target empire or stockpile.
+## supported_scopes = planet
+alias[effect:steal_planet_output] = {
+	planet = scope[any]
+	who = scope[any]
+	## cardinality = 1..inf
+	resource = <resource>
+	## cardinality = 0..inf
+	resource = enum[resource_groups]
+	## cardinality = 0..1
+	resource = all
+	## cardinality = 0..1
+	max_amount = int_value_field
+	## cardinality = 0..1
+	percentage = value_field
+	## cardinality = 0..1
+	mode = duplicate
+	## cardinality = 0..1
+	mode = steal
+	## cardinality = 0..1
+	notification_mode = none
+	## cardinality = 0..1
+	notification_mode = thief_only
+	## cardinality = 0..1
+	notification_mode = both
+	## cardinality = 0..1
+	show_in_monthly_resources_mode = none
+	## cardinality = 0..1
+	show_in_monthly_resources_mode = thief_only
+	## cardinality = 0..1
+	show_in_monthly_resources_mode = both
+}
+
+### Sets the system lock status for the scoped colony or carrier and cancels any current encampment or packup process
+## supported_scopes = planet ship colony
+alias[effect:set_system_locked] = bool
+
+### Sets the resource currency converter for the country
+## supported_scopes = country
+alias[effect:set_resource_converter] = scalar
+alias[effect:set_resource_converter] = none
+
+### Forces the diplomacy view to open for the scoped country targeted at the given country, on the diplomacy tab. Only works inside on_custom_diplomacy events, relic activation effects, or events triggered from those. Does nothing if communications are missing or if the target has custom_diplomacy = yes.
+## supported_scopes = country
+alias[effect:force_show_diplomacy] = scope[country]
+
+### Forces the diplomacy view to open for the scoped country targeted at the given country, on the espionage tab. Only works inside on_custom_diplomacy events, relic activation effects, or events triggered from those. Does nothing if communications are missing or if espionage is not actionable against the target.
+## supported_scopes = country
+alias[effect:force_show_espionage] = scope[country]
+
+### Fires a colony event for the scoped colony, with optional DAYS and RANDOM delay
+## supported_scopes = planet colony ship
+alias[effect:colony_event] = {
+	id = <event.colony>
+	id = <event.carrier>
+	id = <event.scopeless>
+	## cardinality = 0..1
+	days = int
+	## cardinality = 0..1
+	days = value_field
+	## cardinality = 0..1
+	months = int
+	## cardinality = 0..1
+	months = value_field
+	## cardinality = 0..1
+	years = int
+	## cardinality = 0..1
+	years = value_field
+	## cardinality = 0..1
+	random = int
+	## cardinality = 0..1
+	random = value_field
+	## cardinality = 0..1
+	scopes = {
+		## cardinality = 0..1
+		from = scope[any]
+		## cardinality = 0..1
+		fromfrom = scope[any]
+		## cardinality = 0..1
+		fromfromfrom = scope[any]
+		## cardinality = 0..1
+		fromfromfromfrom = scope[any]
+	}
+}
+
+### Fires a colony carrier event for the scoped carrier, with optional DAYS and RANDOM delay
+## supported_scopes = planet ship colony
+alias[effect:carrier_event] = {
+	id = <event.colony>
+	id = <event.planet>
+	id = <event.ship>
+	id = <event.carrier>
+	id = <event.scopeless>
+	## cardinality = 0..1
+	days = int
+	## cardinality = 0..1
+	days = value_field
+	## cardinality = 0..1
+	months = int
+	## cardinality = 0..1
+	months = value_field
+	## cardinality = 0..1
+	years = int
+	## cardinality = 0..1
+	years = value_field
+	## cardinality = 0..1
+	random = int
+	## cardinality = 0..1
+	random = value_field
+	## cardinality = 0..1
+	scopes = {
+		## cardinality = 0..1
+		from = scope[any]
+		## cardinality = 0..1
+		fromfrom = scope[any]
+		## cardinality = 0..1
+		fromfromfrom = scope[any]
+		## cardinality = 0..1
+		fromfromfromfrom = scope[any]
+	}
+}
+
+### Spawn a random anomaly on the scoped planet
+## supported_scopes = all
+alias[effect:spawn_random_anomaly] = {
+	## cardinality = 0..1
+	target = scope[any]
+}
+
+### Creates a fleet of the requested size, distributing ships deterministically across the listed designs by each ship_size's ai_ship_data.fraction.
+## supported_scopes = country
+alias[effect:create_balanced_fleet] = {
+	## cardinality = 0..1
+	name = localisation
+	size = int_value_field
+	## cardinality = 0..1
+	can_overflow = bool
+	## cardinality = 0..1
+	ship_designs = {
+		## cardinality = 0..inf
+		<global_ship_design>
+	}
+	## cardinality = 0..1
+	## push_scope = fleet
+	effect = {
+		alias_name[effect] = alias_match_left[effect]
+	}
+}
+
+### Iterate through each colony controlled by the current empire - executes the enclosed effects on all of them for which the limit triggers return true
+## supported_scopes = country
+## push_scope = colony
+alias[effect:every_controlled_colony] = {
+	## cardinality = 0..1
+	limit = {
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+	alias_name[effect] = alias_match_left[effect]
+}
+
+### Iterate through each mission that the current country has issued - executes the enclosed effects on all of them for which the limit triggers return true
+## supported_scopes = country
+## push_scope = mission
+alias[effect:every_issued_mission] = {
+	## cardinality = 0..1
+	limit = {
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+	alias_name[effect] = alias_match_left[effect]
+}
+
+### Iterate through each colony owned by the current empire - executes the enclosed effects on all of them for which the limit triggers return true
+## supported_scopes = country sector
+## push_scope = colony
+alias[effect:every_owned_colony] = {
+	## cardinality = 0..1
+	limit = {
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+	alias_name[effect] = alias_match_left[effect]
+}
+
+### Iterate through each contract a country has - executes the enclosed effects on all of them for which the limit triggers return true
+## supported_scopes = country
+## push_scope = mission
+alias[effect:every_owned_contract] = {
+	## cardinality = 0..1
+	limit = {
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+	alias_name[effect] = alias_match_left[effect]
+}
+
+### Iterate through each mission a country has - executes the enclosed effects on all of them for which the limit triggers return true
+## supported_scopes = country
+## push_scope = mission
+alias[effect:every_owned_mission] = {
+	## cardinality = 0..1
+	limit = {
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+	alias_name[effect] = alias_match_left[effect]
+}
+
+### Iterate through every starbase in the same waystation network as the scoped starbase. - executes the enclosed effects on all of them for which the limit triggers return true
+## supported_scopes = starbase
+## push_scope = starbase
+alias[effect:every_starbase_in_network] = {
+	## cardinality = 0..1
+	limit = {
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+	alias_name[effect] = alias_match_left[effect]
+}
+
+### Iterate through each planet colony in the current system - executes the enclosed effects on all of them for which the limit triggers return true
+## supported_scopes = galactic_object
+## push_scope = colony
+alias[effect:every_system_planet_colony] = {
+	## cardinality = 0..1
+	limit = {
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+	alias_name[effect] = alias_match_left[effect]
+}
+
+### Iterate through each ship colony in the current system - executes the enclosed effects on all of them for which the limit triggers return true
+## supported_scopes = galactic_object
+## push_scope = colony
+alias[effect:every_system_ship_colony] = {
+	## cardinality = 0..1
+	limit = {
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+	alias_name[effect] = alias_match_left[effect]
+}
+
+### Iterate through each colony controlled by the current empire - executes the enclosed effects on one of them for which the limit triggers return true. Picks the specific object randomly.
+## supported_scopes = country
+## push_scope = colony
+alias[effect:random_controlled_colony] = {
+	## cardinality = 0..1
+	limit = { alias_name[trigger] = alias_match_left[trigger] }
+	alias_name[effect] = alias_match_left[effect]
+	## cardinality = 0..1
+	###(optional - adds weights to affect the chance a specific object is selected)
+	weights = {
+		alias_name[modifier_rule] = alias_match_left[modifier_rule]
+	}
+}
+
+### Iterate through each mission that the current country has issued - executes the enclosed effects on one of them for which the limit triggers return true. Picks the specific object randomly.
+## supported_scopes = country
+## push_scope = mission
+alias[effect:random_issued_mission] = {
+	## cardinality = 0..1
+	limit = { alias_name[trigger] = alias_match_left[trigger] }
+	alias_name[effect] = alias_match_left[effect]
+	## cardinality = 0..1
+	###(optional - adds weights to affect the chance a specific object is selected)
+	weights = {
+		alias_name[modifier_rule] = alias_match_left[modifier_rule]
+	}
+}
+
+### Iterate through each colony owned by the current empire - executes the enclosed effects on one of them for which the limit triggers return true. Picks the specific object randomly.
+## supported_scopes = country sector
+## push_scope = colony
+alias[effect:random_owned_colony] = {
+	## cardinality = 0..1
+	limit = { alias_name[trigger] = alias_match_left[trigger] }
+	alias_name[effect] = alias_match_left[effect]
+	## cardinality = 0..1
+	###(optional - adds weights to affect the chance a specific object is selected)
+	weights = {
+		alias_name[modifier_rule] = alias_match_left[modifier_rule]
+	}
+}
+
+### Iterate through each contract a country has - executes the enclosed effects on one of them for which the limit triggers return true. Picks the specific object randomly.
+## supported_scopes = country
+## push_scope = mission
+alias[effect:random_owned_contract] = {
+	## cardinality = 0..1
+	limit = { alias_name[trigger] = alias_match_left[trigger] }
+	alias_name[effect] = alias_match_left[effect]
+	## cardinality = 0..1
+	###(optional - adds weights to affect the chance a specific object is selected)
+	weights = {
+		alias_name[modifier_rule] = alias_match_left[modifier_rule]
+	}
+}
+
+### Iterate through each mission a country has - executes the enclosed effects on one of them for which the limit triggers return true. Picks the specific object randomly.
+## supported_scopes = country
+## push_scope = mission
+alias[effect:random_owned_mission] = {
+	## cardinality = 0..1
+	limit = { alias_name[trigger] = alias_match_left[trigger] }
+	alias_name[effect] = alias_match_left[effect]
+	## cardinality = 0..1
+	###(optional - adds weights to affect the chance a specific object is selected)
+	weights = {
+		alias_name[modifier_rule] = alias_match_left[modifier_rule]
+	}
+}
+
+### Iterate through every starbase in the same waystation network as the scoped starbase. - executes the enclosed effects on one of them for which the limit triggers return true. Picks the specific object randomly.
+## supported_scopes = starbase
+## push_scope = starbase
+alias[effect:random_starbase_in_network] = {
+	## cardinality = 0..1
+	limit = { alias_name[trigger] = alias_match_left[trigger] }
+	alias_name[effect] = alias_match_left[effect]
+	## cardinality = 0..1
+	###(optional - adds weights to affect the chance a specific object is selected)
+	weights = {
+		alias_name[modifier_rule] = alias_match_left[modifier_rule]
+	}
+}
+
+### Iterate through each colony controlled by the current empire - executes the enclosed effects on one of them for which the limit triggers return true. Picks the specific object according to the order specified (position 0, order_by = trigger:num_pops would run the effects on the X with the most pops)
+## supported_scopes = country
+## push_scope = colony
+alias[effect:ordered_controlled_colony] = {
+	position = int[0..inf]
+	##cardinality = 0..1
+	order_by = value_field
+	##cardinality = 0..1
+	order_by = value[variable]
+	##cardinality = 0..1
+	order_by = trigger:<trigger>
+	##cardinality = 0..1
+	order_by = enum[order_by]
+	## cardinality = 0..inf
+	order_by = { 
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+	## cardinality = 0..1
+	inverse = bool
+	## cardinality = 0..1
+	limit = { alias_name[trigger] = alias_match_left[trigger] }
+	alias_name[effect] = alias_match_left[effect]
+}
+
+### Iterate through each mission that the current country has issued - executes the enclosed effects on one of them for which the limit triggers return true. Picks the specific object according to the order specified (position 0, order_by = trigger:num_pops would run the effects on the X with the most pops)
+## supported_scopes = country
+## push_scope = mission
+alias[effect:ordered_issued_mission] = {
+	position = int[0..inf]
+	##cardinality = 0..1
+	order_by = value_field
+	##cardinality = 0..1
+	order_by = value[variable]
+	##cardinality = 0..1
+	order_by = trigger:<trigger>
+	##cardinality = 0..1
+	order_by = enum[order_by]
+	## cardinality = 0..inf
+	order_by = { 
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+	## cardinality = 0..1
+	inverse = bool
+	## cardinality = 0..1
+	limit = { alias_name[trigger] = alias_match_left[trigger] }
+	alias_name[effect] = alias_match_left[effect]
+}
+
+### Iterate through each colony owned by the current empire - executes the enclosed effects on one of them for which the limit triggers return true. Picks the specific object according to the order specified (position 0, order_by = trigger:num_pops would run the effects on the X with the most pops)
+## supported_scopes = country sector
+## push_scope = colony
+alias[effect:ordered_owned_colony] = {
+	position = int[0..inf]
+	##cardinality = 0..1
+	order_by = value_field
+	##cardinality = 0..1
+	order_by = value[variable]
+	##cardinality = 0..1
+	order_by = trigger:<trigger>
+	##cardinality = 0..1
+	order_by = enum[order_by]
+	## cardinality = 0..inf
+	order_by = { 
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+	## cardinality = 0..1
+	inverse = bool
+	## cardinality = 0..1
+	limit = { alias_name[trigger] = alias_match_left[trigger] }
+	alias_name[effect] = alias_match_left[effect]
+}
+
+### Iterate through each contract a country has - executes the enclosed effects on one of them for which the limit triggers return true. Picks the specific object according to the order specified (position 0, order_by = trigger:num_pops would run the effects on the X with the most pops)
+## supported_scopes = country
+## push_scope = mission
+alias[effect:ordered_owned_contract] = {
+	position = int[0..inf]
+	##cardinality = 0..1
+	order_by = value_field
+	##cardinality = 0..1
+	order_by = value[variable]
+	##cardinality = 0..1
+	order_by = trigger:<trigger>
+	##cardinality = 0..1
+	order_by = enum[order_by]
+	## cardinality = 0..inf
+	order_by = { 
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+	## cardinality = 0..1
+	inverse = bool
+	## cardinality = 0..1
+	limit = { alias_name[trigger] = alias_match_left[trigger] }
+	alias_name[effect] = alias_match_left[effect]
+}
+
+### Iterate through each mission a country has - executes the enclosed effects on one of them for which the limit triggers return true. Picks the specific object according to the order specified (position 0, order_by = trigger:num_pops would run the effects on the X with the most pops)
+## supported_scopes = country
+## push_scope = mission
+alias[effect:ordered_owned_mission] = {
+	position = int[0..inf]
+	##cardinality = 0..1
+	order_by = value_field
+	##cardinality = 0..1
+	order_by = value[variable]
+	##cardinality = 0..1
+	order_by = trigger:<trigger>
+	##cardinality = 0..1
+	order_by = enum[order_by]
+	## cardinality = 0..inf
+	order_by = { 
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+	## cardinality = 0..1
+	inverse = bool
+	## cardinality = 0..1
+	limit = { alias_name[trigger] = alias_match_left[trigger] }
+	alias_name[effect] = alias_match_left[effect]
+}
+
+### Iterate through every starbase in the same waystation network as the scoped starbase. - executes the enclosed effects on one of them for which the limit triggers return true. Picks the specific object according to the order specified (position 0, order_by = trigger:num_pops would run the effects on the X with the most pops)
+## supported_scopes = starbase
+## push_scope = starbase
+alias[effect:ordered_starbase_in_network] = {
+	position = int[0..inf]
+	##cardinality = 0..1
+	order_by = value_field
+	##cardinality = 0..1
+	order_by = value[variable]
+	##cardinality = 0..1
+	order_by = trigger:<trigger>
+	##cardinality = 0..1
+	order_by = enum[order_by]
+	## cardinality = 0..inf
+	order_by = { 
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+	## cardinality = 0..1
+	inverse = bool
+	## cardinality = 0..1
+	limit = { alias_name[trigger] = alias_match_left[trigger] }
+	alias_name[effect] = alias_match_left[effect]
+}

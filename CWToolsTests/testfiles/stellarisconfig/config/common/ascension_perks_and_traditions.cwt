@@ -238,6 +238,8 @@ tradition = {
 		## cardinality = 0..inf
 		custom_tooltip_with_modifiers = localisation
 	
+		## cardinality = 0..1
+		unlocks_agenda = <council_agenda>
 		#Should be only if not inheriting effects
 		## cardinality = 0..1
 		###accepts only country modifiers

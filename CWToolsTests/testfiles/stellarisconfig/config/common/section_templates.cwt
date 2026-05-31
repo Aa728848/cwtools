@@ -17,6 +17,47 @@ types = {
 	}
 }
 
+single_alias[technology_prerequisite] = {
+	## cardinality = 0..inf
+	<technology>
+	## cardinality = 0..inf
+	AND = {
+		## cardinality = 1..inf
+		<technology>
+		## cardinality = 0..inf
+		AND = {
+			## cardinality = 1..inf
+			<technology>
+		}
+		## cardinality = 0..inf
+		OR = {
+			## cardinality = 1..inf
+			<technology>
+		}
+	}
+	## cardinality = 0..inf
+	OR = {
+		## cardinality = 1..inf
+		<technology>
+		## cardinality = 0..inf
+		AND = {
+			## cardinality = 1..inf
+			<technology>
+			## cardinality = 0..inf
+			OR = {
+				## cardinality = 1..inf
+				<technology>
+			}
+		}
+		## cardinality = 0..inf
+		OR = {
+			## cardinality = 1..inf
+			<technology>
+		}
+	}
+}
+
+
 component_slot_template = {
 	size = enum[weapon_slot_size]
 	component = weapon
@@ -66,15 +107,7 @@ section_template = {
 	}
 
 	## cardinality = 0..1
-  	prerequisites = {
-		## cardinality = 0..inf
-		<technology>
-		## cardinality = 0..1
-		OR = {
-			## cardinality = 2..inf
-			<technology>
-		}
-	}
+	prerequisites = single_alias_right[technology_prerequisite]
 	## cardinality = 0..inf
   component_slot = {
     name = scalar
@@ -285,5 +318,7 @@ enums = {
 		AUX_UTILITY_28
 		AUX_UTILITY_29
 		AUX_UTILITY_30
+		AUX_UTILITY_31
+		AUX_UTILITY_32
 	}
 }

@@ -27,7 +27,7 @@ scripted_effect = {
 ### Force scripted trigger or effect to work in common and event files	
 alias[effect:reckoning_consume_world] = {   
 	## cardinality = 0..1
-	OWNER = scope{country}  
+	OWNER = scope[country]  
 	## cardinality = 0..1
 	OWNER = value_set[event_target]
 }

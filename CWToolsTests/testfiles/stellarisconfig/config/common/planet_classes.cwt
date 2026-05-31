@@ -66,6 +66,16 @@ planet_class = {
 	## cardinality = 0..1
 	icon = <sprite>
 	icon_large = <sprite>
+	## cardinality = 0..inf
+	conditional_icon = {
+		## replace_scope = { this = planet root = planet }
+		trigger = {
+			alias_name[trigger] = alias_match_left[trigger]
+		}
+		icon = <sprite>
+		## cardinality = 0..1
+		icon_large = <sprite>
+	}
 	subtype[planet] = {
 		icon = <sprite>
 		## cardinality = 0..1
@@ -170,11 +180,15 @@ planet_class = {
 	## cardinality = 0..1
 	colonizable = bool
 
+	## cardinality = 0..1
+	climate = localisation
+
+	## cardinality = 0..1
+	single_build_queue = bool
+
 	subtype[habitable_planet] = {
 		## severity = warning
 		district_set = enum[district_sets]
-		## cardinality = 0..1
-		climate = localisation
 		## cardinality = 0..1
 		habitat = bool
 		## cardinality = 0..1
