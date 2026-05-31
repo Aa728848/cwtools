@@ -47,6 +47,8 @@ module STL =
         let keys = key.Split('.') |> List.ofArray
 
         let inner (nextKey: string) : Scope list option =
+            // Strip trailing '?' for optional scope syntax (e.g., owner? = { ... })
+            let nextKey = if nextKey.EndsWith('?') then nextKey.Substring(0, nextKey.Length - 1) else nextKey
             let onetoone = oneToOneScopes |> List.tryFind (fun (k, _) -> k == nextKey)
             let nextKey = StringResource.stringManager.InternIdentifierToken nextKey
 

@@ -176,6 +176,8 @@ module Scopes =
                     let keys = keys |> Array.mapi (fun i k -> k, i = keylength)
 
                     let inner (context: ScopeContext, changed: bool) (nextKey: string) (last: bool) =
+                        // Strip trailing '?' for optional scope syntax (e.g., owner? = { ... })
+                        let nextKey = if nextKey.EndsWith('?') then nextKey.Substring(0, nextKey.Length - 1) else nextKey
                         let onetoone = oneToOneScopes |> List.tryFind (fun (k, _) -> k == nextKey)
 
                         match onetoone with
@@ -359,6 +361,8 @@ module Scopes =
                         (nextKey: string)
                         (last: bool)
                         =
+                        // Strip trailing '?' for optional scope syntax (e.g., owner? = { ... })
+                        let nextKey = if nextKey.EndsWith('?') then nextKey.Substring(0, nextKey.Length - 1) else nextKey
                         let onetoone = oneToOneScopes |> List.tryFind (fun (k, _) -> k == nextKey)
 
                         match onetoone with

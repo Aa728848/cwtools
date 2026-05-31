@@ -499,6 +499,10 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         // log "Refresh rule caches time: %i" timer.ElapsedMilliseconds; timer.Restart()
         // game.RefreshValidationManager()
         logInfo $"Refresh all lookups: %0.3f{float endToEndTimer.ElapsedMilliseconds / 1000.0}s"
+        // Log type counts for key types
+        let stCount = lookup.typeDefInfo |> Map.tryFind "scripted_trigger" |> Option.map Array.length |> Option.defaultValue 0
+        let seCount = lookup.typeDefInfo |> Map.tryFind "scripted_effect" |> Option.map Array.length |> Option.defaultValue 0
+        logInfo $"Type counts: scripted_trigger=%d{stCount}, scripted_effect=%d{seCount}, total types=%d{lookup.typeDefInfo.Count}"
         ruleValidationService, infoService, completionService
 
     member _.LoadBaseConfig(rulesSettings) = loadBaseConfig rulesSettings

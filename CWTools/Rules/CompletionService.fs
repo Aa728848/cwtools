@@ -150,6 +150,7 @@ type CompletionService
     let isAliasParameterComparisonValueRule ((ruleType, _): NewRule) =
         let isComparisonKey (key: StringTokens) =
             match stringManager.GetStringForID key.normal with
+            | "percentage"
             | "amount"
             | "count"
             | "value" -> true

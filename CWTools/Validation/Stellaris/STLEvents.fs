@@ -110,6 +110,7 @@ module STLEventValidation =
             (fun (x: Node) (children: string list) ->
                 let targetFromString (k: string) = 
                     let raw = k.Substring(13).Split('.').[0]
+                    let raw = if raw.EndsWith('?') then raw.Substring(0, raw.Length - 1) else raw
                     substituteParams parameters raw
 
                 let inner (children: string list) (leaf: Leaf) =
@@ -160,6 +161,7 @@ module STLEventValidation =
                         && value.StartsWith("event_target:", StringComparison.OrdinalIgnoreCase)
                     then
                         let raw = value.Substring(13).Split('.').[0]
+                        let raw = if raw.EndsWith('?') then raw.Substring(0, raw.Length - 1) else raw
                         Some(substituteParams parameters raw)
                     else
                         None

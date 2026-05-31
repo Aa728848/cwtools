@@ -87,6 +87,7 @@ module internal SharedParsers =
            '&'
            '|'
            '+'
+           '?'
            magicChar |]
 
     let isAnyOfIdCharArray = isAnyOf idCharArray
