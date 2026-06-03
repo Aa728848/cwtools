@@ -1,0 +1,6 @@
+container = {
+    child = {
+        expected_leaf = yes
+    }
+    inline_script = completion_inner
+}

@@ -43,6 +43,15 @@ script_consume = {
         ## cardinality = 0..inf
         scalar = scalar
    }
+   ## cardinality = 0..inf
+   root_only = bool
+   ## cardinality = 0..inf
+   container = {
+        ## cardinality = 0..inf
+        child = {
+            expected_leaf = bool
+        }
+   }
 }
 not_event = {
     not_event = yes

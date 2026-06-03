@@ -1055,20 +1055,16 @@ module LanguageFeatures =
                                                             let targetPos = mkPos (targetLine + 1) indentCol
                                                             completion.GetRulePath(targetPos, directCaller.rawEntity)
                                                         else []
-                                                    // Chain: root path (includes type root) + intermediate path (without its root)
-                                                    // rootToIntermediatePath = [event_type, desc, inline_script]
-                                                    // intermediateToTargetPath = [desc, trigger, inline_script]
-                                                    // Combined: [event_type, desc, trigger, inline_script]
-                                                    // (drop intermediate root, drop inline_script/script from root path tail)
+                                                    // Chain: root path + the direct inline caller path.
+                                                    // Inline script files do not have a synthetic type root:
+                                                    // the first key in intermediateToTargetPath is a real
+                                                    // inserted block and must be preserved (for example
+                                                    // trait/icon -> icon -> trait/icon_element/...).
                                                     let rootPrefix =
                                                         rootToIntermediatePath
                                                         |> List.filter (fun (key, _, _, _, _) ->
                                                             not (key = "inline_script" || key = "script"))
-                                                    let intermediateSuffix =
-                                                        match intermediateToTargetPath with
-                                                        | _ :: rest -> rest  // drop intermediate's root key
-                                                        | [] -> []
-                                                    rootPrefix @ intermediateSuffix
+                                                    rootPrefix @ intermediateToTargetPath
                                                 | None -> []
                                         with _ -> []
                                     completion.CompleteInlineScript(pos, inlineEntity, callerEntity, callerScopeCtxOpt, Some globalVars, callerRulePath)

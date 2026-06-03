@@ -1250,11 +1250,15 @@ type CompletionService
             | AnyKey -> true
             | MultipleKeys(keys, shouldMatch) -> (keys |> List.exists ((==) s)) <> (not shouldMatch)
 
-        // Strip the type root key and inline_script/script leaves from callerRulePath
-        // to get the intermediate path elements between the type root and inline_script.
-        // The type root is added back by validateTypeSkipRootInline.
+        // Strip inline_script/script leaves from callerRulePath. The first remaining
+        // element is the caller's type instance/subtype key; getCompletionFromPath
+        // expects the canonical type rule key instead, so we keep only the caller's
+        // path below that root. Keep track of whether such a caller root existed:
+        // an inline script called from inside a type root treats its own top-level
+        // keys as fields, while an inline script with no caller context treats its
+        // first top-level key as a type instance.
         //
-        // BEST-OF-BOTH STRATEGY: We compute TWO paths:
+        // BEST-OF-BOTH STRATEGY: For control-flow caller paths, compute TWO paths:
         //   1. fullCallerPath   = all intermediate elements (e.g. [desc, trigger])
         //   2. minimalCallerPath = only the first element (e.g. [desc])
         // Then try both and use whichever returns MORE completions.
@@ -1263,22 +1267,44 @@ type CompletionService
         // from desc-content to trigger-content) and MUST be kept. Others are transparent
         // control-flow (switch, if) whose dynamic children can't be resolved by
         // getCompletionFromPath, returning few wrong intermediate-level results.
-        // The "more results" heuristic works because:
+        // The "more results" heuristic works for transparent control-flow because:
         //   - Correct deep resolution returns many content-level completions (200+ effects/triggers)
         //   - Wrong intermediate-level resolution returns few structural fields (1-5 items)
-        let fullCallerPath =
-            let stripped =
-                match callerRulePath with
-                | _ :: rest -> rest  // drop type root (e.g. country_event)
-                | [] -> []
-            stripped
+        // For concrete data blocks (icon/layer, resources/upkeep, etc.) a smaller
+        // completion list can be the precise one, so keep the full path there.
+        let rawCallerPath =
+            callerRulePath
             |> List.filter (fun (key, _, _, _, _) ->
                 not (key = "inline_script" || key = "script"))
+
+        let callerHasTypeRoot = not rawCallerPath.IsEmpty
+
+        let fullCallerPath =
+            match rawCallerPath with
+            | _ :: rest -> rest
+            | [] -> []
 
         let minimalCallerPath =
             match fullCallerPath with
             | first :: _ -> [first]
             | [] -> []
+
+        let isTransparentCallerKey (key: string) =
+            let key = key.ToLowerInvariant()
+            key = "if"
+            || key = "else"
+            || key = "else_if"
+            || key = "switch"
+            || key = "random"
+            || key = "random_list"
+            || key = "while"
+            || key.StartsWith("every_")
+            || key.StartsWith("random_")
+            || key.StartsWith("ordered_")
+
+        let shouldTryMinimalCallerPath =
+            fullCallerPath
+            |> List.exists (fun (key, _, _, _, _) -> isTransparentCallerKey key)
 
         // Used for rootTypeItems suppression: any non-empty caller path means we're inside a block
         let intermediateCallerPath = fullCallerPath
@@ -1291,7 +1317,7 @@ type CompletionService
         // Try both full and minimal caller paths, return the one with more results.
         let bestOfBoth scoreFunction typerules typeRoot suffix scopeContext =
             let fullResult = tryPath scoreFunction typerules typeRoot fullCallerPath suffix scopeContext
-            if fullCallerPath = minimalCallerPath then
+            if fullCallerPath = minimalCallerPath || not shouldTryMinimalCallerPath then
                 // Same path (0 or 1 elements), no need to try twice
                 fullResult
             else
@@ -1321,7 +1347,7 @@ type CompletionService
                 // type_per_file: prepend type name + caller path
                 bestOfBoth scoreFunction typerules typeRoot path scopeContext
             | [], false, (head, c, _, _, keyprefix) :: tail ->
-                if fullCallerPath.IsEmpty then
+                if fullCallerPath.IsEmpty && not callerHasTypeRoot then
                     // Inline scripts called at the file root should behave like
                     // normal files in the caller's folder: the first key is the
                     // type instance name, not an extra child under the type root.

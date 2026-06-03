@@ -1023,6 +1023,40 @@ let stlGlobalSubfolderTests =
          |> List.ofSeq)
 
 [<Tests>]
+let inlineScriptCompletionRegressionTests =
+    testList
+        "inline script completion regression"
+        [ testWithCapturedLogs "nested inline keeps concrete parent path" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/inlinescripts"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let filename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "inline_scripts", "completion_inner.txt")
+                  )
+              let filetext = File.ReadAllText filename
+
+              let labels =
+                  stl.Complete (mkPos 2 8) filename filetext
+                  |> List.map (function
+                      | Simple(label, _, _)
+                      | Detailed(label, _, _, _)
+                      | Snippet(label, _, _, _, _) -> label)
+
+              Expect.contains labels "expected_leaf" "Nested inline completion should use the concrete child block"
+              Expect.isFalse (labels |> List.contains "root_only") "Nested inline completion should not fall back to root fields" ]
+
+[<Tests>]
 let irSubfolderTests =
     testList "validation ir" (testSubdirectories 0 true "./testfiles/configtests/rulestests/IR" |> List.ofSeq)
 
