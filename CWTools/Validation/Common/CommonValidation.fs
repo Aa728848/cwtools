@@ -551,7 +551,7 @@ module CommonValidation =
             let fNode =
                 fun (last: BoolState) (x: Node) ->
                     match last, x.Key with
-                    | BoolState.AND, k when k == "AND" -> BoolState.AND, Some(inv (ErrorCodes.UnnecessaryBoolean "AND") x)
+                    | BoolState.AND, k when k == "AND" -> BoolState.AND, None
                     | BoolState.OR, k when k == "OR" -> BoolState.OR, Some(inv (ErrorCodes.UnnecessaryBoolean "OR") x)
                     | _, k when k == "OR" || k == "NOR" -> BoolState.OR, None
                     | _, _ -> BoolState.AND, None
@@ -567,7 +567,7 @@ module CommonValidation =
             let fNode =
                 fun (last: BoolState) (x: Node) ->
                     match last, x.Key with
-                    | BoolState.AND, k when k == "AND" -> BoolState.AND, Some(inv (ErrorCodes.UnnecessaryBoolean "AND") x)
+                    | BoolState.AND, k when k == "AND" -> BoolState.AND, None
                     | BoolState.OR, k when k == "OR" -> BoolState.OR, Some(inv (ErrorCodes.UnnecessaryBoolean "OR") x)
                     | _, k when k == "OR" || k == "NOT" -> BoolState.OR, None
                     | _, _ -> BoolState.AND, None
