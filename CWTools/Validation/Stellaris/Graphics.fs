@@ -115,8 +115,10 @@ module Graphics =
 
     let valSectionGraphics: STLStructureValidator =
         fun os es ->
-            let sections = es.AllOfTypeChildren EntityType.SectionTemplates
-            let cultures = getGraphicalCultures os
+            let cultures =
+                (getGraphicalCultures os @ getGraphicalCultures es)
+                |> List.distinctBy fst
+
             let cultureMap = cultures |> List.filter (fun (_, f) -> f <> "") |> Map.ofList
 
             let cultures =
@@ -128,34 +130,18 @@ module Graphics =
 
             let allCultures = cultures |> List.map fst
 
-            let shipsizes =
-                os.AllOfTypeChildren EntityType.ShipSizes
-                |> List.map (fun ss -> ss, ss.Key, getGraphicalCultureSearchList allCultures ss)
-
             let shipsizesV =
                 es.AllOfTypeChildren EntityType.ShipSizes
                 |> List.filter (fun ss -> not (ss.Has "entity"))
                 |> List.map (fun ss -> ss, ss.Key, getGraphicalCultureSearchList allCultures ss)
 
             let assets =
-                os.AllOfTypeChildren EntityType.GfxAsset
+                (os.AllOfTypeChildren EntityType.GfxAsset @ es.AllOfTypeChildren EntityType.GfxAsset)
                 |> List.map (fun a -> a.TagText "name")
                 |> Set.ofList
-            //log "assets %A" assets
-            let inner =
-                fun (s: Node) ->
-                    match s.TagText "ship_size", s.Leafs "entity" |> Seq.tryHead with
-                    | "", _ -> OK
-                    | _, None -> OK
-                    | shipsize, Some entity ->
-                        match shipsizes |> List.tryFind (fun (_, n, _) -> n == shipsize) with
-                        | None -> OK
-                        | Some(_, _, shipsizeCultures) ->
-                            validateEntityWithGraphicalCultures assets cultures shipsizeCultures (s.TagText "entity") entity
 
-            sections <&!&> inner
-            <&&> (shipsizesV
-                  <&!&> (fun (ss, n, c) -> validateEntityWithGraphicalCultures assets cultures c (n + "_entity") ss))
+            shipsizesV
+            <&!&> (fun (ss, n, c) -> validateEntityWithGraphicalCultures assets cultures c (n + "_entity") ss)
 
     let valComponentGraphics: STLStructureValidator =
         fun os es ->
