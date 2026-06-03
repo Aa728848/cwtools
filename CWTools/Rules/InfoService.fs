@@ -167,6 +167,7 @@ type InfoService
             | "percentage"
             | "amount"
             | "count"
+            | "steps"
             | "value" -> true
             | _ -> false
 

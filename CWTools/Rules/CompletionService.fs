@@ -153,6 +153,7 @@ type CompletionService
             | "percentage"
             | "amount"
             | "count"
+            | "steps"
             | "value" -> true
             | _ -> false
 

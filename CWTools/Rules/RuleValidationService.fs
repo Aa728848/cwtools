@@ -326,6 +326,7 @@ type RuleValidationService
                     | "percentage"
                     | "amount"
                     | "count"
+                    | "steps"
                     | "value" -> true
                     | _ -> false
 
