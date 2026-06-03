@@ -207,32 +207,41 @@ module STLEventValidation =
             callNode.Values
             |> List.map (fun l -> ("$" + l.Key + "$", l.ValueText))
 
+        let getScriptedEffectTargets (callParams: (string * string) list) (effect: ScriptedEffect) =
+            let substituteAndFilter targets =
+                targets
+                |> List.map (substituteParams callParams)
+                |> List.filter (fun target -> not (target.Contains("$")))
+                |> Set.ofList
+
+            substituteAndFilter effect.SavedEventTargets, substituteAndFilter effect.UsedEventTargets
+
         let fNode =
             (fun (x: Node) (s, u) ->
                 let inner (leaf: Leaf) =
                     effects
                     |> List.tryFind (fun e -> leaf.KeyId.lower = e.Name.lower)
                     |> Option.map (fun e ->
-                        // Try to find the call node to extract params
                         let callParams =
                             x.Nodes
                             |> Seq.tryFind (fun n -> n.KeyId.lower = leaf.KeyId.lower)
                             |> Option.map extractCallParams
                             |> Option.defaultValue []
-                        
-                        let savedTargets = 
-                            e.SavedEventTargets
-                            |> List.map (substituteParams callParams)
-                            |> Set.ofList
-                        let usedTargets =
-                            e.UsedEventTargets
-                            |> List.map (substituteParams callParams)
-                            |> Set.ofList
-                        (savedTargets, usedTargets))
 
-                x.Values
-                |> List.choose inner
-                |> List.fold (fun (s, u) (s2, u2) -> 
+                        getScriptedEffectTargets callParams e)
+
+                let leafTargets =
+                    x.Values
+                    |> List.choose inner
+
+                let nodeTargets =
+                    effects
+                    |> List.tryFind (fun e -> x.KeyId.lower = e.Name.lower)
+                    |> Option.map (getScriptedEffectTargets (extractCallParams x))
+                    |> Option.toList
+
+                (leafTargets @ nodeTargets)
+                |> List.fold (fun (s, u) (s2, u2) ->
                     Set.union s s2, Set.union u u2) (s, u))
 
         let fCombine = (fun (s, u) (s2, u2) -> Set.union s s2, Set.union u u2)
