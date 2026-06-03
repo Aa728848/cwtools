@@ -29,7 +29,8 @@ type Options =
       valueRequiredQuotes: bool
       typeHint: (string * bool) option
       completionType: string option
-      errorIfOnlyMatch: string option }
+      errorIfOnlyMatch: string option
+      typePrefixFrom: string option }
 
     static member DefaultOptions =
         { min = 0
@@ -47,7 +48,8 @@ type Options =
           valueRequiredQuotes = false
           typeHint = None
           completionType = None
-          errorIfOnlyMatch = None }
+          errorIfOnlyMatch = None
+          typePrefixFrom = None }
 
 type ValueType =
     | Enum of enumc: string

@@ -1185,7 +1185,12 @@ module LanguageFeatures =
                         let fNorm = f.Replace("\\", "/")
                         resourceManager.Api.AllEntities()
                         |> Seq.map structFst
-                        |> Seq.tryFind (fun x -> x.logicalpath.Replace("\\", "/").Equals(fNorm, StringComparison.OrdinalIgnoreCase))
+                        |> Seq.tryFind (fun x ->
+                            let logicalpath = x.logicalpath.Replace("\\", "/")
+
+                            logicalpath.Equals(fNorm, StringComparison.OrdinalIgnoreCase)
+                            || (not (fNorm.EndsWith(".txt", StringComparison.OrdinalIgnoreCase))
+                                && logicalpath.Equals(fNorm + ".txt", StringComparison.OrdinalIgnoreCase)))
                         |> Option.map (fun x -> mkRange x.filepath pos0 pos0)
                     | _ -> None
                 | _, _ -> None
@@ -1537,7 +1542,7 @@ module LanguageFeatures =
                             // Try to find and read the inline_script file
                             try
                                 let scriptFilePath =
-                                    // Try common/inline_scripts/{path}.txt
+                                    // Try common/inline_scripts/{path}, then {path}.txt
                                     let currentDir = System.IO.Path.GetDirectoryName(filepath)
                                     let rec findModRoot dir =
                                         if System.String.IsNullOrEmpty(dir) then None
@@ -1550,8 +1555,17 @@ module LanguageFeatures =
 
                                     match findModRoot currentDir with
                                     | Some modRoot ->
-                                        let scriptFile = System.IO.Path.Combine(modRoot, "common", "inline_scripts", path + ".txt")
-                                        if System.IO.File.Exists(scriptFile) then Some scriptFile else None
+                                        let scriptFile =
+                                            System.IO.Path.Combine(modRoot, "common", "inline_scripts", path)
+
+                                        let scriptFileTxt = scriptFile + ".txt"
+
+                                        if System.IO.File.Exists(scriptFile) then
+                                            Some scriptFile
+                                        elif System.IO.File.Exists(scriptFileTxt) then
+                                            Some scriptFileTxt
+                                        else
+                                            None
                                     | None -> None
 
                                 match scriptFilePath with
@@ -1895,7 +1909,12 @@ module LanguageFeatures =
                     let fileEntity =
                         resourceManager.Api.AllEntities()
                         |> Seq.map structFst
-                        |> Seq.tryFind (fun x -> x.logicalpath.Replace("\\", "/").Equals(fNorm, StringComparison.OrdinalIgnoreCase))
+                        |> Seq.tryFind (fun x ->
+                            let logicalpath = x.logicalpath.Replace("\\", "/")
+
+                            logicalpath.Equals(fNorm, StringComparison.OrdinalIgnoreCase)
+                            || (not (fNorm.EndsWith(".txt", StringComparison.OrdinalIgnoreCase))
+                                && logicalpath.Equals(fNorm + ".txt", StringComparison.OrdinalIgnoreCase)))
                     let previewText =
                         match fileEntity with
                         | Some entity ->

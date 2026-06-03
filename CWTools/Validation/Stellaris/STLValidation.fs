@@ -122,6 +122,93 @@ module STLValidation =
         let fCombine = (<&&>)
         node |> (foldNode2 fNode fCombine OK)
 
+    let private normalizeInlineScriptRef (scriptName: string) =
+        let normalized =
+            scriptName.Trim().Trim('"').Replace('\\', '/').TrimStart('/')
+
+        let inlinePath = "common/inline_scripts/"
+        let inlineIdx = normalized.IndexOf(inlinePath, StringComparison.OrdinalIgnoreCase)
+
+        let normalized =
+            if inlineIdx >= 0 then
+                normalized.Substring(inlineIdx + inlinePath.Length)
+            else
+                normalized
+
+        if normalized.EndsWith(".txt", StringComparison.OrdinalIgnoreCase) then
+            normalized.Substring(0, normalized.Length - 4)
+        else
+            normalized
+
+    let private tryGetInlineScriptName (filePath: string) =
+        let normalized = filePath.Replace('\\', '/')
+        let inlinePath = "common/inline_scripts/"
+        let inlineIdx = normalized.IndexOf(inlinePath, StringComparison.OrdinalIgnoreCase)
+
+        if inlineIdx >= 0 then
+            Some(normalizeInlineScriptRef (normalized.Substring(inlineIdx + inlinePath.Length)))
+        else
+            None
+
+    let private inlineScriptPatternToRegex (pattern: string) =
+        pattern.Split('$')
+        |> Array.mapi (fun i part ->
+            if i % 2 = 0 then
+                System.Text.RegularExpressions.Regex.Escape(part)
+            else
+                ".+")
+        |> String.Concat
+        |> fun pattern -> "^" + pattern + "$"
+
+    let private scriptRefMatches (targetScript: string) (scriptRef: string) =
+        let target = normalizeInlineScriptRef targetScript
+        let ref = normalizeInlineScriptRef scriptRef
+
+        target.Equals(ref, StringComparison.OrdinalIgnoreCase)
+        || target.EndsWith("/" + ref, StringComparison.OrdinalIgnoreCase)
+        || ref.EndsWith("/" + target, StringComparison.OrdinalIgnoreCase)
+        || (ref.Contains("$")
+            && System.Text.RegularExpressions.Regex.IsMatch(
+                target,
+                inlineScriptPatternToRegex ref,
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase
+            ))
+
+    let private collectInlineScriptRefs (node: Node) =
+        let isInlineScriptKey (key: string) =
+            key.Equals("inline_script", StringComparison.OrdinalIgnoreCase)
+
+        let fNode =
+            fun (x: Node) acc ->
+                let acc =
+                    if isInlineScriptKey x.Key then
+                        let scriptName = x.TagText "script"
+
+                        if String.IsNullOrWhiteSpace scriptName then
+                            acc
+                        else
+                            scriptName :: acc
+                    else
+                        acc
+
+                x.Leaves
+                |> Seq.fold
+                    (fun acc leaf ->
+                        if isInlineScriptKey leaf.Key then
+                            leaf.ValueText :: acc
+                        else
+                            acc)
+                    acc
+
+        node |> foldNode7 fNode |> List.distinct
+
+    let private intersectVariableGroups (groups: string list list) =
+        match groups with
+        | [] -> []
+        | first :: rest ->
+            rest
+            |> List.fold (fun common vars -> common |> List.filter (fun v -> vars |> List.contains v)) first
+            |> List.distinct
 
 
     let validateVariables: STLStructureValidator =
@@ -133,12 +220,73 @@ module STLValidation =
                 |> List.collect id
 
             let globalVars = globalVarsFromEntities |> List.distinct
+            let nodes = es.All
 
-            es.All
+            let inlineScriptsToValidate =
+                nodes
+                |> List.choose (fun node -> tryGetInlineScriptName node.Position.FileName)
+                |> List.distinct
+
+            let callerVariablesByScript =
+                if List.isEmpty inlineScriptsToValidate then
+                    Map.empty
+                else
+                    let allEntities =
+                        os.Raw @ es.Raw
+                        |> List.fold (fun acc struct (e, _) -> Map.add e.filepath e acc) Map.empty
+                        |> Map.toList
+                        |> List.map snd
+
+                    let inlineRefsByFile =
+                        allEntities
+                        |> List.map (fun e -> e.filepath, collectInlineScriptRefs e.rawEntity)
+                        |> Map.ofList
+
+                    let rec callerVariableGroups (targetScript: string) (visited: Set<string>) =
+                        let target = normalizeInlineScriptRef targetScript
+
+                        if visited.Contains target then
+                            []
+                        else
+                            let visited = visited.Add target
+
+                            allEntities
+                            |> List.filter (fun e ->
+                                inlineRefsByFile
+                                |> Map.tryFind e.filepath
+                                |> Option.defaultValue []
+                                |> List.exists (scriptRefMatches target))
+                            |> List.collect (fun caller ->
+                                let ownVariables = getDefinedVariables caller.rawEntity
+
+                                match tryGetInlineScriptName caller.logicalpath with
+                                | Some callerScript ->
+                                    match callerVariableGroups callerScript visited with
+                                    | [] -> [ ownVariables ]
+                                    | parentGroups ->
+                                        parentGroups
+                                        |> List.map (fun parentVariables -> (ownVariables @ parentVariables) |> List.distinct)
+                                | None -> [ ownVariables ])
+
+                    inlineScriptsToValidate
+                    |> List.map (fun scriptName ->
+                        scriptName, callerVariableGroups scriptName Set.empty |> intersectVariableGroups)
+                    |> Map.ofList
+
+            let callerVariablesFor (node: Node) =
+                match tryGetInlineScriptName node.Position.FileName with
+                | Some scriptName ->
+                    callerVariablesByScript
+                    |> Map.tryFind (normalizeInlineScriptRef scriptName)
+                    |> Option.defaultValue []
+                | None -> []
+
+            nodes
             <&!!&>
             (fun node ->
                 let defined = getDefinedVariables node
-                let errors = checkUsedVariables node (defined @ globalVars)
+                let callerVariables = callerVariablesFor node
+                let errors = checkUsedVariables node (defined @ callerVariables @ globalVars)
                 errors)
     //x |> List.fold (<&&>) OK
 
@@ -793,13 +941,15 @@ module STLValidation =
             let validateComponent (section: string) (sectionMap: Collections.Map<string, string * string>) (c: Node) =
                 let slot = c.TagText "slot"
                 let slotFound = sectionMap |> Map.tryFind slot
-                let template = c.TagText "template"
-                let templateFound = weaponInfo |> Map.tryFind template
 
-                match slotFound, templateFound with
+                match slotFound, c.Tag "template" with
                 | None, _ -> Invalid(Guid.NewGuid(), [ inv (ErrorCodes.MissingSectionSlot section slot) c ])
-                | _, None -> Invalid(Guid.NewGuid(), [ inv (ErrorCodes.UnknownComponentTemplate template) c ])
-                | Some(sType, sSize), Some(tType, tSize) -> OK
+                | Some _, None -> OK
+                | Some _, Some _ ->
+                    let template = c.TagText "template"
+                    match weaponInfo |> Map.tryFind template with
+                    | None -> Invalid(Guid.NewGuid(), [ inv (ErrorCodes.UnknownComponentTemplate template) c ])
+                    | Some _ -> OK
             // TODO: Rewrite this
             // if sType == tType && sSize == tSize then OK else Invalid (Guid.NewGuid(), [inv (ErrorCodes.MismatchedComponentAndSlot slot sSize template tSize) c])
 

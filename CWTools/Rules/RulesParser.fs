@@ -351,6 +351,11 @@ module private RulesParserImpl =
             | Some s when s.Contains '=' -> s.Substring(s.IndexOf '=' + 1).Trim() |> Some
             | _ -> None
 
+        let typePrefixFrom =
+            match comments |> List.tryFind (fun s -> s.Contains("type_prefix_from")) with
+            | Some s when s.Contains '=' -> s.Substring(s.IndexOf '=' + 1).Trim() |> Some
+            | _ -> None
+
         { min = min
           max = max
           strictMin = strictmin
@@ -366,7 +371,8 @@ module private RulesParserImpl =
           valueRequiredQuotes = valueRequiredQuotes
           typeHint = None
           completionType = completionType
-          errorIfOnlyMatch = errorIfMatched }
+          errorIfOnlyMatch = errorIfMatched
+          typePrefixFrom = typePrefixFrom }
 
     let fastStartsWith (x: string) y =
         x.StartsWith(y, StringComparison.OrdinalIgnoreCase)
@@ -654,7 +660,8 @@ module private RulesParserImpl =
           valueRequiredQuotes = false
           typeHint = None
           completionType = None
-          errorIfOnlyMatch = None }
+          errorIfOnlyMatch = None
+          typePrefixFrom = None }
 
     let private hsvRule =
         LeafValueRule(ValueField(ValueType.Float(0.0M, 2.0M))),
@@ -673,7 +680,8 @@ module private RulesParserImpl =
           valueRequiredQuotes = false
           typeHint = None
           completionType = None
-          errorIfOnlyMatch = None }
+          errorIfOnlyMatch = None
+          typePrefixFrom = None }
 
     let private configLeaf parseScope allScopes anyScope scopeGroup (leaf: Leaf) (comments: string list) (key: string) =
         let leftfield = processKey parseScope anyScope scopeGroup (key.Trim('"'))

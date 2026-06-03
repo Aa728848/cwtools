@@ -133,6 +133,27 @@ module Scopes =
         | None -> context
         | Some ps -> ps :: context
 
+    let private splitScopePath (key: string) =
+        let atIndex = key.IndexOf('@')
+
+        if atIndex < 0 then
+            key.Split('.')
+        else
+            let prefix = key.Substring(0, atIndex)
+
+            if String.IsNullOrEmpty prefix then
+                [| key |]
+            else
+                let parts = prefix.Split('.')
+                let last = parts.Length - 1
+                parts.[last] <- parts.[last] + key.Substring(atIndex)
+                parts
+
+    let private splitScopePathWithLast key =
+        let keys = splitScopePath key
+        let keylength = keys.Length - 1
+        keys |> Array.mapi (fun i k -> k, i = keylength)
+
     let createJominiChangeScope oneToOneScopes (varPrefixFun: varPrefixFunc) =
         ChangeScope
             (fun
@@ -171,9 +192,7 @@ module Scopes =
                         else
                             "", false
 
-                    let keys = key.Split('.')
-                    let keylength = keys.Length - 1
-                    let keys = keys |> Array.mapi (fun i k -> k, i = keylength)
+                    let keys = splitScopePathWithLast key
 
                     let inner (context: ScopeContext, changed: bool) (nextKey: string) (last: bool) =
                         // Strip trailing '?' for optional scope syntax (e.g., owner? = { ... })
@@ -451,9 +470,7 @@ module Scopes =
 
                     let inner2 = fun a b l -> inner a b l |> (fun (c, d) -> c, Some d)
                     // Try just the raw string first
-                    let rawKeys = key.Split('.')
-                    let rawKeyLength = rawKeys.Length - 1
-                    let rawKeys = rawKeys |> Array.mapi (fun i k -> k, i = rawKeyLength)
+                    let rawKeys = splitScopePathWithLast key
 
                     let rawRes2 =
                         if hoi4TargetedHardcodedVariables then

@@ -212,7 +212,30 @@ module Files =
                         + 1
                     )
 
+            let logicalpath =
+                FileManagerHelper.ConvertPathToLogicalPath(
+                    rootedPath,
+                    expandedRootDirectories,
+                    scriptFolders
+                )
+
+            let isExtensionlessInlineScript =
+                String.IsNullOrEmpty(Path.GetExtension(filepath))
+                && logicalpath.StartsWith("common/inline_scripts/", StringComparison.OrdinalIgnoreCase)
+
             match Path.GetExtension(filepath) with
+            | "" when isExtensionlessInlineScript ->
+                if fileLength > ((int64 maxFileSizeMB) * 1000000L) then
+                    None
+                else
+                    Some(
+                        EntityResourceInput
+                            { scope = scope
+                              filepath = filepath
+                              logicalpath = logicalpath
+                              filetext = fileTextThunk ()
+                              validate = true }
+                    )
             | ".txt"
             | ".gui"
             | ".gfx"
@@ -226,12 +249,7 @@ module Files =
                         EntityResourceInput
                             { scope = scope
                               filepath = filepath
-                              logicalpath =
-                                FileManagerHelper.ConvertPathToLogicalPath(
-                                    rootedPath,
-                                    expandedRootDirectories,
-                                    scriptFolders
-                                )
+                              logicalpath = logicalpath
                               filetext = fileTextThunk ()
                               validate = true }
                     )
@@ -241,12 +259,7 @@ module Files =
                     FileWithContentResourceInput
                         { scope = scope
                           filepath = filepath
-                          logicalpath =
-                            FileManagerHelper.ConvertPathToLogicalPath(
-                                rootedPath,
-                                expandedRootDirectories,
-                                scriptFolders
-                            )
+                          logicalpath = logicalpath
                           filetext = fileTextThunk ()
                           validate = true }
                 )
@@ -262,12 +275,7 @@ module Files =
                     FileResourceInput
                         { scope = scope
                           filepath = filepath
-                          logicalpath =
-                            FileManagerHelper.ConvertPathToLogicalPath(
-                                rootedPath,
-                                expandedRootDirectories,
-                                scriptFolders
-                            ) }
+                          logicalpath = logicalpath }
                 )
             | ".yml"
             | ".csv" ->
@@ -275,12 +283,7 @@ module Files =
                     FileWithContentResourceInput
                         { scope = scope
                           filepath = filepath
-                          logicalpath =
-                            FileManagerHelper.ConvertPathToLogicalPath(
-                                rootedPath,
-                                expandedRootDirectories,
-                                scriptFolders
-                            )
+                          logicalpath = logicalpath
                           filetext = fileTextThunk ()
                           validate = true }
                 )

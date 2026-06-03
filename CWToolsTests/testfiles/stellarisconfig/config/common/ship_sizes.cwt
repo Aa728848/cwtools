@@ -79,10 +79,8 @@ ship_size = {
 	## cardinality = 0..1
 	pre_communications_name = localisation
 	## cardinality = 0..1
+	## type_prefix_from = graphical_culture
 	entity = <model_entity>
-	## cardinality = 0..1
-	# reference to other ship_sizes + _entity, handled by manual validator
-	entity = scalar
 	## cardinality = 0..1
 	formation_priority = int
 	## cardinality = 0..1

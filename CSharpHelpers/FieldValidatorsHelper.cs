@@ -212,6 +212,25 @@ public static partial class FieldValidatorsHelper
         sb.Insert(0, prefix.Value);
         sb2.Insert(0, prefix.Value);
         isValid = lookup.Contains(sb.AsSpan()) || lookup.Contains(sb2.AsSpan());
+
+        if (
+            !isValid
+            && extension is not null
+            && extension.Value.Equals(".txt", StringComparison.OrdinalIgnoreCase)
+            && prefix.Value.Replace('\\', '/').Equals(
+                "common/inline_scripts/",
+                StringComparison.OrdinalIgnoreCase
+            )
+        )
+        {
+            using var noExtension = ZString.CreateStringBuilder();
+            noExtension.Append(key.AsSpan().Trim('\"'));
+            noExtension.Replace('\\', '/');
+            noExtension.Replace("//", "/");
+            noExtension.Insert(0, prefix.Value);
+            isValid = lookup.Contains(noExtension.AsSpan());
+        }
+
         if (!isValid && generateErrorMessage)
         {
             // Remove prefix, because we don't want to show the prefix in the error message.

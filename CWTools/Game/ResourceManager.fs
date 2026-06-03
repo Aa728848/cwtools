@@ -599,6 +599,12 @@ type ResourceManager<'T when 'T :> ComputedData>
     let inlinePath = "common/inline_scripts/"
     let inlinePathLength = inlinePath.Length
 
+    let normalizeInlineScriptPath (path: string) =
+        if path.EndsWith(".txt", StringComparison.OrdinalIgnoreCase) then
+            path.Substring(0, path.Length - 4)
+        else
+            path
+
     let getOrBuildInlineScriptsMap () =
         match cachedInlineScriptsMap with
         | Some m -> m
@@ -608,7 +614,7 @@ type ResourceManager<'T when 'T :> ComputedData>
                 |> Seq.filter (fun struct (e, _) -> e.overwrite <> Overwrite.Overwritten)
                 |> Seq.map structFst
                 |> Seq.filter (fun e -> e.logicalpath.StartsWith inlinePath)
-                |> Seq.map (fun e -> ((e.logicalpath.Substring inlinePathLength).Replace(".txt", ""), e.rawEntity))
+                |> Seq.map (fun e -> (normalizeInlineScriptPath (e.logicalpath.Substring inlinePathLength), e.rawEntity))
                 |> Map.ofSeq
             cachedInlineScriptsMap <- Some m
             m

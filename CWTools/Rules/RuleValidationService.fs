@@ -242,6 +242,78 @@ type RuleValidationService
 
     let checkQuotes (quoted: bool) (optionRequiredQuotes: bool) = quoted || (not optionRequiredQuotes)
 
+    let dynamicTypePrefixValues (prefixField: string) (clause: IClause) =
+        let inline cleanPrefixValue (value: string) =
+            let value = value.Trim('"')
+
+            if String.IsNullOrWhiteSpace value
+               || String.Equals(value, "yes", StringComparison.OrdinalIgnoreCase)
+               || String.Equals(value, "no", StringComparison.OrdinalIgnoreCase) then
+                None
+            else
+                Some value
+
+        let nodeValues =
+            clause.Nodes
+            |> Seq.filter (fun node -> String.Equals(node.Key, prefixField, StringComparison.OrdinalIgnoreCase))
+            |> Seq.collect (fun node ->
+                seq {
+                    yield! node.LeafValues |> Seq.choose (fun value -> cleanPrefixValue (value.Value.ToRawString()))
+                    yield! node.Leaves |> Seq.choose (fun leaf -> cleanPrefixValue (leaf.Value.ToRawString()))
+                })
+            |> Seq.toArray
+
+        let leafValues =
+            clause.Leaves
+            |> Seq.choose (fun leaf ->
+                if String.Equals(leaf.Key, prefixField, StringComparison.OrdinalIgnoreCase) then
+                    Some(leaf.Value.ToRawString().Trim('"'))
+                else
+                    None)
+            |> Seq.toArray
+
+        let explicitNo =
+            leafValues |> Array.exists (fun value -> String.Equals(value, "no", StringComparison.OrdinalIgnoreCase))
+
+        let explicitLeafPrefixes =
+            leafValues |> Array.choose cleanPrefixValue
+
+        if explicitNo then
+            Seq.empty
+        elif nodeValues.Length > 0 then
+            nodeValues |> Seq.ofArray
+        elif explicitLeafPrefixes.Length > 0 then
+            explicitLeafPrefixes |> Seq.ofArray
+        else
+            match p.typesMap.TryFind prefixField with
+            | Some values -> values.StringValues |> Seq.choose cleanPrefixValue
+            | None -> Seq.empty
+
+    let checkFieldWithDynamicTypePrefix
+        (ctx: RuleContext)
+        (options: Options)
+        (field: NewField)
+        (keyIDs: StringTokens)
+        (leafornode: IKeyPos)
+        (parent: IClause)
+        (severity: Severity)
+        =
+        let direct = FieldValidators.checkField p severity ctx field keyIDs leafornode OK
+
+        match direct, options.typePrefixFrom, field with
+        | OK, _, _ -> OK
+        | Invalid _, Some prefixField, TypeField typeType ->
+            let value = stringManager.GetStringForIDs(keyIDs).Trim('"')
+
+            let prefixedValueExists =
+                dynamicTypePrefixValues prefixField parent
+                |> Seq.exists (fun prefix ->
+                    let candidate = stringManager.InternIdentifierToken($"%s{prefix}_%s{value}")
+                    FieldValidators.checkTypeFieldNE p.typesMap typeType candidate)
+
+            if prefixedValueExists then OK else direct
+        | _ -> direct
+
 
     let rec applyClauseField
         (enforceCardinality: bool)
@@ -313,7 +385,7 @@ type RuleValidationService
                 lazyErrorMerge
                     rs
                     (function
-                    | (LeafRule(l, r), o) -> applyLeafRule ctx o l r leaf
+                    | (LeafRule(l, r), o) -> applyLeafRule startNode ctx o l r leaf
                     | _ -> failwith "Unexpected")
                     createDefault
                     innerErrors
@@ -353,17 +425,23 @@ type RuleValidationService
             let trySelectedAliasRules aliasName selectedAlias =
                 rootRules.Aliases.TryFind aliasName
                 |> Option.bind (fun rules ->
+                    let inheritAliasContextOptions (aliasOptions: Options) ((ruleType, options): NewRule) =
+                        ruleType,
+                        { options with
+                            pushScope = options.pushScope |> Option.orElse aliasOptions.pushScope
+                            replaceScopes = options.replaceScopes |> Option.orElse aliasOptions.replaceScopes }
+
                     let selectedRules =
                         rules
                         |> Array.choose (function
-                            | NodeRule(SpecificField(SpecificValue key), rules), _ when
+                            | NodeRule(SpecificField(SpecificValue key), rules), options when
                                 String.Equals(
                                     stringManager.GetStringForID key.normal,
                                     selectedAlias,
                                     StringComparison.OrdinalIgnoreCase
                                 )
                                 ->
-                                Some rules
+                                Some(rules |> Array.map (inheritAliasContextOptions options))
                             | _ -> None)
                         |> Array.collect id
                         |> Array.filter (isAliasParameterComparisonValueRule >> not)
@@ -684,6 +762,7 @@ type RuleValidationService
                   ))
 
     and applyLeafRule
+        (parent: IClause)
         (ctx: RuleContext)
         (options: Options)
         (leftRule: NewField)
@@ -722,7 +801,8 @@ type RuleValidationService
                               [ inv (ErrorCodes.CustomError "This value is expected to be quoted" Severity.Error) leaf ]
                           ))
                 <&&> (if options.errorIfOnlyMatch.IsSome then
-                          let res = FieldValidators.checkField p severity ctx rightRule leaf.ValueId leaf OK
+                          let res =
+                              checkFieldWithDynamicTypePrefix ctx options rightRule leaf.ValueId leaf parent severity
 
                           if res = OK then
                               inv (ErrorCodes.FromRulesCustomError options.errorIfOnlyMatch.Value severity) leaf
@@ -730,7 +810,7 @@ type RuleValidationService
                           else
                               res
                       else
-                          FieldValidators.checkField p severity ctx rightRule leaf.ValueId leaf OK)))
+                          checkFieldWithDynamicTypePrefix ctx options rightRule leaf.ValueId leaf parent severity)))
         <&&> errors
 
     and applyNodeRule

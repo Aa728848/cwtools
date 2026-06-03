@@ -78,12 +78,23 @@ module STLProcess =
             acc.Replace("$" + param + "$", value)
         ) text
 
+    let private eventTargetName (value: string) =
+        let raw = value.Substring(13)
+        let atIndex = raw.IndexOf('@')
+        let dotIndex = raw.IndexOf('.')
+
+        if atIndex >= 0 && (dotIndex < 0 || dotIndex > atIndex) then
+            raw
+        else if dotIndex >= 0 then
+            raw.Substring(0, dotIndex)
+        else
+            raw
+
     let findAllUsedEventTargetsWithParams (parameters: (string * string) list) (event: Node) =
         let fNode =
             (fun (x: Node) (children: string list) ->
                 let targetFromString (k: string) =
-                    let raw = k.AsSpan().Slice(13).SplitFirst('.').ToString()
-                    substituteParams parameters raw
+                    substituteParams parameters (eventTargetName k)
 
                 let inner (leaf: Leaf) =
                     let value = leaf.Value.ToRawString()
@@ -133,8 +144,7 @@ module STLProcess =
                         leaf.Key == "exists"
                         && value.StartsWith("event_target:", StringComparison.OrdinalIgnoreCase)
                     then
-                        let raw = value.Substring(13).Split('.').[0]
-                        Some(substituteParams parameters raw)
+                        Some(substituteParams parameters (eventTargetName value))
                     else
                         None
 

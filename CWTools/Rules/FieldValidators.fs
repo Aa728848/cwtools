@@ -555,6 +555,9 @@ module internal FieldValidators =
 
         result
 
+    let private fileExistsIgnoringCase (files: FrozenSet<string>) (file: string) =
+        files.Any(fun existing -> existing.Equals(file, System.StringComparison.OrdinalIgnoreCase))
+
     let checkIconField (files: FrozenSet<string>) (folder: string) (ids: StringTokens) leafornode errors =
         let lookup = files.GetAlternateLookup<ReadOnlySpan<char>>()
 
@@ -565,7 +568,7 @@ module internal FieldValidators =
         sb.Append key
         sb.Append ".dds"
 
-        if lookup.Contains(sb.AsSpan()) then
+        if lookup.Contains(sb.AsSpan()) || fileExistsIgnoringCase files (sb.ToString()) then
             errors
         else
             inv (ErrorCodes.MissingFile(sb.ToString())) leafornode <&&&> errors
@@ -580,7 +583,7 @@ module internal FieldValidators =
         sb.Append key
         sb.Append ".dds"
 
-        lookup.Contains(sb.AsSpan())
+        lookup.Contains(sb.AsSpan()) || fileExistsIgnoringCase files (sb.ToString())
 
     let private checkAnyScopesMatch anyScope (scopes: Scope list) (currentScope: Scope) =
         (currentScope = anyScope)

@@ -77,36 +77,44 @@ module Graphics =
         es.AllOfTypeChildren EntityType.GraphicalCulture
         |> List.map (fun c -> c.Key, c.TagText "fallback")
 
+    let getGraphicalCultureRefs (node: Node) =
+        node.Childs "graphical_culture"
+        |> Seq.collect (fun gc -> gc.LeafValues |> Seq.map (fun lv -> lv.Value.ToRawString()))
+        |> List.ofSeq
+
+    let isGraphicalCultureDisabled (node: Node) =
+        node.Leafs "graphical_culture"
+        |> Seq.exists (fun gc ->
+            String.Equals(gc.Value.ToRawString().Trim('"'), "no", StringComparison.OrdinalIgnoreCase))
+
+    let getGraphicalCultureSearchList (allCultures: string list) (node: Node) =
+        if isGraphicalCultureDisabled node then
+            []
+        else
+            match getGraphicalCultureRefs node with
+            | [] -> allCultures
+            | cultures -> cultures
+
+    let validateEntityWithGraphicalCultures
+        (assets: Collections.Set<string>)
+        (cultureFallbacks: (string * string list) list)
+        (allowedCultures: string list)
+        (entity: string)
+        target
+        =
+        if assets.Contains entity then
+            OK
+        elif
+            allowedCultures
+            |> List.exists (fun culture ->
+                validateEntityCulture assets cultureFallbacks entity target culture |> Option.isNone)
+        then
+            OK
+        else
+            Invalid(Guid.NewGuid(), [ inv (ErrorCodes.UndefinedEntity entity) target ])
+
     let valSectionGraphics: STLStructureValidator =
         fun os es ->
-            let shipsizes =
-                os.AllOfTypeChildren EntityType.ShipSizes
-                |> List.map (fun ss ->
-                    ss,
-                    ss.Key,
-                    (ss.Child "graphical_culture"
-                     |> Option.map (fun gc ->
-                         gc.LeafValues |> Seq.map (fun lv -> lv.Value.ToRawString()) |> List.ofSeq)
-                     |> Option.defaultValue []))
-
-            let shipsizesOV =
-                os.AllOfTypeChildren EntityType.ShipSizes |> List.map (fun ss -> ss.Key)
-
-            let shipsizesV =
-                es.AllOfTypeChildren EntityType.ShipSizes
-                |> List.filter (fun ss -> not (ss.Has "entity"))
-                |> List.map (fun ss ->
-                    ss,
-                    ss.Key,
-                    (ss.Child "graphical_culture"
-                     |> Option.map (fun gc ->
-                         gc.LeafValues |> Seq.map (fun lv -> lv.Value.ToRawString()) |> List.ofSeq)
-                     |> Option.defaultValue []))
-
-            let shipsizesEV =
-                es.AllOfTypeChildren EntityType.ShipSizes
-                |> List.filter (fun ss -> (ss.Has "entity"))
-
             let sections = es.AllOfTypeChildren EntityType.SectionTemplates
             let cultures = getGraphicalCultures os
             let cultureMap = cultures |> List.filter (fun (_, f) -> f <> "") |> Map.ofList
@@ -117,6 +125,17 @@ module Graphics =
                     c,
                     Seq.unfold (fun nc -> cultureMap.TryFind nc |> Option.map (fun nf -> nf, nf)) c
                     |> List.ofSeq)
+
+            let allCultures = cultures |> List.map fst
+
+            let shipsizes =
+                os.AllOfTypeChildren EntityType.ShipSizes
+                |> List.map (fun ss -> ss, ss.Key, getGraphicalCultureSearchList allCultures ss)
+
+            let shipsizesV =
+                es.AllOfTypeChildren EntityType.ShipSizes
+                |> List.filter (fun ss -> not (ss.Has "entity"))
+                |> List.map (fun ss -> ss, ss.Key, getGraphicalCultureSearchList allCultures ss)
 
             let assets =
                 os.AllOfTypeChildren EntityType.GfxAsset
@@ -131,27 +150,12 @@ module Graphics =
                     | shipsize, Some entity ->
                         match shipsizes |> List.tryFind (fun (_, n, _) -> n == shipsize) with
                         | None -> OK
-                        | Some(_, _, shipsizeinfo) ->
-                            shipsizeinfo
-                            |> validateEntityCultures assets cultures (s.TagText "entity") entity
-
-            let shipsizeentities =
-                shipsizesOV
-                |> List.fold (fun (s: Collections.Set<string>) n -> s.Add(n + "_entity")) assets
-
-            let ssinner =
-                fun (s: Node) ->
-                    s.Leafs "entity"
-                    <&!&> fun e ->
-                        if shipsizeentities |> Set.contains (e.Value.ToRawString()) then
-                            OK
-                        else
-                            Invalid(Guid.NewGuid(), [ inv (ErrorCodes.UndefinedEntity(e.Value.ToRawString())) e ])
+                        | Some(_, _, shipsizeCultures) ->
+                            validateEntityWithGraphicalCultures assets cultures shipsizeCultures (s.TagText "entity") entity
 
             sections <&!&> inner
             <&&> (shipsizesV
-                  <&!&> (fun (ss, n, c) -> c |> validateEntityCultures assets cultures (n + "_entity") ss))
-            <&&> (shipsizesEV <&!&> ssinner)
+                  <&!&> (fun (ss, n, c) -> validateEntityWithGraphicalCultures assets cultures c (n + "_entity") ss))
 
     let valComponentGraphics: STLStructureValidator =
         fun os es ->

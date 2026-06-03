@@ -839,7 +839,7 @@ type InfoService
                 ctx, (Some o, Some(TypeRef(t, trimPrefixes leaf.Key)), Some(LeafC leaf))
             | _, _ when leaf.Key = "inline_script" || leaf.Key = "script" ->
                 let value = trimPrefixes leaf.ValueText
-                ctx, (Some o, Some(FileRef("common/inline_scripts/" + value + ".txt")), Some(LeafC leaf))
+                ctx, (Some o, Some(FileRef("common/inline_scripts/" + value)), Some(LeafC leaf))
             | _, LeafRule(LocalisationField _, _) -> ctx, (Some o, Some(LocRef(trimPrefixes leaf.Key)), Some(LeafC leaf))
             | _, LeafRule(_, ScopeField _) ->
                 ctx, (Some o, changeScopeInner leaf.ValueText ctx.scopes, Some(LeafC leaf))
