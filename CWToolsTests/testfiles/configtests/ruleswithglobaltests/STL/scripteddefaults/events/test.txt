@@ -13,6 +13,20 @@ country_event = {
         scripted_effect_inline_path_param_validation = {
             dynamic = yes
         }
+        scripted_effect_bracket_param_validation = {
+            bracket_condition = yes
+        }
+        scripted_effect_bracket_param_validation = {
+            negated_condition = no
+        }
+        scripted_effect_bracket_param_validation = yes
+        scripted_effect_bracket_positive_prunes_validation = yes
+        scripted_effect_bracket_negated_prunes_validation = {
+            disabled_condition = yes
+        }
+        scripted_effect_bracket_prefixed_param_validation = {
+            kamikakushi_bonus = no
+        }
     }
 
     trigger = {
@@ -23,5 +37,12 @@ country_event = {
         scripted_trigger_pipe_default_param_validation = {
             dynamic = yes
         }
+        scripted_trigger_bracket_param_validation = {
+            bracket_trigger_condition = yes
+        }
+        scripted_trigger_bracket_param_validation = {
+            negated_trigger_condition = no
+        }
+        scripted_trigger_bracket_param_validation = yes
     }
 }

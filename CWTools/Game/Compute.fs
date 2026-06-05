@@ -68,6 +68,27 @@ module EU4 =
         let pipeIndex = s.IndexOf('|')
         if pipeIndex >= 0 then s.Substring(0, pipeIndex) else s
 
+    let private bracketParameterName (s: string) =
+        let text = s.TrimStart()
+
+        if text.StartsWith("[[") then
+            let inner = text.Substring(2).TrimStart()
+            let inner =
+                if inner.StartsWith("!") then inner.Substring(1).TrimStart()
+                else inner
+
+            let endIndex = inner.IndexOfAny([| ']'; ' '; '\t'; '\r'; '\n' |])
+            let paramName =
+                if endIndex >= 0 then inner.Substring(0, endIndex).Trim()
+                else inner.Trim()
+
+            if paramName.Length > 0 && (System.Char.IsLetterOrDigit(paramName.[0]) || paramName.[0] = '_') then
+                Some paramName
+            else
+                None
+        else
+            None
+
     let getScriptedEffectParams (node: Node) =
         let getDollarText (s: string) acc =
             s.Split('$')
@@ -78,17 +99,16 @@ module EU4 =
                 else acc) acc
         // 提取 [[PARAM] 和 [[!PARAM] 条件块中的参数名
         let getBracketText (s: string) acc =
-            if s.StartsWith("[[") then
-                let inner = s.Substring(2).TrimEnd([| ']'; ' ' |])
-                let paramName = if inner.StartsWith("!") then inner.Substring(1).Trim() else inner.Trim()
-                if paramName.Length > 0 && System.Char.IsLetterOrDigit(paramName.[0]) then
-                    paramName :: acc
-                else acc
-            else acc
+            match bracketParameterName s with
+            | Some paramName -> paramName :: acc
+            | None -> acc
         let extractText (s: string) acc = getDollarText s (getBracketText s acc)
         let fNode =
             (fun (x: Node) acc ->
-                let nodeRes = extractText x.Key acc
+                let nodeRes =
+                    let acc = extractText x.Key acc
+                    let acc = x.KeyPrefix |> Option.map (fun prefix -> extractText prefix acc) |> Option.defaultValue acc
+                    x.ValuePrefix |> Option.map (fun prefix -> extractText prefix acc) |> Option.defaultValue acc
 
                 let leafRes =
                     x.Leaves
@@ -291,6 +311,27 @@ module Jomini =
         let pipeIndex = s.IndexOf('|')
         if pipeIndex >= 0 then s.Substring(0, pipeIndex) else s
 
+    let private bracketParameterName (s: string) =
+        let text = s.TrimStart()
+
+        if text.StartsWith("[[") then
+            let inner = text.Substring(2).TrimStart()
+            let inner =
+                if inner.StartsWith("!") then inner.Substring(1).TrimStart()
+                else inner
+
+            let endIndex = inner.IndexOfAny([| ']'; ' '; '\t'; '\r'; '\n' |])
+            let paramName =
+                if endIndex >= 0 then inner.Substring(0, endIndex).Trim()
+                else inner.Trim()
+
+            if paramName.Length > 0 && (System.Char.IsLetterOrDigit(paramName.[0]) || paramName.[0] = '_') then
+                Some paramName
+            else
+                None
+        else
+            None
+
     let getScriptedEffectParams (node: Node) =
         let getDollarText (s: string) acc =
             s.Split('$')
@@ -301,17 +342,16 @@ module Jomini =
                 else acc) acc
         // 提取 [[PARAM] 和 [[!PARAM] 条件块中的参数名
         let getBracketText (s: string) acc =
-            if s.StartsWith("[[") then
-                let inner = s.Substring(2).TrimEnd([| ']'; ' ' |])
-                let paramName = if inner.StartsWith("!") then inner.Substring(1).Trim() else inner.Trim()
-                if paramName.Length > 0 && System.Char.IsLetterOrDigit(paramName.[0]) then
-                    paramName :: acc
-                else acc
-            else acc
+            match bracketParameterName s with
+            | Some paramName -> paramName :: acc
+            | None -> acc
         let extractText (s: string) acc = getDollarText s (getBracketText s acc)
         let fNode =
             (fun (x: Node) acc ->
-                let nodeRes = extractText x.Key acc
+                let nodeRes =
+                    let acc = extractText x.Key acc
+                    let acc = x.KeyPrefix |> Option.map (fun prefix -> extractText prefix acc) |> Option.defaultValue acc
+                    x.ValuePrefix |> Option.map (fun prefix -> extractText prefix acc) |> Option.defaultValue acc
 
                 let leafRes =
                     x.Leaves

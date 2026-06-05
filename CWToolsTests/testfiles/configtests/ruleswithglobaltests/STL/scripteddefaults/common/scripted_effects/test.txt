@@ -11,3 +11,27 @@ scripted_effect_inline_path_param_validation = {
         script = events/scripted_effect_inline_dynamic_$dynamic|no$
     }
 }
+
+scripted_effect_bracket_param_validation = {
+    [[bracket_condition]
+        set_country_flag = yes
+    ]
+    [[!negated_condition]
+        set_country_flag = yes
+    ]
+}
+
+scripted_effect_bracket_positive_prunes_validation = {
+    [[inactive_condition] inactive_positive_effect = { } ]
+    set_country_flag = yes
+}
+
+scripted_effect_bracket_negated_prunes_validation = {
+    [[!disabled_condition] inactive_negated_effect = { } ]
+    set_country_flag = yes
+}
+
+scripted_effect_bracket_prefixed_param_validation = {
+    [[kamikakushi_bonus] inactive_prefixed_effect = { } ]
+    set_country_flag = yes
+}

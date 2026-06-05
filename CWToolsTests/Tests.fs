@@ -1090,6 +1090,61 @@ let inlineScriptCompletionRegressionTests =
               Expect.isFalse (inlineDefaultLabels |> List.contains "expected_leaf") "Inline script callers should not match path defaults with pipe syntax" ]
 
 [<Tests>]
+let scriptedBracketParameterRegressionTests =
+    let cursorAtMarker (text: string) =
+        let marker = text.IndexOf('|')
+        Expect.isGreaterThan marker -1 "test cursor marker was not found"
+        let before = text.Substring(0, marker)
+        let line = (before |> Seq.filter ((=) '\n') |> Seq.length) + 1
+        let lastLineBreak = before.LastIndexOf('\n')
+        let column = if lastLineBreak < 0 then marker else marker - lastLineBreak - 1
+        text.Remove(marker, 1), mkPos line column
+
+    let label =
+        function
+        | Simple(label, _, _)
+        | Detailed(label, _, _, _)
+        | Snippet(label, _, _, _, _) -> label
+
+    testList
+        "scripted bracket parameter regression"
+        [ testWithCapturedLogs "bracket params feed call-site completion" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripteddefaults"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let filename = Path.GetFullPath(Path.Combine(folder, "events", "test.txt"))
+              let filetext, pos =
+                  cursorAtMarker
+                      """
+namespace = test
+
+country_event = {
+    is_triggered_only = yes
+    option = {
+        scripted_effect_bracket_param_validation = {
+            |
+        }
+    }
+}
+"""
+
+              let labels = stl.Complete pos filename filetext |> List.map label
+
+              Expect.contains labels "bracket_condition" "Positive bracket condition should complete as a scripted parameter"
+              Expect.contains labels "negated_condition" "Negated bracket condition should complete as a scripted parameter"
+              Expect.contains labels "kamikakushi_bonus" "Prefixed bracket condition should complete as a scripted parameter" ]
+
+[<Tests>]
 let irSubfolderTests =
     testList "validation ir" (testSubdirectories 0 true "./testfiles/configtests/rulestests/IR" |> List.ofSeq)
 

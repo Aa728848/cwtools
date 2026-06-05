@@ -24,6 +24,104 @@ module CommonValidation =
     let private normalizeParameterKey (key: string) =
         key.Trim().Trim('$') |> parameterName
 
+    let private bracketParameterName (text: string) =
+        let text = text.TrimStart()
+
+        if text.StartsWith("[[") then
+            let inner = text.Substring(2).TrimStart()
+            let negated = inner.StartsWith("!")
+            let inner = if negated then inner.Substring(1).TrimStart() else inner
+            let endIndex = inner.IndexOfAny([| ']'; ' '; '\t'; '\r'; '\n' |])
+            let paramName =
+                if endIndex >= 0 then inner.Substring(0, endIndex).Trim()
+                else inner.Trim()
+
+            if paramName.Length > 0 && (System.Char.IsLetterOrDigit(paramName.[0]) || paramName.[0] = '_') then
+                Some(paramName, negated)
+            else
+                None
+        else
+            None
+
+    let private applyBracketConditionals (parameters: (string * string) list) (children: Child array) =
+        let values =
+            parameters
+            |> Seq.choose (fun (key, value) ->
+                let name = normalizeParameterKey key
+                if String.IsNullOrWhiteSpace name then None else Some(name, value))
+            |> Map.ofSeq
+
+        let parameterAllowsBlock name negated =
+            let value =
+                values
+                |> Map.tryFind name
+                |> Option.map (fun v -> v.Trim())
+
+            let presentAndEnabled =
+                match value with
+                | Some v when not (String.Equals(v, "no", StringComparison.OrdinalIgnoreCase)) -> true
+                | _ -> false
+
+            if negated then not presentAndEnabled else presentAndEnabled
+
+        let isBracketClose =
+            function
+            | LeafValueC lv -> lv.ValueText.Trim() = "]"
+            | _ -> false
+
+        let rec processChildren (items: Child array) =
+            let rec findClose depth index =
+                if index >= items.Length then
+                    None
+                else
+                    match items.[index] with
+                    | LeafValueC lv when bracketParameterName lv.ValueText |> Option.isSome ->
+                        findClose (depth + 1) (index + 1)
+                    | child when isBracketClose child ->
+                        if depth = 1 then Some index else findClose (depth - 1) (index + 1)
+                    | _ ->
+                        findClose depth (index + 1)
+
+            let rec loop index acc =
+                if index >= items.Length then
+                    acc |> List.rev |> Array.ofList
+                else
+                    match items.[index] with
+                    | LeafValueC lv ->
+                        match bracketParameterName lv.ValueText with
+                        | Some(name, negated) ->
+                            match findClose 1 (index + 1) with
+                            | Some closeIndex ->
+                                let block =
+                                    items.[index + 1 .. closeIndex - 1]
+                                    |> processChildren
+                                    |> Array.toList
+
+                                if parameterAllowsBlock name negated then
+                                    loop (closeIndex + 1) ((block |> List.rev) @ acc)
+                                else
+                                    loop (closeIndex + 1) acc
+                            | None ->
+                                loop (index + 1) (items.[index] :: acc)
+                        | None ->
+                            loop (index + 1) (items.[index] :: acc)
+                    | NodeC node ->
+                        match node.KeyPrefix |> Option.bind bracketParameterName with
+                        | Some(name, negated) ->
+                            if parameterAllowsBlock name negated then
+                                node.KeyPrefix <- None
+                                loop (index + 1) (NodeC node :: acc)
+                            else
+                                loop (index + 1) acc
+                        | None ->
+                            loop (index + 1) (items.[index] :: acc)
+                    | _ ->
+                        loop (index + 1) (items.[index] :: acc)
+
+            loop 0 []
+
+        processChildren children
+
     let private replaceScriptedParameters (parameters: (string * string) seq) (text: string) =
         let values =
             parameters
@@ -265,8 +363,9 @@ module CommonValidation =
                 let stringReplace (seParams: (string * string) list) (key: string) =
                     replaceScriptedParameters seParams key
 
-                let rec foldOverNode stringReplacer (node: Node) =
+                let rec foldOverNode parameters stringReplacer (node: Node) =
                     // eprintfn "fov %A" node.Key
+                    node.AllArray <- applyBracketConditionals parameters node.AllArray
                     node.Key <- stringReplacer node.Key
 
                     node.Leaves
@@ -307,7 +406,7 @@ module CommonValidation =
                                 )
                         | _ -> ()))
 
-                    node.Nodes |> Seq.iter (foldOverNode stringReplacer)
+                    node.Nodes |> Seq.iter (foldOverNode parameters stringReplacer)
 
                 let validateSESpecific
                     (
@@ -322,7 +421,8 @@ module CommonValidation =
                     let rootNode = Node("root")
                     rootNode.AllArray <- [| NodeC newNode |]
 
-                    foldOverNode (stringReplace (seParams |> Option.defaultValue [])) newNode
+                    let seParams = seParams |> Option.defaultValue []
+                    foldOverNode seParams (stringReplace seParams) newNode
                     // eprintfn "%A %A" (CKPrinter.api.prettyPrintStatements newNode.ToRaw) (seParams)
                     // Validate variables after parameter substitution
                     let varValidation = validateVariablesInExpandedNode logicalpath newNode callSite (lu.scriptedVariables |> List.map fst)
