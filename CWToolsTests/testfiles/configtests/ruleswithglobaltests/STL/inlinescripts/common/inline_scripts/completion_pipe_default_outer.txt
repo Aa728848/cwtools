@@ -1,0 +1,3 @@
+container = {
+    child = { inline_script = { script = completion_pipe_default_$name|no$ } }
+}

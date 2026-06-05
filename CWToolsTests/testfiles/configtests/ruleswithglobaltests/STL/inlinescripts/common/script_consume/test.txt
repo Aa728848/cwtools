@@ -41,6 +41,9 @@ test = {
         script = completion_param_outer
         name = common
     }
+    inline_script = {
+        script = completion_pipe_default_outer
+    }
     ##error
     ##error
     ##inline_script = {

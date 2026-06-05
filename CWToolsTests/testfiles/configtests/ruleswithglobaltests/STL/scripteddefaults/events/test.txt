@@ -10,6 +10,9 @@ country_event = {
         scripted_effect_pipe_default_param_validation = {
             dynamic = yes
         }
+        scripted_effect_inline_path_param_validation = {
+            dynamic = yes
+        }
     }
 
     trigger = {

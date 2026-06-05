@@ -1071,7 +1071,23 @@ let inlineScriptCompletionRegressionTests =
                       | Snippet(label, _, _, _, _) -> label)
 
               Expect.contains parameterizedLabels "expected_leaf" "Parameterized nested inline completion should use the concrete child block"
-              Expect.isFalse (parameterizedLabels |> List.contains "root_only") "Parameterized nested inline completion should not fall back to root fields" ]
+              Expect.isFalse (parameterizedLabels |> List.contains "root_only") "Parameterized nested inline completion should not fall back to root fields"
+
+              let inlineDefaultFilename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "inline_scripts", "completion_pipe_default_no.txt")
+                  )
+
+              let inlineDefaultFiletext = File.ReadAllText inlineDefaultFilename
+
+              let inlineDefaultLabels =
+                  stl.Complete (mkPos 1 4) inlineDefaultFilename inlineDefaultFiletext
+                  |> List.map (function
+                      | Simple(label, _, _)
+                      | Detailed(label, _, _, _)
+                      | Snippet(label, _, _, _, _) -> label)
+
+              Expect.isFalse (inlineDefaultLabels |> List.contains "expected_leaf") "Inline script callers should not match path defaults with pipe syntax" ]
 
 [<Tests>]
 let irSubfolderTests =

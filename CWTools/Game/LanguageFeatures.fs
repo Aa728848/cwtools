@@ -194,6 +194,18 @@ module LanguageFeatures =
             filepath.Contains("common/inline_scripts", StringComparison.OrdinalIgnoreCase) ||
             filepath.Contains("common\\inline_scripts", StringComparison.OrdinalIgnoreCase)
 
+        let inlinePathDefaultPattern =
+            System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*\|[^$]*\$")
+
+        let inlinePathParameterPattern allowPathDefaults =
+            if allowPathDefaults then
+                System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*(?:\|[^$]*)?\$")
+            else
+                System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*\$")
+
+        let canMatchParameterizedInlinePath allowPathDefaults (path: string) =
+            allowPathDefaults || not (inlinePathDefaultPattern.IsMatch path)
+
         // 特殊处理：@[ expression ] 内部的 scripted_variable 补全
         let tryExpressionCompletion () =
             if currentLineIdx >= 0 && currentLineIdx < split.Length then
@@ -449,7 +461,10 @@ module LanguageFeatures =
                                 let hasParamInPath = scriptName.Contains("$")
 
                                 let scriptParams =
-                                    if hasParamInPath then
+                                    if hasParamInPath && not (canMatchParameterizedInlinePath (not isInlineScriptFile) scriptName) then
+                                        log "tryInlineScriptCompletion: inline_script path default is not valid inside inline_script files"
+                                        []
+                                    elif hasParamInPath then
                                         // Path contains parameters like "kuat_weapon_event/$INLINE$"
                                         // Extract the known prefix before the first $
                                         let dollarIdx = scriptName.IndexOf('$')
@@ -787,7 +802,7 @@ module LanguageFeatures =
                         //   2. 参数化路径匹配：将 script 行中的 $PARAM$ 替换为正则通配符后匹配
                         //      例如 script = components/kuat_template_tech_overwrite_$kuat_tech_overwrite$
                         //      匹配 → components/kuat_template_tech_overwrite_yes
-                        let fileContainsInlineRef (targetScriptName: string) (targetFileName: string) (fileContent: string) =
+                        let fileContainsInlineRef allowPathDefaults (targetScriptName: string) (targetFileName: string) (fileContent: string) =
                             let normTarget = targetScriptName.Replace('\\', '/')
                             // 1. 精确匹配
                             if fileContent.Contains(normTarget, StringComparison.OrdinalIgnoreCase) ||
@@ -798,13 +813,13 @@ module LanguageFeatures =
                             else
                                 // 2. 参数化路径匹配：提取所有 script = xxx 行，将 $..$ 替换为正则通配符后匹配
                                 let scriptLinePattern = System.Text.RegularExpressions.Regex(@"script\s*=\s*([^\s}]+)")
-                                let paramPattern = System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*(?:\|[^$]*)?\$")
+                                let paramPattern = inlinePathParameterPattern allowPathDefaults
                                 let matches = scriptLinePattern.Matches(fileContent)
                                 matches
                                 |> Seq.cast<System.Text.RegularExpressions.Match>
                                 |> Seq.exists (fun m ->
                                     let callPath = m.Groups.[1].Value.Trim()
-                                    if callPath.Contains("$") then
+                                    if callPath.Contains("$") && canMatchParameterizedInlinePath allowPathDefaults callPath then
                                         // 将 $PARAM$ 替换为 .+ 正则通配符
                                         let regexStr = paramPattern.Replace(callPath, ".+").Replace('\\', '/')
                                         try
@@ -841,7 +856,8 @@ module LanguageFeatures =
                             |> Seq.tryPick (fun struct (e, _) ->
                                 try
                                     let fileContent = System.IO.File.ReadAllText(e.filepath)
-                                    if fileContainsInlineRef targetName targetFileName fileContent then Some e else None
+                                    let allowPathDefaults = not (isInlineScriptEntity e)
+                                    if fileContainsInlineRef allowPathDefaults targetName targetFileName fileContent then Some e else None
                                 with _ -> None)
                         
                         // 递归查找根调用者（非 inline_script 的调用者）
@@ -919,13 +935,13 @@ module LanguageFeatures =
                                     |> Seq.toList
                                 with _ -> []
 
-                            let paramPattern = System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*(?:\|[^$]*)?\$")
                             let scriptLinePattern = System.Text.RegularExpressions.Regex(@"script\s*=\s*([^\s}]+)")
 
-                            let findScriptLine (fileContent: string) (targetScriptFileName: string) (targetScriptName: string) =
+                            let findScriptLine allowPathDefaults (fileContent: string) (targetScriptFileName: string) (targetScriptName: string) =
                                 let lines = fileContent.Split('\n')
                                 let normName = targetScriptName.Replace('\\', '/')
                                 let mutable found = -1
+                                let paramPattern = inlinePathParameterPattern allowPathDefaults
 
                                 for i = 0 to lines.Length - 1 do
                                     if found = -1 then
@@ -938,19 +954,20 @@ module LanguageFeatures =
 
                                             if m.Success && m.Groups.[1].Value.Contains("$") then
                                                 let callPath = m.Groups.[1].Value.Trim()
-                                                let regexStr = paramPattern.Replace(callPath, ".+").Replace('\\', '/')
+                                                if canMatchParameterizedInlinePath allowPathDefaults callPath then
+                                                    let regexStr = paramPattern.Replace(callPath, ".+").Replace('\\', '/')
 
-                                                try
-                                                    let regex =
-                                                        System.Text.RegularExpressions.Regex(
-                                                            "^" + System.Text.RegularExpressions.Regex.Escape(regexStr).Replace(@"\.\+", ".+") + "$",
-                                                            System.Text.RegularExpressions.RegexOptions.IgnoreCase
-                                                        )
+                                                    try
+                                                        let regex =
+                                                            System.Text.RegularExpressions.Regex(
+                                                                "^" + System.Text.RegularExpressions.Regex.Escape(regexStr).Replace(@"\.\+", ".+") + "$",
+                                                                System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                                                            )
 
-                                                    if regex.IsMatch(normName) then
-                                                        found <- i
-                                                with _ ->
-                                                    ()
+                                                        if regex.IsMatch(normName) then
+                                                            found <- i
+                                                    with _ ->
+                                                        ()
 
                                 found
 
@@ -961,7 +978,7 @@ module LanguageFeatures =
                                         try
                                             let content = System.IO.File.ReadAllText(e.filepath)
 
-                                            if fileContainsInlineRef scriptName scriptFileName content then
+                                            if fileContainsInlineRef false scriptName scriptFileName content then
                                                 Some e
                                             else
                                                 None
@@ -984,7 +1001,7 @@ module LanguageFeatures =
                                         let callerFileContent = System.IO.File.ReadAllText(callerEntity.filepath)
                                         let callerLines = callerFileContent.Split('\n')
                                         let inlineScriptLine =
-                                            let directLine = findScriptLine callerFileContent scriptFileName scriptName
+                                            let directLine = findScriptLine true callerFileContent scriptFileName scriptName
 
                                             if directLine >= 0 then
                                                 directLine
@@ -995,7 +1012,7 @@ module LanguageFeatures =
                                                     let intermediateFileName =
                                                         intermediateScriptName.Split([| '/'; '\\' |]) |> Array.last
 
-                                                    findScriptLine callerFileContent intermediateFileName intermediateScriptName)
+                                                    findScriptLine true callerFileContent intermediateFileName intermediateScriptName)
                                                 |> Option.defaultValue -1
 
                                         if inlineScriptLine >= 0 then
@@ -1022,7 +1039,7 @@ module LanguageFeatures =
                                     let callerRulePath =
                                         try
                                             let callerFileContent = System.IO.File.ReadAllText(callerEntity.filepath)
-                                            let directLine = findScriptLine callerFileContent scriptFileName scriptName
+                                            let directLine = findScriptLine true callerFileContent scriptFileName scriptName
                                             if directLine >= 0 then
                                                 // Direct reference found in root caller
                                                 let callerLines = callerFileContent.Split('\n')
@@ -1044,7 +1061,7 @@ module LanguageFeatures =
                                                     let intermediateFileName =
                                                         intermediateScriptName.Split([| '/'; '\\' |]) |> Array.last
                                                     let rootToIntermediatePath =
-                                                        let rootLine = findScriptLine callerFileContent intermediateFileName intermediateScriptName
+                                                        let rootLine = findScriptLine true callerFileContent intermediateFileName intermediateScriptName
                                                         if rootLine >= 0 then
                                                             let callerLines = callerFileContent.Split('\n')
                                                             let lineText = callerLines.[rootLine].TrimEnd('\r')
@@ -1054,7 +1071,7 @@ module LanguageFeatures =
                                                         else []
                                                     // 2. Find intermediate's path to target inline_script
                                                     let intermediateContent = System.IO.File.ReadAllText(directCaller.filepath)
-                                                    let targetLine = findScriptLine intermediateContent scriptFileName scriptName
+                                                    let targetLine = findScriptLine false intermediateContent scriptFileName scriptName
                                                     let intermediateToTargetPath =
                                                         if targetLine >= 0 then
                                                             let intermediateLines = intermediateContent.Split('\n')

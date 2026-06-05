@@ -608,6 +608,12 @@ type ResourceManager<'T when 'T :> ComputedData>
     let inlineParameterPattern =
         System.Text.RegularExpressions.Regex(@"\$([^$|]+)(?:\|([^$]*))?\$", System.Text.RegularExpressions.RegexOptions.Compiled)
 
+    let inlinePathDefaultPattern =
+        System.Text.RegularExpressions.Regex(@"\$[^$|]+\|[^$]*\$", System.Text.RegularExpressions.RegexOptions.Compiled)
+
+    let inlineSimpleParameterPattern =
+        System.Text.RegularExpressions.Regex(@"\$([^$|]+)\$", System.Text.RegularExpressions.RegexOptions.Compiled)
+
     let inlineParameterName (text: string) =
         let pipeIndex = text.IndexOf('|')
         if pipeIndex >= 0 then text.Substring(0, pipeIndex) else text
@@ -630,6 +636,23 @@ type ResourceManager<'T when 'T :> ComputedData>
                 match values |> Map.tryFind name with
                 | Some value -> value
                 | None when m.Groups.[2].Success -> m.Groups.[2].Value
+                | None -> m.Value)
+        )
+
+    let replaceInlineParametersWithoutDefaults (parameters: (string * string) seq) (text: string) =
+        let values =
+            parameters
+            |> Seq.choose (fun (key, value) ->
+                let name = normalizeInlineParameterKey key
+                if String.IsNullOrWhiteSpace name then None else Some(name, value))
+            |> Map.ofSeq
+
+        inlineSimpleParameterPattern.Replace(
+            text,
+            System.Text.RegularExpressions.MatchEvaluator(fun m ->
+                let name = m.Groups.[1].Value
+                match values |> Map.tryFind name with
+                | Some value -> value
                 | None -> m.Value)
         )
 
@@ -668,6 +691,7 @@ type ResourceManager<'T when 'T :> ComputedData>
 
                 // Check if scriptName contains parameter patterns like $RARITY$
                 let hasParams = normalizedName.Contains("$")
+                let hasPathDefault = inlinePathDefaultPattern.IsMatch normalizedName
 
                 // 性能优化：使用缓存的正则表达式，避免重复编译
                 let pattern =
@@ -693,13 +717,15 @@ type ResourceManager<'T when 'T :> ComputedData>
                     if normalizedKey.EndsWith("/" + normalizedName) || normalizedName.EndsWith("/" + normalizedKey) then
                         Some value
                     // Wildcard match for parameterized script names
-                    elif hasParams && pattern.IsMatch(normalizedKey) then
+                    elif hasParams && not hasPathDefault && pattern.IsMatch(normalizedKey) then
                         Some value
                     else
                         None)
 
         let keyId = StringResource.stringManager.InternIdentifierToken "inline_script"
         let keyIdLower = keyId.lower
+        let scriptKeyId = StringResource.stringManager.InternIdentifierToken "script"
+        let scriptKeyIdLower = scriptKeyId.lower
 
         // 性能优化：快速判断 AST 是否包含 inline_script 引用（可提前退出，比 foldNode7 快得多）
         let rec containsInlineScriptRef (node: Node) =
@@ -764,34 +790,44 @@ type ResourceManager<'T when 'T :> ComputedData>
                         let stringReplace (isParams: (string * string) seq) (key: string) =
                             replaceInlineParameters isParams key
 
-                        let rec foldOverNode stringReplacer (node: Node) =
+                        let stringReplaceWithoutDefaults (isParams: (string * string) seq) (key: string) =
+                            replaceInlineParametersWithoutDefaults isParams key
+
+                        let rec foldOverNode stringReplacer inlineScriptPathReplacer (node: Node) =
                             node.Key <- stringReplacer node.Key
 
-                            let stringTokenReplace (token: StringTokens) =
-                                let res = stringReplacer (token.GetString())
+                            let stringTokenReplaceWith replacer (token: StringTokens) =
+                                let res = replacer (token.GetString())
                                 StringResource.stringManager.InternIdentifierToken res
 
-                            let replaceValue (v: Value) =
+                            let replaceValueWith replacer (v: Value) =
                                 match v with
-                                | Value.String s -> String(stringTokenReplace s)
-                                | Value.QString s -> QString(stringTokenReplace s)
+                                | Value.String s -> String(stringTokenReplaceWith replacer s)
+                                | Value.QString s -> QString(stringTokenReplaceWith replacer s)
                                 | Value.Bool _ | Value.Int _ | Value.Float _ ->
                                     // For non-string values, convert to string, attempt replacement,
                                     // then re-parse if the replacement changed anything.
                                     // This handles cases like script paths containing $PARAM$
                                     // that were parsed as identifiers.
                                     let raw = v.ToRawString()
-                                    let replaced = stringReplacer raw
+                                    let replaced = replacer raw
                                     if raw <> replaced then
                                         String(StringResource.stringManager.InternIdentifierToken replaced)
                                     else
                                         v
                                 | _ -> v
 
+                            let replaceValue = replaceValueWith stringReplacer
+
                             node.Leaves
                             |> Seq.iter (fun (l: Leaf) ->
                                 l.Key <- stringReplacer l.Key
-                                l.Value <- replaceValue l.Value)
+                                let valueReplacer =
+                                    if l.KeyId.lower = keyIdLower || (node.KeyId.lower = keyIdLower && l.KeyId.lower = scriptKeyIdLower) then
+                                        inlineScriptPathReplacer
+                                    else
+                                        stringReplacer
+                                l.Value <- replaceValueWith valueReplacer l.Value)
 
                             // After replacing LeafValues, split any unquoted values that contain spaces
                             // into multiple LeafValues. This handles parameter expansion like
@@ -820,7 +856,7 @@ type ResourceManager<'T when 'T :> ComputedData>
                                     | _ -> [| child |])
                             node.AllArray <- expandedLeafValues
 
-                            node.Nodes |> Seq.iter (foldOverNode stringReplacer)
+                            node.Nodes |> Seq.iter (foldOverNode stringReplacer inlineScriptPathReplacer)
 
 
                         if
@@ -840,7 +876,7 @@ type ResourceManager<'T when 'T :> ComputedData>
                             match tryFindInlineScript (stringReplace values scriptName) with
                             | Some scriptNode ->
                                 let newScriptNode = STLProcess.cloneNode scriptNode
-                                foldOverNode (stringReplace values) newScriptNode
+                                foldOverNode (stringReplace values) (stringReplaceWithoutDefaults values) newScriptNode
 
                                 newScriptNode.AllArray
                                 |> Seq.map (fun x ->

@@ -5,3 +5,9 @@ scripted_effect_default_param_validation = {
 scripted_effect_pipe_default_param_validation = {
     set_country_flag = $dynamic|yes|no$
 }
+
+scripted_effect_inline_path_param_validation = {
+    inline_script = {
+        script = events/scripted_effect_inline_dynamic_$dynamic|no$
+    }
+}

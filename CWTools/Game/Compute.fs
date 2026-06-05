@@ -126,7 +126,7 @@ module EU4 =
             (e.logicalpath.StartsWith("common/scripted_effects", StringComparison.OrdinalIgnoreCase)
              || e.logicalpath.StartsWith("common/scripted_triggers", StringComparison.OrdinalIgnoreCase))
         then
-            getScriptedEffectParams e.entity
+            getScriptedEffectParams e.rawEntity
         else
             []
 
@@ -349,7 +349,7 @@ module Jomini =
             (e.logicalpath.StartsWith("common/scripted_effects", StringComparison.OrdinalIgnoreCase)
              || e.logicalpath.StartsWith("common/scripted_triggers", StringComparison.OrdinalIgnoreCase))
         then
-            getScriptedEffectParams e.entity
+            getScriptedEffectParams e.rawEntity
         else
             []
 
@@ -357,7 +357,7 @@ module Jomini =
         if
             (e.logicalpath.StartsWith("common/script_values", StringComparison.OrdinalIgnoreCase))
         then
-            getScriptValueParams e.entity
+            getScriptValueParams e.rawEntity
         else
             []
 
