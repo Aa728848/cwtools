@@ -1,0 +1,24 @@
+namespace = test
+
+country_event = {
+    is_triggered_only = yes
+    option = {
+        scripted_effect_default_param_validation = {
+            dynamic = yes
+        }
+        scripted_effect_default_param_validation = yes
+        scripted_effect_pipe_default_param_validation = {
+            dynamic = yes
+        }
+    }
+
+    trigger = {
+        scripted_trigger_default_param_validation = {
+            dynamic = yes
+        }
+        scripted_trigger_default_param_validation = yes
+        scripted_trigger_pipe_default_param_validation = {
+            dynamic = yes
+        }
+    }
+}

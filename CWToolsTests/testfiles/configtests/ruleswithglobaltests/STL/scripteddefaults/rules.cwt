@@ -1,0 +1,39 @@
+types = {
+    type[event] = {
+        path = "game/events"
+
+        subtype[country] = {
+        }
+    }
+    type[scripted_effect] = {
+        path = "game/common/scripted_effects"
+    }
+    type[scripted_trigger] = {
+        path = "game/common/scripted_triggers"
+    }
+}
+
+alias[effect:set_country_flag] = bool
+alias[trigger:has_country_flag] = bool
+
+alias[effect:<scripted_effect>] = bool
+alias[effect:<scripted_effect>] = {
+    enum[scripted_effect_params] = scalar
+    enum[scripted_effect_params] = scope_field
+}
+
+alias[trigger:<scripted_trigger>] = bool
+alias[trigger:<scripted_trigger>] = {
+    enum[scripted_effect_params] = scalar
+    enum[scripted_effect_params] = scope_field
+}
+
+event = {
+    is_triggered_only = yes
+    option = {
+        alias_name[effect] = alias_match_left[effect]
+    }
+    trigger = {
+        alias_name[trigger] = alias_match_left[trigger]
+    }
+}

@@ -1,0 +1,7 @@
+scripted_effect_default_param_validation = {
+    set_country_flag = $dynamic|no$
+}
+
+scripted_effect_pipe_default_param_validation = {
+    set_country_flag = $dynamic|yes|no$
+}

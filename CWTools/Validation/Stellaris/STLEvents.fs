@@ -100,10 +100,33 @@ module STLEventValidation =
         directCalls @ projectTargets
 
     /// Substitute parameters in a string. Parameters are in the form $PARAM$ or $PARAM|default$
+    let private parameterPattern =
+        System.Text.RegularExpressions.Regex(@"\$([^$|]+)(?:\|([^$]*))?\$", System.Text.RegularExpressions.RegexOptions.Compiled)
+
+    let private parameterName (text: string) =
+        let pipeIndex = text.IndexOf('|')
+        if pipeIndex >= 0 then text.Substring(0, pipeIndex) else text
+
+    let private normalizeParameterKey (key: string) =
+        key.Trim().Trim('$') |> parameterName
+
     let substituteParams (paramList: (string * string) list) (text: string) : string =
-        paramList |> List.fold (fun (acc: string) ((param: string), (value: string)) ->
-            acc.Replace("$" + param + "$", value)
-        ) text
+        let values =
+            paramList
+            |> List.choose (fun (param, value) ->
+                let name = normalizeParameterKey param
+                if String.IsNullOrWhiteSpace name then None else Some(name, value))
+            |> Map.ofList
+
+        parameterPattern.Replace(
+            text,
+            System.Text.RegularExpressions.MatchEvaluator(fun m ->
+                let name = m.Groups.[1].Value
+                match values |> Map.tryFind name with
+                | Some value -> value
+                | None when m.Groups.[2].Success -> m.Groups.[2].Value
+                | None -> m.Value)
+        )
 
     let private eventTargetName (value: string) =
         let raw = value.Substring(13)

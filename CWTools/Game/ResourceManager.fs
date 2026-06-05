@@ -605,6 +605,34 @@ type ResourceManager<'T when 'T :> ComputedData>
         else
             path
 
+    let inlineParameterPattern =
+        System.Text.RegularExpressions.Regex(@"\$([^$|]+)(?:\|([^$]*))?\$", System.Text.RegularExpressions.RegexOptions.Compiled)
+
+    let inlineParameterName (text: string) =
+        let pipeIndex = text.IndexOf('|')
+        if pipeIndex >= 0 then text.Substring(0, pipeIndex) else text
+
+    let normalizeInlineParameterKey (key: string) =
+        key.Trim().Trim('$') |> inlineParameterName
+
+    let replaceInlineParameters (parameters: (string * string) seq) (text: string) =
+        let values =
+            parameters
+            |> Seq.choose (fun (key, value) ->
+                let name = normalizeInlineParameterKey key
+                if String.IsNullOrWhiteSpace name then None else Some(name, value))
+            |> Map.ofSeq
+
+        inlineParameterPattern.Replace(
+            text,
+            System.Text.RegularExpressions.MatchEvaluator(fun m ->
+                let name = m.Groups.[1].Value
+                match values |> Map.tryFind name with
+                | Some value -> value
+                | None when m.Groups.[2].Success -> m.Groups.[2].Value
+                | None -> m.Value)
+        )
+
     let getOrBuildInlineScriptsMap () =
         match cachedInlineScriptsMap with
         | Some m -> m
@@ -734,8 +762,7 @@ type ResourceManager<'T when 'T :> ComputedData>
                     match child with
                     | NodeC n ->
                         let stringReplace (isParams: (string * string) seq) (key: string) =
-                            isParams
-                            |> Seq.fold (fun (key: string) (par, value) -> key.Replace(par, value)) key
+                            replaceInlineParameters isParams key
 
                         let rec foldOverNode stringReplacer (node: Node) =
                             node.Key <- stringReplacer node.Key

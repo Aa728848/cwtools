@@ -1,6 +1,7 @@
 namespace CWTools.Validation.Common
 
 open System
+open System.Text.RegularExpressions
 open CWTools.Process
 open CWTools.Utilities
 open CWTools.Validation
@@ -13,6 +14,34 @@ open CWTools.Games
 open CWTools.Parser
 
 module CommonValidation =
+    let private scriptedParameterPattern =
+        Regex(@"\$([^$|]+)(?:\|([^$]*))?\$", RegexOptions.Compiled)
+
+    let private parameterName (text: string) =
+        let pipeIndex = text.IndexOf('|')
+        if pipeIndex >= 0 then text.Substring(0, pipeIndex) else text
+
+    let private normalizeParameterKey (key: string) =
+        key.Trim().Trim('$') |> parameterName
+
+    let private replaceScriptedParameters (parameters: (string * string) seq) (text: string) =
+        let values =
+            parameters
+            |> Seq.choose (fun (key, value) ->
+                let name = normalizeParameterKey key
+                if String.IsNullOrWhiteSpace name then None else Some(name, value))
+            |> Map.ofSeq
+
+        scriptedParameterPattern.Replace(
+            text,
+            MatchEvaluator(fun m ->
+                let name = m.Groups.[1].Value
+                match values |> Map.tryFind name with
+                | Some value -> value
+                | None when m.Groups.[2].Success -> m.Groups.[2].Value
+                | None -> m.Value)
+        )
+
     let validateMixedBlocks: StructureValidator<_> =
         fun _ es ->
             let fNode =
@@ -186,16 +215,28 @@ module CommonValidation =
                     findChild e.entity
                 | None -> None
 
-            match rulesValidator, lu.typeDefInfo |> Map.tryFind "scripted_effect" with
-            | Some rv, Some ses ->
+            match rulesValidator with
+            | Some rv ->
+                let scriptedDefinitions =
+                    [| "scripted_effect"; "scripted_trigger" |]
+                    |> Array.collect (fun typeName ->
+                        lu.typeDefInfo
+                        |> Map.tryFind typeName
+                        |> Option.defaultValue [||]
+                        |> Array.map (fun se -> typeName, se))
+
                 let allScriptedEffects =
-                    ses |> Array.map (fun se -> se.id, se.range.FileName, findSE se.range)
+                    scriptedDefinitions
+                    |> Array.map (fun (scriptedType, se) -> scriptedType, se.id, se.range.FileName, findSE se.range)
 
                 let getRefsFromRefTypes (referencedtypes: Map<string, ReferenceDetails list>) =
                     //eprintfn "grfrt %A" referencedtypes
-                    referencedtypes
-                    |> (fun refMap -> Map.tryFind "scripted_effect" refMap)
-                    |> Option.defaultValue []
+                    [ "scripted_effect"; "scripted_trigger" ]
+                    |> List.collect (fun scriptedType ->
+                        referencedtypes
+                        |> Map.tryFind scriptedType
+                        |> Option.defaultValue []
+                        |> List.map (fun ref -> scriptedType, ref))
 
                 let allRefs =
                     es.AllWithData
@@ -203,25 +244,26 @@ module CommonValidation =
                         d.Force().Referencedtypes
                         |> Option.map getRefsFromRefTypes
                         |> Option.defaultValue [])
-                    |> List.filter (fun ref -> ref.referenceType = ReferenceType.TypeDef)
-                    |> List.map (fun ref ->
-                        {| effectName = ref.name.GetString()
+                    |> List.filter (fun (_, ref) -> ref.referenceType = ReferenceType.TypeDef)
+                    |> List.map (fun (scriptedType, ref) ->
+                        {| scriptedType = scriptedType
+                           effectName = ref.name.GetString()
                            callSite = ref.position
                            seParams = findParams ref.position |})
-                    |> List.groupBy (fun ref -> ref.effectName)
+                    |> List.groupBy (fun ref -> ref.scriptedType, ref.effectName)
                     |> Map.ofList
                 // eprintfn "ar %A" allRefs
                 let scriptedEffects =
                     allScriptedEffects
-                    |> Array.map (fun (name, filename, node) ->
+                    |> Array.map (fun (scriptedType, name, filename, node) ->
+                        scriptedType,
                         name,
                         fileManager.ConvertPathToLogicalPath(filename),
                         node,
-                        allRefs |> Map.tryFind name |> Option.defaultValue [])
+                        allRefs |> Map.tryFind (scriptedType, name) |> Option.defaultValue [])
 
                 let stringReplace (seParams: (string * string) list) (key: string) =
-                    seParams
-                    |> List.fold (fun (key: string) (par, value) -> key.Replace(par, value)) key
+                    replaceScriptedParameters seParams key
 
                 let rec foldOverNode stringReplacer (node: Node) =
                     // eprintfn "fov %A" node.Key
@@ -269,6 +311,7 @@ module CommonValidation =
 
                 let validateSESpecific
                     (
+                        scriptedType: string,
                         name: string,
                         logicalpath: string,
                         node: Node,
@@ -279,17 +322,20 @@ module CommonValidation =
                     let rootNode = Node("root")
                     rootNode.AllArray <- [| NodeC newNode |]
 
-                    match seParams with
-                    | Some seps -> foldOverNode (stringReplace seps) newNode
-                    | None -> ()
+                    foldOverNode (stringReplace (seParams |> Option.defaultValue [])) newNode
                     // eprintfn "%A %A" (CKPrinter.api.prettyPrintStatements newNode.ToRaw) (seParams)
                     // Validate variables after parameter substitution
                     let varValidation = validateVariablesInExpandedNode logicalpath newNode callSite (lu.scriptedVariables |> List.map fst)
                     let ruleRes = rv.ManualRuleValidate(logicalpath, rootNode)
                     // eprintfn "%A %A" logicalpath res
+                    let scriptedKind =
+                        match scriptedType with
+                        | "scripted_trigger" -> "scripted trigger"
+                        | _ -> "scripted effect"
+
                     let message =
                         { location = callSite
-                          message = sprintf "This call of scripted effect %s results in an error" name }
+                          message = sprintf "This call of %s %s results in an error" scriptedKind name }
 
                     let combined =
                         match varValidation, ruleRes with
@@ -313,16 +359,18 @@ module CommonValidation =
                     combined
 
                 let memoizeValidation =
-                    let keyFun = (fun (_, _, node: Node, _, seParams) -> (node.Position, seParams))
+                    let keyFun = (fun (scriptedType, _, _, node: Node, _, seParams) -> (scriptedType, node.Position, seParams))
                     let memFun = validateSESpecific
                     memoize keyFun memFun
 
                 let validateSE
+                    (scriptedType: string)
                     (name: string)
                     (logicalpath: string)
                     (node: Node option)
                     (refs:
-                        {| callSite: range
+                        {| scriptedType: string
+                           callSite: range
                            effectName: string
                            seParams: (string * string) list option |} list)
                     =
@@ -331,13 +379,13 @@ module CommonValidation =
                         match node with
                         | Some node ->
                             refs
-                            <&!&> (fun ref -> memoizeValidation (name, logicalpath, node, ref.callSite, ref.seParams))
+                            <&!&> (fun ref -> memoizeValidation (scriptedType, name, logicalpath, node, ref.callSite, ref.seParams))
                         | None -> OK
 
                     res
 
                 scriptedEffects
-                <&!&> (fun (name, lp, node, refs) -> validateSE name lp node refs)
+                <&!&> (fun (scriptedType, name, lp, node, refs) -> validateSE scriptedType name lp node refs)
             | _ -> OK)
 
     let valScriptValueParams<'T when 'T :> ComputedData> : CWTools.Games.LookupFileValidator<'T> =
@@ -418,8 +466,7 @@ module CommonValidation =
                         allRefs |> Map.tryFind name |> Option.defaultValue [])
 
                 let stringReplace (seParams: (string * string) list) (key: string) =
-                    seParams
-                    |> List.fold (fun (key: string) (par, value) -> key.Replace(par, value)) key
+                    replaceScriptedParameters seParams key
 
                 let rec foldOverNode stringReplacer (node: Node) =
                     // eprintfn "fov %A" node.Key
@@ -477,9 +524,7 @@ module CommonValidation =
                     let rootNode = Node("root")
                     rootNode.AllArray <- [| NodeC newNode |]
 
-                    match seParams with
-                    | Some seps -> foldOverNode (stringReplace seps) newNode
-                    | None -> ()
+                    foldOverNode (stringReplace (seParams |> Option.defaultValue [])) newNode
 
                     // Validate variables after parameter substitution
                     let varValidation = validateVariablesInExpandedNode logicalpath newNode callSite (lu.scriptedVariables |> List.map fst)

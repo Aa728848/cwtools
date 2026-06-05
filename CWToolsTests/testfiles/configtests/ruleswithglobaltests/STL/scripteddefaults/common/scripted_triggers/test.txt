@@ -1,0 +1,7 @@
+scripted_trigger_default_param_validation = {
+    has_country_flag = $dynamic|yes$
+}
+
+scripted_trigger_pipe_default_param_validation = {
+    has_country_flag = $dynamic|yes|no$
+}

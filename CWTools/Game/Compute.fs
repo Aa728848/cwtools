@@ -64,18 +64,17 @@ module EU4 =
     open CWTools.Process
     open CWTools.Process.ProcessCore
 
+    let private parameterName (s: string) =
+        let pipeIndex = s.IndexOf('|')
+        if pipeIndex >= 0 then s.Substring(0, pipeIndex) else s
+
     let getScriptedEffectParams (node: Node) =
         let getDollarText (s: string) acc =
             s.Split('$')
             |> Array.mapi (fun i s -> i, s)
             |> Array.fold (fun acc (i, s) ->
                 if i % 2 = 1 then
-                    // 处理 $A|B$ 语法，| 后面是缺省值，只取 | 前面的参数名
-                    let paramName =
-                        match s.Split('|') with
-                        | [| name; _ |] -> name  // 有缺省值，只取名字部分
-                        | _ -> s  // 没有缺省值，使用整个字符串
-                    paramName :: acc
+                    parameterName s :: acc
                 else acc) acc
         // 提取 [[PARAM] 和 [[!PARAM] 条件块中的参数名
         let getBracketText (s: string) acc =
@@ -107,12 +106,7 @@ module EU4 =
             |> Array.mapi (fun i s -> i, s)
             |> Array.fold (fun acc (i, s) ->
                 if i % 2 = 1 then
-                    // 处理 $A|B$ 语法，| 后面是缺省值，只取 | 前面的参数名
-                    let paramName =
-                        match s.Split('|') with
-                        | [| name; _ |] -> name  // 有缺省值，只取名字部分
-                        | _ -> s  // 没有缺省值，使用整个字符串
-                    paramName :: acc
+                    parameterName s :: acc
                 else acc) acc
         let fNode =
             (fun (x: Node) acc ->
@@ -293,18 +287,17 @@ module Jomini =
     open CWTools.Process
     open CWTools.Process.ProcessCore
 
+    let private parameterName (s: string) =
+        let pipeIndex = s.IndexOf('|')
+        if pipeIndex >= 0 then s.Substring(0, pipeIndex) else s
+
     let getScriptedEffectParams (node: Node) =
         let getDollarText (s: string) acc =
             s.Split('$')
             |> Array.mapi (fun i s -> i, s)
             |> Array.fold (fun acc (i, s) ->
                 if i % 2 = 1 then
-                    // 处理 $A|B$ 语法，| 后面是缺省值，只取 | 前面的参数名
-                    let paramName =
-                        match s.Split('|') with
-                        | [| name; _ |] -> name  // 有缺省值，只取名字部分
-                        | _ -> s  // 没有缺省值，使用整个字符串
-                    paramName :: acc
+                    parameterName s :: acc
                 else acc) acc
         // 提取 [[PARAM] 和 [[!PARAM] 条件块中的参数名
         let getBracketText (s: string) acc =
@@ -336,12 +329,7 @@ module Jomini =
             |> Array.mapi (fun i s -> i, s)
             |> Array.fold (fun acc (i, s) ->
                 if i % 2 = 1 then
-                    // 处理 $A|B$ 语法，| 后面是缺省值，只取 | 前面的参数名
-                    let paramName =
-                        match s.Split('|') with
-                        | [| name; _ |] -> name  // 有缺省值，只取名字部分
-                        | _ -> s  // 没有缺省值，使用整个字符串
-                    paramName :: acc
+                    parameterName s :: acc
                 else acc) acc
         let fNode =
             (fun (x: Node) acc ->

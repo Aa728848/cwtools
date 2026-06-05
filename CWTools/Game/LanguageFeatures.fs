@@ -635,9 +635,8 @@ module LanguageFeatures =
                                             |> Array.mapi (fun i s -> i, s)
                                             |> Array.fold (fun acc (i, s) ->
                                                 if i % 2 = 1 then
-                                                    match s.Split('|') with
-                                                    | [| name; _ |] -> name :: acc
-                                                    | _ -> s :: acc
+                                                    let pipeIndex = s.IndexOf('|')
+                                                    (if pipeIndex >= 0 then s.Substring(0, pipeIndex) else s) :: acc
                                                 else acc) acc
                                         let fNode = (fun (x: Node) acc ->
                                             let nodeRes = getDollarText x.Key acc
@@ -693,9 +692,8 @@ module LanguageFeatures =
                                             |> Array.mapi (fun i s -> i, s)
                                             |> Array.fold (fun acc (i, s) ->
                                                 if i % 2 = 1 then
-                                                    match s.Split('|') with
-                                                    | [| name; _ |] -> name :: acc
-                                                    | _ -> s :: acc
+                                                    let pipeIndex = s.IndexOf('|')
+                                                    (if pipeIndex >= 0 then s.Substring(0, pipeIndex) else s) :: acc
                                                 else acc) acc
                                         let fNode = (fun (x: Node) acc ->
                                             let nodeRes = getDollarText x.Key acc
@@ -800,7 +798,7 @@ module LanguageFeatures =
                             else
                                 // 2. 参数化路径匹配：提取所有 script = xxx 行，将 $..$ 替换为正则通配符后匹配
                                 let scriptLinePattern = System.Text.RegularExpressions.Regex(@"script\s*=\s*([^\s}]+)")
-                                let paramPattern = System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*\$")
+                                let paramPattern = System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*(?:\|[^$]*)?\$")
                                 let matches = scriptLinePattern.Matches(fileContent)
                                 matches
                                 |> Seq.cast<System.Text.RegularExpressions.Match>
@@ -921,7 +919,7 @@ module LanguageFeatures =
                                     |> Seq.toList
                                 with _ -> []
 
-                            let paramPattern = System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*\$")
+                            let paramPattern = System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*(?:\|[^$]*)?\$")
                             let scriptLinePattern = System.Text.RegularExpressions.Regex(@"script\s*=\s*([^\s}]+)")
 
                             let findScriptLine (fileContent: string) (targetScriptFileName: string) (targetScriptName: string) =
@@ -1588,7 +1586,7 @@ module LanguageFeatures =
 
                                     if exprMatches.Count > 0 then
                                         let varValues = getVarValues()
-                                        let paramPattern = System.Text.RegularExpressions.Regex(@"\$([A-Za-z0-9_]+)\$")
+                                        let paramPattern = System.Text.RegularExpressions.Regex(@"\$([A-Za-z0-9_]+)(?:\|[^$]*)?\$")
                                         let varRefPattern = System.Text.RegularExpressions.Regex(@"@([A-Za-z_][A-Za-z0-9_]*)")
 
                                         let results =
@@ -1707,7 +1705,7 @@ module LanguageFeatures =
                     let exprContent = line.Substring(lastOpen + prefixLen, closeIdx - lastOpen - prefixLen).Trim()
 
                     // Check if expression contains $PARAM$ placeholders
-                    let paramPattern = System.Text.RegularExpressions.Regex(@"\$([A-Za-z0-9_]+)\$")
+                    let paramPattern = System.Text.RegularExpressions.Regex(@"\$([A-Za-z0-9_]+)(?:\|[^$]*)?\$")
                     let paramMatches = paramPattern.Matches(exprContent)
 
                     let varValues = getVarValues()
