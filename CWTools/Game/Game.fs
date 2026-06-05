@@ -215,23 +215,16 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     fileText |> Option.defaultWith (fun () -> File.ReadAllText(filepath, encoding))
 
                 let resource = LanguageFeatures.makeEntityResourceInput fileManager filepath file
-                let newEntities =
-                    [ this.Resources.UpdateFile resource ]
-                    |> List.choose snd
-                    |> List.filter (fun struct (e, _) -> e.validate)
-
+                let newEntities = [ this.Resources.UpdateFile resource ] |> List.choose snd
                 afterUpdateFile this filepath
 
-                match shallow, newEntities with
-                | _, [] ->
-                    errorCache.[filepath] <- []
-                    []
-                | true, _ ->
+                match shallow with
+                | true ->
                     let shallowres, _ = validationManager.Validate(shallow, newEntities)
                     let shallowres = shallowres @ (validationManager.ValidateLocalisation newEntities)
                     let deep = match errorCache.TryGetValue(filepath) with true, v -> v | _ -> []
                     shallowres @ deep
-                | false, _ ->
+                | false ->
                     let shallowres, deepres = validationManager.Validate(shallow, newEntities)
                     let shallowres = shallowres @ (validationManager.ValidateLocalisation newEntities)
                     errorCache.[filepath] <- deepres

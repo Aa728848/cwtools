@@ -875,15 +875,7 @@ type ResourceManager<'T when 'T :> ComputedData>
             | resource, Some struct (oldE, oldLazy) ->
                 // 性能优化：跳过 inline_scripts/ 目录内的文件（它们是模板，不需要被展开）
                 if oldE.logicalpath.StartsWith inlinePath then
-                    let templateEntity =
-                        if oldE.validate then
-                            { oldE with validate = false }
-                        else
-                            oldE
-
-                    let item = struct (templateEntity, oldLazy)
-                    entitiesMap[templateEntity.filepath] <- item
-                    resource, Some item
+                    resource, Some struct (oldE, oldLazy)
                 else
 
                 let maxIter = 5

@@ -150,6 +150,9 @@ module STLValidation =
         else
             None
 
+    let private isInlineScriptFile filePath =
+        tryGetInlineScriptName filePath |> Option.isSome
+
     let private inlineScriptPatternToRegex (pattern: string) =
         pattern.Split('$')
         |> Array.mapi (fun i part ->
@@ -317,7 +320,10 @@ module STLValidation =
 
     let validateEvents: STLStructureValidator =
         fun _ es ->
-            let ships = es.AllOfTypeChildren EntityType.Events
+            let ships =
+                es.AllOfTypeChildren EntityType.Events
+                |> List.filter (fun e -> not (isInlineScriptFile e.Position.FileName))
+
             ships <&!&> (fun s -> validateEventValsInternal s)
 
     let stellarisEventPreTriggers =
@@ -341,6 +347,7 @@ module STLValidation =
         fun _ es ->
             let events =
                 es.AllOfTypeChildren EntityType.Events
+                |> List.filter (fun e -> not (isInlineScriptFile e.Position.FileName))
                 |> List.filter (fun e -> e.Key == "planet_event")
 
             let eventToErrors (event: Node) =
