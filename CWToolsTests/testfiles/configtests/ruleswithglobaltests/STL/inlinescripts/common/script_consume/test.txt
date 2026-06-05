@@ -37,6 +37,10 @@ test = {
     inline_script = {
         script = completion_outer
     }
+    inline_script = {
+        script = completion_param_outer
+        name = common
+    }
     ##error
     ##error
     ##inline_script = {

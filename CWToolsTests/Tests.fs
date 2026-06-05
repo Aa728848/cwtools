@@ -1054,7 +1054,24 @@ let inlineScriptCompletionRegressionTests =
                       | Snippet(label, _, _, _, _) -> label)
 
               Expect.contains labels "expected_leaf" "Nested inline completion should use the concrete child block"
-              Expect.isFalse (labels |> List.contains "root_only") "Nested inline completion should not fall back to root fields" ]
+              Expect.isFalse (labels |> List.contains "root_only") "Nested inline completion should not fall back to root fields"
+
+              let parameterizedFilename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "inline_scripts", "completion_param_common.txt")
+                  )
+
+              let parameterizedFiletext = File.ReadAllText parameterizedFilename
+
+              let parameterizedLabels =
+                  stl.Complete (mkPos 1 4) parameterizedFilename parameterizedFiletext
+                  |> List.map (function
+                      | Simple(label, _, _)
+                      | Detailed(label, _, _, _)
+                      | Snippet(label, _, _, _, _) -> label)
+
+              Expect.contains parameterizedLabels "expected_leaf" "Parameterized nested inline completion should use the concrete child block"
+              Expect.isFalse (parameterizedLabels |> List.contains "root_only") "Parameterized nested inline completion should not fall back to root fields" ]
 
 [<Tests>]
 let irSubfolderTests =

@@ -921,6 +921,57 @@ module LanguageFeatures =
                                     |> Seq.toList
                                 with _ -> []
 
+                            let paramPattern = System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*\$")
+                            let scriptLinePattern = System.Text.RegularExpressions.Regex(@"script\s*=\s*([^\s}]+)")
+
+                            let findScriptLine (fileContent: string) (targetScriptFileName: string) (targetScriptName: string) =
+                                let lines = fileContent.Split('\n')
+                                let normName = targetScriptName.Replace('\\', '/')
+                                let mutable found = -1
+
+                                for i = 0 to lines.Length - 1 do
+                                    if found = -1 then
+                                        let line = lines.[i]
+
+                                        if line.Contains(targetScriptFileName, StringComparison.OrdinalIgnoreCase) then
+                                            found <- i
+                                        else
+                                            let m = scriptLinePattern.Match(line)
+
+                                            if m.Success && m.Groups.[1].Value.Contains("$") then
+                                                let callPath = m.Groups.[1].Value.Trim()
+                                                let regexStr = paramPattern.Replace(callPath, ".+").Replace('\\', '/')
+
+                                                try
+                                                    let regex =
+                                                        System.Text.RegularExpressions.Regex(
+                                                            "^" + System.Text.RegularExpressions.Regex.Escape(regexStr).Replace(@"\.\+", ".+") + "$",
+                                                            System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                                                        )
+
+                                                    if regex.IsMatch(normName) then
+                                                        found <- i
+                                                with _ ->
+                                                    ()
+
+                                found
+
+                            let findDirectInlineCallerReferencingTarget () =
+                                allEntities
+                                |> Seq.tryPick (fun struct (e, _) ->
+                                    if isInlineScriptEntity e then
+                                        try
+                                            let content = System.IO.File.ReadAllText(e.filepath)
+
+                                            if fileContainsInlineRef scriptName scriptFileName content then
+                                                Some e
+                                            else
+                                                None
+                                        with _ ->
+                                            None
+                                    else
+                                        None)
+
                             // 使用专用的 CompleteInlineScript 方法
                             // 该方法使用 inline_script 实体的 AST 确定当前光标深度，
                             // 同时使用调用者的 logicalpath 匹配类型规则，
@@ -934,27 +985,21 @@ module LanguageFeatures =
                                     try
                                         let callerFileContent = System.IO.File.ReadAllText(callerEntity.filepath)
                                         let callerLines = callerFileContent.Split('\n')
-                                        let paramPattern = System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*\$")
-                                        let normScriptName = scriptName.Replace('\\', '/')
-                                        let mutable inlineScriptLine = -1
-                                        for i = 0 to callerLines.Length - 1 do
-                                            if inlineScriptLine = -1 then
-                                                let line = callerLines.[i]
-                                                if line.Contains(scriptFileName, StringComparison.OrdinalIgnoreCase) then
-                                                    inlineScriptLine <- i
-                                                else
-                                                    let scriptLinePattern = System.Text.RegularExpressions.Regex(@"script\s*=\s*([^\s}]+)")
-                                                    let m = scriptLinePattern.Match(line)
-                                                    if m.Success && m.Groups.[1].Value.Contains("$") then
-                                                        let callPath = m.Groups.[1].Value.Trim()
-                                                        let regexStr = paramPattern.Replace(callPath, ".+").Replace('\\', '/')
-                                                        try
-                                                            let regex = System.Text.RegularExpressions.Regex(
-                                                                "^" + System.Text.RegularExpressions.Regex.Escape(regexStr).Replace(@"\.\+", ".+") + "$",
-                                                                System.Text.RegularExpressions.RegexOptions.IgnoreCase)
-                                                            if regex.IsMatch(normScriptName) then
-                                                                inlineScriptLine <- i
-                                                        with _ -> ()
+                                        let inlineScriptLine =
+                                            let directLine = findScriptLine callerFileContent scriptFileName scriptName
+
+                                            if directLine >= 0 then
+                                                directLine
+                                            else
+                                                findDirectInlineCallerReferencingTarget ()
+                                                |> Option.bind (fun directCaller -> extractInlineScriptName directCaller.logicalpath)
+                                                |> Option.map (fun intermediateScriptName ->
+                                                    let intermediateFileName =
+                                                        intermediateScriptName.Split([| '/'; '\\' |]) |> Array.last
+
+                                                    findScriptLine callerFileContent intermediateFileName intermediateScriptName)
+                                                |> Option.defaultValue -1
+
                                         if inlineScriptLine >= 0 then
                                             // Use rawEntity for GetInfo — the raw AST still has the
                                             // inline_script leaf, so the position matches correctly
@@ -977,31 +1022,6 @@ module LanguageFeatures =
                                     // In this case, find the DIRECT caller (intermediate inline_script) and chain:
                                     //   rootPath(to intermediate) + intermediatePath(to target)
                                     let callerRulePath =
-                                        // Helper: find inlineScriptLine for a given script name in a file
-                                        let findScriptLine (fileContent: string) (targetScriptFileName: string) (targetScriptName: string) =
-                                            let lines = fileContent.Split('\n')
-                                            let paramPattern = System.Text.RegularExpressions.Regex(@"\$[A-Za-z_][A-Za-z0-9_]*\$")
-                                            let normName = targetScriptName.Replace('\\', '/')
-                                            let mutable found = -1
-                                            for i = 0 to lines.Length - 1 do
-                                                if found = -1 then
-                                                    let line = lines.[i]
-                                                    if line.Contains(targetScriptFileName, StringComparison.OrdinalIgnoreCase) then
-                                                        found <- i
-                                                    else
-                                                        let scriptLinePattern = System.Text.RegularExpressions.Regex(@"script\s*=\s*([^\s}]+)")
-                                                        let m = scriptLinePattern.Match(line)
-                                                        if m.Success && m.Groups.[1].Value.Contains("$") then
-                                                            let callPath = m.Groups.[1].Value.Trim()
-                                                            let regexStr = paramPattern.Replace(callPath, ".+").Replace('\\', '/')
-                                                            try
-                                                                let regex = System.Text.RegularExpressions.Regex(
-                                                                    "^" + System.Text.RegularExpressions.Regex.Escape(regexStr).Replace(@"\.\+", ".+") + "$",
-                                                                    System.Text.RegularExpressions.RegexOptions.IgnoreCase)
-                                                                if regex.IsMatch(normName) then
-                                                                    found <- i
-                                                            with _ -> ()
-                                            found
                                         try
                                             let callerFileContent = System.IO.File.ReadAllText(callerEntity.filepath)
                                             let directLine = findScriptLine callerFileContent scriptFileName scriptName
@@ -1015,17 +1035,7 @@ module LanguageFeatures =
                                             else
                                                 // Not found in root caller — this is a NESTED inline_script.
                                                 // Find the direct (intermediate) caller that actually references the target.
-                                                let directCallerOpt =
-                                                    allEntities
-                                                    |> Seq.tryPick (fun struct (e, _) ->
-                                                        if isInlineScriptEntity e then
-                                                            try
-                                                                let content = System.IO.File.ReadAllText(e.filepath)
-                                                                if fileContainsInlineRef scriptName scriptFileName content then
-                                                                    Some e
-                                                                else None
-                                                            with _ -> None
-                                                        else None)
+                                                let directCallerOpt = findDirectInlineCallerReferencingTarget ()
                                                 match directCallerOpt with
                                                 | Some directCaller ->
                                                     // Chain paths: root→intermediate + intermediate→target

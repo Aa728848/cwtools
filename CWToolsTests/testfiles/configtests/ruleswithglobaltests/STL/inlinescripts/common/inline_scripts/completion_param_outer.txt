@@ -1,0 +1,7 @@
+container = {
+    child = {
+        inline_script = {
+            script = completion_param_$name$
+        }
+    }
+}
