@@ -128,16 +128,24 @@ module EU4 =
                 if i % 2 = 1 then
                     parameterName s :: acc
                 else acc) acc
+        let getBracketText (s: string) acc =
+            match bracketParameterName s with
+            | Some paramName -> paramName :: acc
+            | None -> acc
+        let extractText (s: string) acc = getDollarText s (getBracketText s acc)
         let fNode =
             (fun (x: Node) acc ->
-                let nodeRes = getDollarText x.Key acc
+                let nodeRes =
+                    let acc = extractText x.Key acc
+                    let acc = x.KeyPrefix |> Option.map (fun prefix -> extractText prefix acc) |> Option.defaultValue acc
+                    x.ValuePrefix |> Option.map (fun prefix -> extractText prefix acc) |> Option.defaultValue acc
 
                 let leafRes =
                     x.Leaves
-                    |> Seq.fold (fun a n -> getDollarText n.Key (getDollarText (n.Value.ToRawString()) a)) nodeRes
+                    |> Seq.fold (fun a n -> extractText n.Key (extractText (n.Value.ToRawString()) a)) nodeRes
 
                 x.LeafValues
-                |> Seq.fold (fun a n -> getDollarText (n.ValueText) a) leafRes)
+                |> Seq.fold (fun a n -> extractText (n.ValueText) a) leafRes)
 
         node |> (foldNode7 fNode) |> List.ofSeq
 
@@ -371,16 +379,24 @@ module Jomini =
                 if i % 2 = 1 then
                     parameterName s :: acc
                 else acc) acc
+        let getBracketText (s: string) acc =
+            match bracketParameterName s with
+            | Some paramName -> paramName :: acc
+            | None -> acc
+        let extractText (s: string) acc = getDollarText s (getBracketText s acc)
         let fNode =
             (fun (x: Node) acc ->
-                let nodeRes = getDollarText x.Key acc
+                let nodeRes =
+                    let acc = extractText x.Key acc
+                    let acc = x.KeyPrefix |> Option.map (fun prefix -> extractText prefix acc) |> Option.defaultValue acc
+                    x.ValuePrefix |> Option.map (fun prefix -> extractText prefix acc) |> Option.defaultValue acc
 
                 let leafRes =
                     x.Leaves
-                    |> Seq.fold (fun a n -> getDollarText n.Key (getDollarText (n.Value.ToRawString()) a)) nodeRes
+                    |> Seq.fold (fun a n -> extractText n.Key (extractText (n.Value.ToRawString()) a)) nodeRes
 
                 x.LeafValues
-                |> Seq.fold (fun a n -> getDollarText (n.ValueText) a) leafRes)
+                |> Seq.fold (fun a n -> extractText (n.ValueText) a) leafRes)
 
         node |> (foldNode7 fNode) |> List.ofSeq
 

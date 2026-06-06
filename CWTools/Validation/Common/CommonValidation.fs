@@ -140,6 +140,25 @@ module CommonValidation =
                 | None -> m.Value)
         )
 
+    let private splitScriptValueParameterParts (text: string) =
+        let parts = ResizeArray<string>()
+        let current = System.Text.StringBuilder()
+        let mutable insideScriptedParameter = false
+
+        for c in text do
+            match c with
+            | '$' ->
+                insideScriptedParameter <- not insideScriptedParameter
+                current.Append(c) |> ignore
+            | '|' when not insideScriptedParameter ->
+                parts.Add(current.ToString())
+                current.Clear() |> ignore
+            | _ ->
+                current.Append(c) |> ignore
+
+        parts.Add(current.ToString())
+        parts |> List.ofSeq
+
     let validateMixedBlocks: StructureValidator<_> =
         fun _ es ->
             let fNode =
@@ -497,9 +516,9 @@ module CommonValidation =
 
             let findParams (referenceDetails: ReferenceDetails) =
                 //                logInfo (sprintf "vsvp %s" key)
-                let splitString =
-                    referenceDetails.originalValue.GetString().Split '|'
-                let splitStringList = splitString |> List.ofArray
+                let splitStringList =
+                    referenceDetails.originalValue.GetString()
+                    |> splitScriptValueParameterParts
 
                 let rec getParamsFromArray =
                     function
@@ -508,7 +527,7 @@ module CommonValidation =
                 //                logInfo (sprintf "vsvp b %A" splitString)
                 let svparams =
                     getParamsFromArray (
-                        if splitString.Length > 1 then
+                        if splitStringList.Length > 1 then
                             List.tail splitStringList
                         else
                             splitStringList
@@ -568,8 +587,9 @@ module CommonValidation =
                 let stringReplace (seParams: (string * string) list) (key: string) =
                     replaceScriptedParameters seParams key
 
-                let rec foldOverNode stringReplacer (node: Node) =
+                let rec foldOverNode parameters stringReplacer (node: Node) =
                     // eprintfn "fov %A" node.Key
+                    node.AllArray <- applyBracketConditionals parameters node.AllArray
                     node.Key <- stringReplacer node.Key
 
                     node.Leaves
@@ -610,7 +630,7 @@ module CommonValidation =
                                 )
                         | _ -> ()))
 
-                    node.Nodes |> Seq.iter (foldOverNode stringReplacer)
+                    node.Nodes |> Seq.iter (foldOverNode parameters stringReplacer)
 
                 let validateSESpecific
                     (
@@ -624,7 +644,8 @@ module CommonValidation =
                     let rootNode = Node("root")
                     rootNode.AllArray <- [| NodeC newNode |]
 
-                    foldOverNode (stringReplace (seParams |> Option.defaultValue [])) newNode
+                    let seParams = seParams |> Option.defaultValue []
+                    foldOverNode seParams (stringReplace seParams) newNode
 
                     // Validate variables after parameter substitution
                     let varValidation = validateVariablesInExpandedNode logicalpath newNode callSite (lu.scriptedVariables |> List.map fst)

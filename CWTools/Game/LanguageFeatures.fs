@@ -645,19 +645,7 @@ module LanguageFeatures =
                                     // 不依赖预计算数据，而是实时提取
                                     let allEntities = resourceManager.Api.AllEntities()
                                     let extractParams (e: Entity) =
-                                        let getDollarText (s: string) acc =
-                                            s.Split('$')
-                                            |> Array.mapi (fun i s -> i, s)
-                                            |> Array.fold (fun acc (i, s) ->
-                                                if i % 2 = 1 then
-                                                    let pipeIndex = s.IndexOf('|')
-                                                    (if pipeIndex >= 0 then s.Substring(0, pipeIndex) else s) :: acc
-                                                else acc) acc
-                                        let fNode = (fun (x: Node) acc ->
-                                            let nodeRes = getDollarText x.Key acc
-                                            x.Leaves |> Seq.fold (fun a leaf ->
-                                                getDollarText leaf.Key (getDollarText (leaf.Value.ToRawString()) a)) nodeRes)
-                                        e.entity |> (ProcessCore.foldNode7 fNode) |> List.ofSeq
+                                        Compute.Jomini.getScriptValueParams e.entity
 
                                     let allParams =
                                         allEntities
@@ -702,19 +690,7 @@ module LanguageFeatures =
                                     // 直接从所有实体中提取 script_value 参数
                                     let allEntities = resourceManager.Api.AllEntities()
                                     let extractParams (e: Entity) =
-                                        let getDollarText (s: string) acc =
-                                            s.Split('$')
-                                            |> Array.mapi (fun i s -> i, s)
-                                            |> Array.fold (fun acc (i, s) ->
-                                                if i % 2 = 1 then
-                                                    let pipeIndex = s.IndexOf('|')
-                                                    (if pipeIndex >= 0 then s.Substring(0, pipeIndex) else s) :: acc
-                                                else acc) acc
-                                        let fNode = (fun (x: Node) acc ->
-                                            let nodeRes = getDollarText x.Key acc
-                                            x.Leaves |> Seq.fold (fun a leaf ->
-                                                getDollarText leaf.Key (getDollarText (leaf.Value.ToRawString()) a)) nodeRes)
-                                        e.entity |> (ProcessCore.foldNode7 fNode) |> List.ofSeq
+                                        Compute.Jomini.getScriptValueParams e.entity
 
                                     let allParams =
                                         allEntities

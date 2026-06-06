@@ -37,6 +37,8 @@ country_event = {
         test_value = value:simple
         test_value = value:scripted_param
         test_value = value:scripted_param|PARAM|abs
+        test_value = value:scripted_bracket_positive|BRACKET|yes
+        test_value = value:scripted_bracket_negated|BRACKET|no
         ### Test on other side
         test_value = value:scripted_param|PARAM|absss
     }

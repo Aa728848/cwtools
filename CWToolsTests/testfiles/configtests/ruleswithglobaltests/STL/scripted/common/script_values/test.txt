@@ -6,3 +6,21 @@ scripted_param = {
     #error
     $PARAM$ = yes
 }
+
+scripted_bracket_positive = {
+    [[BRACKET]
+        abs = yes
+    ]
+    [[!BRACKET]
+        invalid_key = yes
+    ]
+}
+
+scripted_bracket_negated = {
+    [[BRACKET]
+        invalid_key = yes
+    ]
+    [[!BRACKET]
+        abs = yes
+    ]
+}

@@ -1100,6 +1100,15 @@ let scriptedBracketParameterRegressionTests =
         let column = if lastLineBreak < 0 then marker else marker - lastLineBreak - 1
         text.Remove(marker, 1), mkPos line column
 
+    let cursorAtTildeMarker (text: string) =
+        let marker = text.IndexOf('~')
+        Expect.isGreaterThan marker -1 "test cursor marker was not found"
+        let before = text.Substring(0, marker)
+        let line = (before |> Seq.filter ((=) '\n') |> Seq.length) + 1
+        let lastLineBreak = before.LastIndexOf('\n')
+        let column = if lastLineBreak < 0 then marker else marker - lastLineBreak - 1
+        text.Remove(marker, 1), mkPos line column
+
     let label =
         function
         | Simple(label, _, _)
@@ -1142,7 +1151,39 @@ country_event = {
 
               Expect.contains labels "bracket_condition" "Positive bracket condition should complete as a scripted parameter"
               Expect.contains labels "negated_condition" "Negated bracket condition should complete as a scripted parameter"
-              Expect.contains labels "kamikakushi_bonus" "Prefixed bracket condition should complete as a scripted parameter" ]
+              Expect.contains labels "kamikakushi_bonus" "Prefixed bracket condition should complete as a scripted parameter"
+
+          testWithCapturedLogs "script value bracket params feed value completion" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let filename = Path.GetFullPath(Path.Combine(folder, "events", "test.txt"))
+              let filetext, pos =
+                  cursorAtTildeMarker
+                      """
+namespace = test
+
+country_event = {
+    is_triggered_only = yes
+    trigger = {
+        test_value = value:scripted_bracket_positive|~
+    }
+}
+"""
+
+              let labels = stl.Complete pos filename filetext |> List.map label
+
+              Expect.contains labels "BRACKET" "Script value bracket condition should complete as a value parameter" ]
 
 [<Tests>]
 let irSubfolderTests =
