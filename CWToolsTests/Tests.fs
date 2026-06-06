@@ -13,11 +13,13 @@ open CWTools.Utilities
 open CWTools.Utilities.Position
 open CWTools.Utilities.Utils
 open CWTools
+open CWTools.Validation
 open Expecto
 open Expecto.Logging
 open Expecto.Logging.Message
 open CWTools.Common
 open CWTools.Process
+open CWTools.Process.Localisation
 open CWTools.Process.ProcessCore
 open CWTools.Games.Files
 open System.Threading
@@ -633,6 +635,41 @@ let tests =
               Expect.hasCountOf globalLocError 10u (fun _ -> true) $"wrong number of errors %A{globalLocError}"
           // yield testWithCapturedLogs "globalLoc" <| fun () ->
           // Expect.hasCountOf globalLocError 10u (fun f -> true) (sprintf "wrong number of errors %A" globalLocError)
+          testWithCapturedLogs "loc references are case-sensitive"
+          <| fun () ->
+              let keys = LocKeySet(StringComparer.Ordinal)
+              keys.Add "CASE_MISMATCH_SELF_REF" |> ignore
+
+              let entry =
+                  { LocEntry.key = "CASE_MISMATCH_SELF_REF"
+                    value = None
+                    desc = "\"$case_mismatch_self_ref$\""
+                    position = range.Zero
+                    refs = [ "case_mismatch_self_ref" ]
+                    commands = []
+                    jominiCommands = []
+                    scopes = []
+                    errorRanges = None }
+
+              let result =
+                  CWTools.Validation.LocalisationString.validateProcessedLocalisationBase
+                      []
+                      [| STL STLLang.English, keys |]
+                      [ STL STLLang.English, Map.ofList [ entry.key, entry ] ]
+
+              let errors =
+                  match result with
+                  | OK -> []
+                  | Invalid(_, es) -> es
+
+              Expect.exists
+                  errors
+                  (fun e -> e.code = "CW225" && e.message.Contains("case_mismatch_self_ref"))
+                  "case-mismatched localisation references should be unresolved"
+
+              Expect.isFalse
+                  (errors |> List.exists (fun e -> e.code = "CW259"))
+                  "case-mismatched localisation references must not be treated as self-references"
           ]
 
 let rec getAllFolders dirs =

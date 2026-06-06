@@ -88,7 +88,7 @@ module LocalisationString =
     let private checkRef hardcodedLocalisation (lang: Lang) (keys: LocKeySet) (entry: LocEntry) (r: string) =
         match keys.Contains r with
         | true ->
-            if r == entry.key && not (List.contains r hardcodedLocalisation) then
+            if String.Equals(r, entry.key, StringComparison.Ordinal) && not (List.contains r hardcodedLocalisation) then
                 Invalid(Guid.NewGuid(), [ invManual ErrorCodes.RecursiveLocRef entry.position entry.key None ])
             else
                 OK
@@ -188,7 +188,7 @@ module LocalisationString =
             | _ -> OK
 
         let validateLocMap (lang, m: Map<string, LocEntry>) =
-            let keys = LocKeySet(StringComparer.OrdinalIgnoreCase)
+            let keys = LocKeySet(StringComparer.Ordinal)
 
             rawKeys
             |> Array.filter (fun (l, _) -> l = lang)

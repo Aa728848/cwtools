@@ -44,7 +44,7 @@ type LocalisationManager<'T when 'T :> ComputedData>
         groupedLocalisation
         |> Seq.map (fun (k, g) ->
             k,
-            let set = LocKeySet(StringComparer.OrdinalIgnoreCase)
+            let set = LocKeySet(StringComparer.Ordinal)
             g |> Seq.collect _.GetKeys |> Seq.iter (fun key -> set.Add key |> ignore)
             set)
         |> Seq.toArray
