@@ -737,7 +737,27 @@ type ResourceManager<'T when 'T :> ComputedData>
         removeCallerContributions e.filepath
         addCallerContributions e
 
-    /// 查询调用指定 inline_script 的 caller 文件（精确 + 后缀匹配）。
+    let callerPatternRegexCache =
+        ConcurrentDictionary<string, System.Text.RegularExpressions.Regex>()
+
+    let inlinePatternKeyToRegex (key: string) =
+        callerPatternRegexCache.GetOrAdd(
+            key,
+            fun k ->
+                let sb = System.Text.StringBuilder()
+                sb.Append("(?:^|/)") |> ignore
+                let mutable lastIndex = 0
+                for m in inlineParameterPattern.Matches k do
+                    sb.Append(System.Text.RegularExpressions.Regex.Escape(k.Substring(lastIndex, m.Index - lastIndex)))
+                    |> ignore
+                    sb.Append("[^/]*") |> ignore
+                    lastIndex <- m.Index + m.Length
+                sb.Append(System.Text.RegularExpressions.Regex.Escape(k.Substring lastIndex)) |> ignore
+                sb.Append("$") |> ignore
+                System.Text.RegularExpressions.Regex(
+                    sb.ToString(),
+                    System.Text.RegularExpressions.RegexOptions.Compiled))
+
     let getInlineScriptCallers (scriptName: string) =
         let target = normalizeCallerRefKey scriptName
         if String.IsNullOrWhiteSpace target then
@@ -746,11 +766,13 @@ type ResourceManager<'T when 'T :> ComputedData>
             let result = System.Collections.Generic.HashSet<string>()
             for kv in inlineScriptCallerIndex do
                 let key = kv.Key
-                if
+                let matched =
                     key = target
                     || key.EndsWith("/" + target, StringComparison.Ordinal)
                     || target.EndsWith("/" + key, StringComparison.Ordinal)
-                then
+                    || (key.Contains "$"
+                        && try (inlinePatternKeyToRegex key).IsMatch target with _ -> false)
+                if matched then
                     lock kv.Value (fun () ->
                         for f in kv.Value do
                             result.Add f |> ignore)
