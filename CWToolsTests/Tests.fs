@@ -1220,7 +1220,42 @@ country_event = {
 
               let labels = stl.Complete pos filename filetext |> List.map label
 
-              Expect.contains labels "BRACKET" "Script value bracket condition should complete as a value parameter" ]
+              Expect.contains labels "BRACKET" "Script value bracket condition should complete as a value parameter"
+
+          testWithCapturedLogs "scripted count wrapper completes as trigger" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let filename = Path.GetFullPath(Path.Combine(folder, "events", "test.txt"))
+              let filetext, pos =
+                  cursorAtMarker
+                      """
+namespace = test
+
+country_event = {
+    is_triggered_only = yes
+    trigger = {
+        |
+    }
+}
+"""
+
+              let labels = stl.Complete pos filename filetext |> List.map label
+
+              Expect.contains
+                  labels
+                  "test_scripted_trigger_value"
+                  "Scripted triggers wrapping count_* without count should complete as trigger conditions" ]
 
 [<Tests>]
 let irSubfolderTests =

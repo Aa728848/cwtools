@@ -13,3 +13,16 @@ test_scripted_trigger_country = {
 test_scripted_trigger_none = {
 
 }
+
+test_scripted_trigger_value = {
+    count_test_value = {
+        has_country_flag = yes
+    }
+}
+
+test_scripted_trigger_count_bool = {
+    count_test_value = {
+        count > 0
+        has_country_flag = yes
+    }
+}

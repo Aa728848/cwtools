@@ -91,6 +91,11 @@ alias[effect:hidden_effect] = { alias_name[effect] = alias_match_left[effect] }
 
 alias[trigger:test_value] = value_field
 
+alias[trigger:count_test_value] = {
+    count = int_value_field
+    alias_name[trigger] = alias_match_left[trigger]
+}
+
 script_value = {
 	## cardinality = 0..1
 	enum[simple_maths_enum] = yes

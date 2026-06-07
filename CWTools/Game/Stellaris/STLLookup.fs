@@ -6,6 +6,7 @@ open CWTools.Games
 open CWTools.Common
 open CWTools.Utilities
 open FSharp.Collections.ParallelSeq
+open System
 
 module STLLookup =
     let getChildrenWithComments (root: Node) =
@@ -19,6 +20,27 @@ module STLLookup =
         root.Nodes
         |> Seq.map (fun e -> e, root.AllArray |> Array.fold (findComment e.Key) (false, []) |> snd)
         |> Seq.toList
+
+    let private isExplicitCountComparison (node: Node) =
+        node.Values
+        |> Seq.exists (fun leaf ->
+            leaf.Key.Equals("count", StringComparison.OrdinalIgnoreCase)
+            || leaf.Key.Equals("value", StringComparison.OrdinalIgnoreCase)
+            || leaf.Key.Equals("percentage", StringComparison.OrdinalIgnoreCase))
+
+    let private isScriptedValueTrigger (node: Node) =
+        let childNodes = node.Nodes |> Seq.toList
+        let hasOnlyOneChild =
+            childNodes.Length = 1
+            && Seq.isEmpty node.Values
+            && Seq.isEmpty node.LeafValues
+            && Seq.isEmpty node.ValueClauses
+
+        match childNodes with
+        | [ child ] when hasOnlyOneChild ->
+            not (isExplicitCountComparison child)
+            && child.Key.StartsWith("count_", StringComparison.OrdinalIgnoreCase)
+        | _ -> false
 
     let updateScriptedTriggers (resources: IResourceAPI<STLComputedData>) (vanillaTriggers: Effect list) =
         let rawTriggers =
@@ -40,6 +62,7 @@ module STLLookup =
 
         vanillaTriggers
         |> Seq.iter (fun x -> vanillaTriggerDictionary[x.Name.normal] <- x.Scopes)
+
         // let vanillaTriggerMap =
         // vanillaTriggers
         // |> Seq.map (fun e -> (e.Name.normal, e.ScopesSet))
@@ -62,9 +85,15 @@ module STLLookup =
             final <-
                 rawTriggers
                 |> PSeq.map (fun t ->
+                    let effectType =
+                        if isScriptedValueTrigger (fst t) then
+                            EffectType.ValueTrigger
+                        else
+                            EffectType.Trigger
+
                     (STLProcess.getScriptedTriggerScope
                         first
-                        EffectType.Trigger
+                        effectType
                         scopedEffects
                         vanillaTriggerDictionary
                         triggerAndEffectMap

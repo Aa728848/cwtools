@@ -197,6 +197,17 @@ module STLGameFunctions =
                 requiredScopes = effect.Scopes
                 typeHint = Some(scripted, true) }
 
+        let scriptedValueTriggerOptions (scripted: string) (effect: ScriptedEffect) =
+            { scriptedOptions scripted effect with
+                comparison = true }
+
+        let intValueField =
+            ValueScopeField(
+                true,
+                (decimal RulesParserConstants.IntFieldDefaultMinimum,
+                 decimal RulesParserConstants.IntFieldDefaultMaximum)
+            )
+
         let getAllScriptedEffects =
             lookup.onlyScriptedEffects
             |> Seq.choose (function
@@ -217,14 +228,22 @@ module STLGameFunctions =
             |> Seq.choose (function
                 | :? ScriptedEffect as se -> Some se
                 | _ -> None)
-            |> Seq.map (fun se ->
-                AliasRule(
-                    "trigger",
-                    NewRule(
-                        LeafRule(RulesParser.specificFieldFromId se.Name, ValueField(ValueType.Bool)),
-                        scriptedOptions "scripted_trigger" se
-                    )
-                ))
+            |> Seq.collect (fun se ->
+                let field = RulesParser.specificFieldFromId se.Name
+
+                if se.Type = EffectType.ValueTrigger then
+                    let options = scriptedValueTriggerOptions "scripted_trigger" se
+
+                    [| AliasRule("trigger", NewRule(LeafRule(field, intValueField), options))
+                       AliasRule("trigger", NewRule(LeafRule(field, ScopeField options.requiredScopes), options)) |]
+                else
+                    [| AliasRule(
+                           "trigger",
+                           NewRule(
+                               LeafRule(field, ValueField(ValueType.Bool)),
+                               scriptedOptions "scripted_trigger" se
+                           )
+                       ) |])
             |> Seq.toArray
 
         let addRequiredScopesE (s: StringTokens) (o: Options) =

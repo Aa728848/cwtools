@@ -41,5 +41,11 @@ country_event = {
         test_value = value:scripted_bracket_negated|BRACKET|no
         ### Test on other side
         test_value = value:scripted_param|PARAM|absss
+
+        test_scripted_trigger_value > 0
+        test_scripted_trigger_value = value:scripted_param
+        #error
+        test_scripted_trigger_value = yes
+        test_scripted_trigger_count_bool = yes
     }
 }
