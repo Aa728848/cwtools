@@ -291,6 +291,9 @@ type CustomGame(setupSettings: CustomSettings, gameFolderName: string) =
         member _.InvalidateFileCache(filepath) = game.InvalidateFileCache filepath
 
         member _.ForceRecompute() = resources.ForceRecompute()
+        member _.ForceDynamicParameterData(timeoutMs, maxEntities) =
+            resources.ForceDynamicParameterData(timeoutMs, maxEntities)
+        member _.GetInlineScriptCallers scriptName = resources.GetInlineScriptCallers scriptName
         member _.Types() = game.Lookup.typeDefInfo
         member _.TypeDefs() = game.Lookup.typeDefs
         member _.GetPossibleCodeEdits file text = []

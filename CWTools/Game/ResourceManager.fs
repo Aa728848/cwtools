@@ -212,7 +212,9 @@ type IResourceAPI<'T when 'T :> ComputedData> =
     abstract AllEntities: AllEntities<'T>
     abstract ValidatableEntities: ValidatableEntities<'T>
     abstract ForceRecompute: unit -> unit
+    abstract ForceDynamicParameterData: int * int -> int
     abstract ForceRulesDataGenerate: unit -> unit
+    abstract GetInlineScriptCallers: string -> string list
     abstract GetFileNames: FileNames
     abstract GetEntityByFilePath: string -> struct (Entity * Lazy<'T>) option
 
@@ -673,6 +675,87 @@ type ResourceManager<'T when 'T :> ComputedData>
     /// 使缓存失效（当 inline_script 文件本身变更时调用）
     let invalidateInlineScriptsCache () = cachedInlineScriptsMap <- None
 
+    let inlineScriptCallerIndex =
+        ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>>()
+    let inlineScriptCallerKeysByFile = ConcurrentDictionary<string, string array>()
+
+    let normalizeCallerRefKey (s: string) =
+        (normalizeInlineScriptPath (s.Replace('\\', '/'))).Trim().ToLowerInvariant()
+
+    let collectInlineScriptRefs (node: Node) =
+        let rec collect (n: Node) acc =
+            let acc =
+                n.Leaves
+                |> Seq.fold (fun a (l: Leaf) ->
+                    if l.Key.Equals("inline_script", StringComparison.OrdinalIgnoreCase) then
+                        let v = l.ValueText
+                        if String.IsNullOrWhiteSpace v then a else normalizeCallerRefKey v :: a
+                    else a) acc
+            n.Nodes
+            |> Seq.fold (fun a (child: Node) ->
+                let a =
+                    if child.Key.Equals("inline_script", StringComparison.OrdinalIgnoreCase) then
+                        let s = child.TagText "script"
+                        if String.IsNullOrWhiteSpace s then a else normalizeCallerRefKey s :: a
+                    else a
+                collect child a) acc
+        collect node [] |> List.distinct
+
+    let removeCallerContributions (filepath: string) =
+        match inlineScriptCallerKeysByFile.TryGetValue filepath with
+        | true, keys ->
+            for key in keys do
+                match inlineScriptCallerIndex.TryGetValue key with
+                | true, set ->
+                    lock set (fun () ->
+                        set.Remove filepath |> ignore
+                        if set.Count = 0 then
+                            inlineScriptCallerIndex.TryRemove key |> ignore)
+                | _ -> ()
+            inlineScriptCallerKeysByFile.TryRemove filepath |> ignore
+        | _ -> ()
+
+    let addCallerContributions (e: Entity) =
+        if not (e.logicalpath.StartsWith(inlinePath, StringComparison.OrdinalIgnoreCase)) then
+            let keys = collectInlineScriptRefs e.rawEntity
+            if not (List.isEmpty keys) then
+                inlineScriptCallerKeysByFile[e.filepath] <- List.toArray keys
+                for key in keys do
+                    let set =
+                        inlineScriptCallerIndex.GetOrAdd(key, fun _ -> System.Collections.Generic.HashSet<string>())
+                    lock set (fun () -> set.Add e.filepath |> ignore)
+
+    /// 全量重建反向索引（首次载入后调用）。
+    let rebuildInlineScriptCallerIndex () =
+        inlineScriptCallerIndex.Clear()
+        inlineScriptCallerKeysByFile.Clear()
+        for struct (e, _) in entitiesMap.Values do
+            addCallerContributions e
+
+    /// 单文件增量更新：先回收旧贡献，再加入当前引用。
+    let updateInlineScriptCallerIndexForFile (e: Entity) =
+        removeCallerContributions e.filepath
+        addCallerContributions e
+
+    /// 查询调用指定 inline_script 的 caller 文件（精确 + 后缀匹配）。
+    let getInlineScriptCallers (scriptName: string) =
+        let target = normalizeCallerRefKey scriptName
+        if String.IsNullOrWhiteSpace target then
+            []
+        else
+            let result = System.Collections.Generic.HashSet<string>()
+            for kv in inlineScriptCallerIndex do
+                let key = kv.Key
+                if
+                    key = target
+                    || key.EndsWith("/" + target, StringComparison.Ordinal)
+                    || target.EndsWith("/" + key, StringComparison.Ordinal)
+                then
+                    lock kv.Value (fun () ->
+                        for f in kv.Value do
+                            result.Add f |> ignore)
+            result |> List.ofSeq
+
     let updateInlineScripts (news: (Resource * struct (Entity * Lazy<'T>) option) list) =
         // 如果被修改的文件是 inline_script 本身，先失效缓存
         for (resource, entityOpt) in news do
@@ -995,6 +1078,30 @@ type ResourceManager<'T when 'T :> ComputedData>
         let _ = Task.Run(fun () -> forceEagerData eagerVersion)
         ()
 
+    let dynamicParameterPaths =
+        [| "common/scripted_effects/"
+           "common/scripted_triggers/"
+           "common/script_values/"
+           "common/inline_scripts/" |]
+
+    let forceDynamicParameterData (timeoutMs: int) (maxEntities: int) =
+        let sw = System.Diagnostics.Stopwatch.StartNew()
+        let candidates =
+            entitiesMap.Values.ToArray()
+            |> Array.filter (fun (struct (e, _)) ->
+                dynamicParameterPaths
+                |> Array.exists (fun p -> e.logicalpath.StartsWith(p, System.StringComparison.Ordinal)))
+        let limit =
+            if maxEntities <= 0 then candidates.Length else min maxEntities candidates.Length
+        let mutable forced = 0
+        let mutable i = 0
+        while i < limit && (timeoutMs <= 0 || sw.ElapsedMilliseconds < int64 timeoutMs) do
+            let struct (_, l) = candidates[i]
+            l.Force() |> ignore
+            forced <- forced + 1
+            i <- i + 1
+        forced
+
     let updateFiles (files: ResourceInput array) =
         let news =
             files |> PSeq.map parseFileThenEntity |> Seq.collect saveResults |> Seq.toList
@@ -1004,6 +1111,8 @@ type ResourceManager<'T when 'T :> ComputedData>
 
         if enableInlineScripts then
             res <- updateInlineScripts news |> Seq.toList
+
+        rebuildInlineScriptCallerIndex ()
 
         let eagerVersion = ResourceManagerEager.nextVersion ()
         let _ = Task.Run(fun () -> forceEagerData eagerVersion)
@@ -1045,6 +1154,9 @@ type ResourceManager<'T when 'T :> ComputedData>
         let mutable res = savedResults
         if enableInlineScripts then
             res <- updateInlineScripts res |> Seq.toList
+
+        // 增量维护 inline_script 反向调用索引（仅本文件的贡献）
+        entity |> Option.iter updateInlineScriptCallerIndexForFile
 
         // 跳过 updateOverwrite — 编辑内容不改变覆盖关系
         // 跳过 forceEagerData — Lazy 值按需求值，避免全量预热导致巨额分配
@@ -1105,6 +1217,9 @@ type ResourceManager<'T when 'T :> ComputedData>
             member _.AllEntities = allEntities
             member _.ValidatableEntities = validatableEntities
             member _.ForceRecompute() = forceRecompute ()
+            member _.ForceDynamicParameterData(timeoutMs, maxEntities) =
+                forceDynamicParameterData timeoutMs maxEntities
             member _.ForceRulesDataGenerate() = forceRulesData ()
+            member _.GetInlineScriptCallers scriptName = getInlineScriptCallers scriptName
             member _.GetFileNames = getFileNames
             member _.GetEntityByFilePath path = getEntityByFilePath path }

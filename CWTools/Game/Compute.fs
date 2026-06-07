@@ -154,7 +154,11 @@ module EU4 =
             (e.logicalpath.StartsWith("common/scripted_effects", StringComparison.OrdinalIgnoreCase)
              || e.logicalpath.StartsWith("common/scripted_triggers", StringComparison.OrdinalIgnoreCase))
         then
-            getScriptedEffectParams e.rawEntity
+            let fromRaw = getScriptedEffectParams e.rawEntity
+            if System.Object.ReferenceEquals(e.entity, e.rawEntity) then
+                fromRaw
+            else
+                fromRaw @ getScriptedEffectParams e.entity |> List.distinct
         else
             []
 
@@ -405,7 +409,11 @@ module Jomini =
             (e.logicalpath.StartsWith("common/scripted_effects", StringComparison.OrdinalIgnoreCase)
              || e.logicalpath.StartsWith("common/scripted_triggers", StringComparison.OrdinalIgnoreCase))
         then
-            getScriptedEffectParams e.rawEntity
+            let fromRaw = getScriptedEffectParams e.rawEntity
+            if System.Object.ReferenceEquals(e.entity, e.rawEntity) then
+                fromRaw
+            else
+                fromRaw @ getScriptedEffectParams e.entity |> List.distinct
         else
             []
 
@@ -413,7 +421,11 @@ module Jomini =
         if
             (e.logicalpath.StartsWith("common/script_values", StringComparison.OrdinalIgnoreCase))
         then
-            getScriptValueParams e.rawEntity
+            let fromRaw = getScriptValueParams e.rawEntity
+            if System.Object.ReferenceEquals(e.entity, e.rawEntity) then
+                fromRaw
+            else
+                fromRaw @ getScriptValueParams e.entity |> List.distinct
         else
             []
 

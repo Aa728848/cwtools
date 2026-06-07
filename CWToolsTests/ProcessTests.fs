@@ -1595,3 +1595,38 @@ let testsConfig =
 //             Array.create 10000 0 |> Array.Parallel.iteri (fun i _ -> inner i)
 //
 //     ]
+
+[<Tests>]
+let dynamicParameterScanTests =
+    testList
+        "dynamic parameter scanning"
+        [ testCase "scripted_effect $PARAM$ extraction"
+          <| fun () ->
+              let input =
+                  "test_effect = {\n\
+                            set_variable = { which = $AMOUNT$ value = 5 }\n\
+                            add_resource = { energy = $ENERGY|10$ }\n\
+                            }"
+
+              match CKParser.parseString input "test.txt" with
+              | Success(r, _, _) ->
+                  let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+                  let ps = Compute.EU4.getScriptedEffectParams node
+                  Expect.contains ps "AMOUNT" $"should extract AMOUNT, got %A{ps}"
+                  Expect.contains ps "ENERGY" $"should strip default from $ENERGY|10$, got %A{ps}"
+              | Failure(e, _, _) -> Expect.isTrue false e
+          testCase "script_value $PARAM$ extraction"
+          <| fun () ->
+              let input =
+                  "test_value = {\n\
+                            value = $BASE$\n\
+                            multiply = $FACTOR|2$\n\
+                            }"
+
+              match CKParser.parseString input "test.txt" with
+              | Success(r, _, _) ->
+                  let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+                  let ps = Compute.EU4.getScriptValueParams node
+                  Expect.contains ps "BASE" $"should extract BASE, got %A{ps}"
+                  Expect.contains ps "FACTOR" $"should strip default from $FACTOR|2$, got %A{ps}"
+              | Failure(e, _, _) -> Expect.isTrue false e ]
