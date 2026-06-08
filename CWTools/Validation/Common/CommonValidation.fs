@@ -452,33 +452,45 @@ module CommonValidation =
                         | "scripted_trigger" -> "scripted trigger"
                         | _ -> "scripted effect"
 
-                    let message =
-                        { location = callSite
-                          message = sprintf "This call of %s %s results in an error" scriptedKind name }
+                    let relocate (errs: CWError list) =
+                        errs
+                        |> List.map (fun e ->
+                            { e with
+                                range = callSite
+                                keyLength = name.Length
+                                message =
+                                    sprintf "This call of %s %s results in an error: %s" scriptedKind name e.message
+                                relatedErrors =
+                                    Some
+                                        [ { location = e.range
+                                            message = sprintf "Related source: definition of %s %s" scriptedKind name } ] })
+
+                    let definitionHint =
+                        { code = "CW274D"
+                          severity = Severity.Information
+                          range = node.Position
+                          keyLength = name.Length
+                          message =
+                            sprintf "This %s %s results in an error when expanded at a call site" scriptedKind name
+                          data = None
+                          relatedErrors = Some [ { location = callSite; message = sprintf "Call site of %s" name } ] }
 
                     let combined =
                         match varValidation, ruleRes with
                         | OK, OK -> OK
-                        | OK, Invalid(_, inv) ->
-                            Invalid(
-                                System.Guid.NewGuid(),
-                                inv |> List.map (fun e -> { e with relatedErrors = Some [ message ] })
-                            )
+                        | OK, Invalid(_, innerErrs) ->
+                            Invalid(System.Guid.NewGuid(), definitionHint :: relocate innerErrs)
                         | Invalid(_, varInv), OK ->
-                            Invalid(
-                                System.Guid.NewGuid(),
-                                varInv |> List.map (fun e -> { e with relatedErrors = Some [ message ] })
-                            )
+                            Invalid(System.Guid.NewGuid(), definitionHint :: relocate varInv)
                         | Invalid(_, varInv), Invalid(_, resInv) ->
-                            Invalid(
-                                System.Guid.NewGuid(),
-                                (varInv @ resInv) |> List.map (fun e -> { e with relatedErrors = Some [ message ] })
-                            )
+                            Invalid(System.Guid.NewGuid(), definitionHint :: relocate (varInv @ resInv))
 
                     combined
 
                 let memoizeValidation =
-                    let keyFun = (fun (scriptedType, _, _, node: Node, _, seParams) -> (scriptedType, node.Position, seParams))
+                    let keyFun =
+                        (fun (scriptedType, _, _, node: Node, callSite, seParams) ->
+                            (scriptedType, node.Position, callSite, seParams))
                     let memFun = validateSESpecific
                     memoize keyFun memFun
 
@@ -652,33 +664,43 @@ module CommonValidation =
                     //                    logInfo (sprintf "vsvp d %A %A" (CKPrinter.api.prettyPrintStatement newNode.ToRaw) (seParams))
                     let ruleRes = rv.ManualRuleValidate(logicalpath, rootNode)
                     // eprintfn "%A %A" logicalpath res
-                    let message =
-                        { location = callSite
-                          message = sprintf "This call of scripted value %s results in an error" name }
+                    let relocate (errs: CWError list) =
+                        errs
+                        |> List.map (fun e ->
+                            { e with
+                                range = callSite
+                                keyLength = name.Length
+                                message =
+                                    sprintf "This call of scripted value %s results in an error: %s" name e.message
+                                relatedErrors =
+                                    Some
+                                        [ { location = e.range
+                                            message = sprintf "Related source: definition of scripted value %s" name } ] })
+
+                    let definitionHint =
+                        { code = "CW274D"
+                          severity = Severity.Information
+                          range = node.Position
+                          keyLength = name.Length
+                          message =
+                            sprintf "This scripted value %s results in an error when expanded at a call site" name
+                          data = None
+                          relatedErrors = Some [ { location = callSite; message = sprintf "Call site of %s" name } ] }
 
                     let combined =
                         match varValidation, ruleRes with
                         | OK, OK -> OK
-                        | OK, Invalid(_, inv) ->
-                            Invalid(
-                                System.Guid.NewGuid(),
-                                inv |> List.map (fun e -> { e with relatedErrors = Some [ message ] })
-                            )
+                        | OK, Invalid(_, innerErrs) ->
+                            Invalid(System.Guid.NewGuid(), definitionHint :: relocate innerErrs)
                         | Invalid(_, varInv), OK ->
-                            Invalid(
-                                System.Guid.NewGuid(),
-                                varInv |> List.map (fun e -> { e with relatedErrors = Some [ message ] })
-                            )
+                            Invalid(System.Guid.NewGuid(), definitionHint :: relocate varInv)
                         | Invalid(_, varInv), Invalid(_, resInv) ->
-                            Invalid(
-                                System.Guid.NewGuid(),
-                                (varInv @ resInv) |> List.map (fun e -> { e with relatedErrors = Some [ message ] })
-                            )
+                            Invalid(System.Guid.NewGuid(), definitionHint :: relocate (varInv @ resInv))
 
                     combined
                 //                            | Invalid (_, inv) -> Invalid (System.Guid.NewGuid(), inv |> List.map (fun e -> { e with relatedErrors = Some message })))
                 let memoizeValidation =
-                    let keyFun = (fun (_, _, node: Node, _, seParams) -> (node.Position, seParams))
+                    let keyFun = (fun (_, _, node: Node, callSite, seParams) -> (node.Position, callSite, seParams))
                     let memFun = validateSESpecific
                     memoize keyFun memFun
 
