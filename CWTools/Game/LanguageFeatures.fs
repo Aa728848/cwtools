@@ -17,13 +17,16 @@ module LanguageFeatures =
     /// Avoids re-parsing the entire file on every completion/hover/goto request
     /// when the file content hasn't changed.
     let private completionEntityCache = ConcurrentDictionary<string, struct (int * Entity)>()
+    let private infoEntityCache = ConcurrentDictionary<string, struct (int * Entity)>()
 
     let private typeReferenceIndexCache =
         ConcurrentDictionary<struct (int * int), Map<string * string, range list>>()
 
     /// Clear the completion entity cache. Call during RefreshCaches to release
     /// stale Entity ASTs for files that are no longer relevant.
-    let clearCompletionEntityCache () = completionEntityCache.Clear()
+    let clearCompletionEntityCache () =
+        completionEntityCache.Clear()
+        infoEntityCache.Clear()
 
     let private isSameText (left: string) (right: string) =
         String.Equals(left, right, StringComparison.Ordinal)
@@ -127,6 +130,25 @@ module LanguageFeatures =
               logicalpath = logicalpath
               filetext = filetext
               validate = true }
+
+    /// Parse a file into an Entity, reusing the cached result when the content
+    /// hash is unchanged. Used by the hover / goto / scopes paths to avoid
+    /// re-parsing the whole file on every request (and twice per hover).
+    let private processResourceCachedInfo
+        (resourceManager: ResourceManager<_>)
+        (fileManager: FileManager)
+        (filepath: string)
+        (filetext: string)
+        =
+        let hash = filetext.GetHashCode()
+        match infoEntityCache.TryGetValue(filepath) with
+        | true, struct (cachedHash, cachedEntity) when cachedHash = hash -> Some cachedEntity
+        | _ ->
+            match resourceManager.ManualProcessResource (makeEntityResourceInput fileManager filepath filetext) with
+            | Some e ->
+                infoEntityCache.[filepath] <- struct (hash, e)
+                Some e
+            | None -> None
 
     let makeFileWithContentResourceInput (fileManager: FileManager) filepath filetext =
         let filepath = Path.GetFullPath(filepath)
@@ -1156,10 +1178,8 @@ module LanguageFeatures =
         if PdxShaderFeatures.isShaderFile filepath then
             PdxShaderFeatures.goToDefinition resourceManager.Api pos filepath filetext
         else
-            let resource = makeEntityResourceInput fileManager filepath filetext
-
             let primaryResult =
-                match resourceManager.ManualProcessResource resource, infoService with
+                match processResourceCachedInfo resourceManager fileManager filepath filetext, infoService with
                 | Some e, Some info ->
                     logDiag (sprintf "getInfo %s %s" (fileManager.ConvertPathToLogicalPath filepath) filepath)
 
@@ -1338,9 +1358,7 @@ module LanguageFeatures =
         (filepath: string)
         (filetext: string)
         =
-        let resource = makeEntityResourceInput fileManager filepath filetext
-
-        match resourceManager.ManualProcessResource resource, infoService with
+        match processResourceCachedInfo resourceManager fileManager filepath filetext, infoService with
         | Some e, Some info ->
             // match info.GetInfo(pos, e) with
             match info.GetInfo(pos, e) with
@@ -1364,8 +1382,6 @@ module LanguageFeatures =
         (filepath: string)
         (filetext: string)
         : SymbolInformation option =
-        let resource = makeEntityResourceInput fileManager filepath filetext
-
         // Simple recursive descent evaluator for @[ expr ] expressions
         // Supports: +, -, *, /, unary minus, parentheses, decimal literals, @varName
         let evalExpr (expr: string) (varValues: Map<string, decimal>) : decimal option =
@@ -1849,7 +1865,7 @@ module LanguageFeatures =
         | Some info -> Some info
         | None ->
 
-        match resourceManager.ManualProcessResource resource, infoService with
+        match processResourceCachedInfo resourceManager fileManager filepath filetext, infoService with
         | Some e, Some info ->
             log (sprintf "symbolInfoAtPos %s %s" (fileManager.ConvertPathToLogicalPath filepath) filepath)
 
