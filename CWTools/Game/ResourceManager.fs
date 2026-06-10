@@ -666,7 +666,7 @@ type ResourceManager<'T when 'T :> ComputedData>
                 entitiesMap.Values
                 |> Seq.filter (fun struct (e, _) -> e.overwrite <> Overwrite.Overwritten)
                 |> Seq.map structFst
-                |> Seq.filter (fun e -> e.logicalpath.StartsWith inlinePath)
+                |> Seq.filter (fun e -> e.logicalpath.StartsWith(inlinePath, StringComparison.OrdinalIgnoreCase))
                 |> Seq.map (fun e -> (normalizeInlineScriptPath (e.logicalpath.Substring inlinePathLength), e.rawEntity))
                 |> Map.ofSeq
             cachedInlineScriptsMap <- Some m
@@ -782,7 +782,7 @@ type ResourceManager<'T when 'T :> ComputedData>
         // 如果被修改的文件是 inline_script 本身，先失效缓存
         for (resource, entityOpt) in news do
             match entityOpt with
-            | Some struct (e, _) when e.logicalpath.StartsWith inlinePath -> invalidateInlineScriptsCache ()
+            | Some struct (e, _) when e.logicalpath.StartsWith(inlinePath, StringComparison.OrdinalIgnoreCase) -> invalidateInlineScriptsCache ()
             | _ -> ()
 
         let inlineScriptsMap = getOrBuildInlineScriptsMap ()
@@ -1042,7 +1042,9 @@ type ResourceManager<'T when 'T :> ComputedData>
         |> Seq.map (function
             | resource, Some struct (oldE, oldLazy) ->
                 // 性能优化：跳过 inline_scripts/ 目录内的文件（它们是模板，不需要被展开）
-                if oldE.logicalpath.StartsWith inlinePath then
+                // 大小写不敏感判断（与 FileManager 的 inline_script 识别、addCallerContributions 一致），
+                // 避免 logicalpath 大小写与字面量不一致时模板未被跳过、被当普通文件按规则验证（CW242/CW263 假阳性）
+                if oldE.logicalpath.StartsWith(inlinePath, StringComparison.OrdinalIgnoreCase) then
                     resource, Some struct (oldE, oldLazy)
                 else
 
