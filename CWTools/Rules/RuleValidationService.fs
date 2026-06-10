@@ -354,9 +354,14 @@ type RuleValidationService
                 if enforceCardinality && not hasMacro && (leaf.Key.[0] <> '@')
                    && not isExpandedSnippet
                    && not (stringManager.GetMetadataForID keyIds.lower).containsDoubleDollar then
+                    let suggestion =
+                        leafSpecificDict.Keys
+                        |> Seq.map (fun id -> stringManager.GetStringForID id)
+                        |> NameSuggestion.didYouMean key
+
                     inv
                         (ErrorCodes.ConfigRulesUnexpectedPropertyNode
-                            $"%s{key} is unexpected in %s{startNode.Key}"
+                            $"%s{key} is unexpected in %s{startNode.Key}%s{suggestion}"
                             severity)
                         leaf
                     <&&&> innerErrors
@@ -469,9 +474,14 @@ type RuleValidationService
                 if enforceCardinality && not hasMacro
                    && not isExpandedSnippet
                    && not (stringManager.GetMetadataForID keyIds.lower).containsDoubleDollar then
+                    let suggestion =
+                        nodeSpecificDict.Keys
+                        |> Seq.map (fun id -> stringManager.GetStringForID id)
+                        |> NameSuggestion.didYouMean key
+
                     inv
                         (ErrorCodes.ConfigRulesUnexpectedPropertyLeaf
-                            $"%s{key} is unexpected in %s{startNode.Key}"
+                            $"%s{key} is unexpected in %s{startNode.Key}%s{suggestion}"
                             severity)
                         node
                     <&&&> innerErrors

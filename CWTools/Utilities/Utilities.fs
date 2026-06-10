@@ -348,3 +348,83 @@ module Utils2 =
         | _ -> items |> Seq.iter newSet.AddWithIDs
 
         newSet
+
+/// Bounded nearest-name lookup used to append "did you mean X?" suggestions to
+/// validation error messages. Kept deliberately cheap: it only runs on error
+/// paths, scans a capped number of candidates, and abandons distance
+/// computations as soon as they exceed the current best.
+module NameSuggestion =
+
+    /// Upper bound on candidates scanned per suggestion, so huge sets
+    /// (e.g. all localisation keys) cannot make error reporting slow.
+    [<Literal>]
+    let private MaxCandidates = 20000
+
+    let private maxDistanceFor (length: int) =
+        if length <= 6 then 1
+        elif length <= 12 then 2
+        else 3
+
+    /// Case-insensitive Levenshtein distance with a cutoff: ValueNone if the
+    /// distance exceeds maxDist (computation stops early when it must).
+    let levenshteinWithin (maxDist: int) (a: string) (b: string) =
+        if maxDist < 0 || abs (a.Length - b.Length) > maxDist then
+            ValueNone
+        else
+            let la, lb = a.Length, b.Length
+            let mutable prev = Array.init (lb + 1) id
+            let mutable curr = Array.zeroCreate (lb + 1)
+            let mutable exceeded = false
+            let mutable i = 1
+
+            while not exceeded && i <= la do
+                curr.[0] <- i
+                let mutable rowMin = i
+                let ca = Char.ToLowerInvariant a.[i - 1]
+
+                for j in 1..lb do
+                    let cost = if ca = Char.ToLowerInvariant b.[j - 1] then 0 else 1
+                    let v = min (min (curr.[j - 1] + 1) (prev.[j] + 1)) (prev.[j - 1] + cost)
+                    curr.[j] <- v
+                    if v < rowMin then rowMin <- v
+
+                if rowMin > maxDist then exceeded <- true
+                let tmp = prev
+                prev <- curr
+                curr <- tmp
+                i <- i + 1
+
+            if exceeded then ValueNone
+            else if prev.[lb] <= maxDist then ValueSome prev.[lb]
+            else ValueNone
+
+    /// The closest candidate within an edit-distance budget scaled by the
+    /// value's length, or None. Values shorter than 4 chars are skipped (too noisy).
+    let suggestClosest (value: string) (candidates: string seq) : string option =
+        if isNull value || value.Length < 4 then
+            None
+        else
+            let maxDist = maxDistanceFor value.Length
+            let mutable best: string option = None
+            let mutable bestDist = maxDist + 1
+            let mutable scanned = 0
+            use e = candidates.GetEnumerator()
+
+            while bestDist > 1 && scanned < MaxCandidates && e.MoveNext() do
+                let candidate = e.Current
+                scanned <- scanned + 1
+
+                if not (isNull candidate) && candidate.Length > 0 then
+                    match levenshteinWithin (bestDist - 1) value candidate with
+                    | ValueSome d when d >= 1 ->
+                        bestDist <- d
+                        best <- Some candidate
+                    | _ -> ()
+
+            best
+
+    /// Formats " (did you mean 'x'?)" for appending to an error message, or "".
+    let didYouMean (value: string) (candidates: string seq) =
+        match suggestClosest value candidates with
+        | Some s -> $" (did you mean '%s{s}'?)"
+        | None -> ""

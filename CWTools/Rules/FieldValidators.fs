@@ -382,28 +382,36 @@ module internal FieldValidators =
             if firstCharEqualsAmp ids.lower then
                 errors
             else
+                let newvalue =
+                    match typetype with
+                    | TypeType.Simple _ -> Some value
+                    | Complex(p, _, s) ->
+                        match
+                            value.StartsWith(p, StringComparison.OrdinalIgnoreCase),
+                            value.EndsWith(s, StringComparison.OrdinalIgnoreCase),
+                            (value.Length - p.Length - s.Length)
+                        with
+                        | _, false, _ -> None
+                        | false, _, _ -> None
+                        | _, _, n when n <= 0 -> None
+                        | true, true, n -> Some(value.Substring(p.Length, n))
+
+                // eprintfn "ct %s %A %A" value newvalue typetype
                 let found =
-                    let newvalue =
-                        match typetype with
-                        | TypeType.Simple _ -> Some value
-                        | Complex(p, _, s) ->
-                            match
-                                value.StartsWith(p, StringComparison.OrdinalIgnoreCase),
-                                value.EndsWith(s, StringComparison.OrdinalIgnoreCase),
-                                (value.Length - p.Length - s.Length)
-                            with
-                            | _, false, _ -> None
-                            | false, _, _ -> None
-                            | _, _, n when n <= 0 -> None
-                            | true, true, n -> Some(value.Substring(p.Length, n))
-                    // eprintfn "ct %s %A %A" value newvalue typetype
                     newvalue |> Option.map values.Contains |> Option.defaultValue false
 
                 if found then
                     errors
                 else
+                    let suggestion =
+                        match newvalue with
+                        | Some v -> NameSuggestion.didYouMean v values.StringValues
+                        | None -> ""
+
                     inv
-                        (ErrorCodes.ConfigRulesUnexpectedValue $"Expected value of type %s{fieldType}" severity)
+                        (ErrorCodes.ConfigRulesUnexpectedValue
+                            $"Expected value of type %s{fieldType}, got '%s{value}'%s{suggestion}"
+                            severity)
                         leafornode
                     <&&&> errors
 
