@@ -667,7 +667,9 @@ type ResourceManager<'T when 'T :> ComputedData>
                 |> Seq.filter (fun struct (e, _) -> e.overwrite <> Overwrite.Overwritten)
                 |> Seq.map structFst
                 |> Seq.filter (fun e -> e.logicalpath.StartsWith(inlinePath, StringComparison.OrdinalIgnoreCase))
-                |> Seq.map (fun e -> (normalizeInlineScriptPath (e.logicalpath.Substring inlinePathLength), e.rawEntity))
+                |> Seq.map (fun e ->
+                    ((normalizeInlineScriptPath (e.logicalpath.Substring inlinePathLength)).ToLowerInvariant(),
+                     e.rawEntity))
                 |> Map.ofSeq
             cachedInlineScriptsMap <- Some m
             m
@@ -789,10 +791,11 @@ type ResourceManager<'T when 'T :> ComputedData>
 
         // Helper: try exact match first, then suffix match, then wildcard match for $PARAM$ patterns
         let tryFindInlineScript (scriptName: string) =
-            match inlineScriptsMap |> Map.tryFind scriptName with
+            let lookupName = (normalizeInlineScriptPath (scriptName.Replace('\\', '/'))).ToLowerInvariant()
+            match inlineScriptsMap |> Map.tryFind lookupName with
             | Some _ as result -> result
             | None ->
-                let normalizedName = scriptName.Replace('\\', '/')
+                let normalizedName = lookupName
 
                 // Check if scriptName contains parameter patterns like $RARITY$
                 let hasParams = normalizedName.Contains("$")
@@ -818,8 +821,9 @@ type ResourceManager<'T when 'T :> ComputedData>
                 inlineScriptsMap
                 |> Map.tryPick (fun key value ->
                     let normalizedKey = key.Replace('\\', '/')
-                    // Suffix match
-                    if normalizedKey.EndsWith("/" + normalizedName) || normalizedName.EndsWith("/" + normalizedKey) then
+                    // Suffix match（键与 normalizedName 均已小写；用 Ordinal 避免区域文化敏感比较带来的跨平台/跨 locale 差异）
+                    if normalizedKey.EndsWith("/" + normalizedName, StringComparison.Ordinal)
+                       || normalizedName.EndsWith("/" + normalizedKey, StringComparison.Ordinal) then
                         Some value
                     // Wildcard match for parameterized script names
                     elif hasParams && not hasPathDefault && pattern.IsMatch(normalizedKey) then
