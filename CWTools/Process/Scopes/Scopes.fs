@@ -398,7 +398,9 @@ module Scopes =
                             let valueScopeMatch = valueTriggers.TryFind nextKey
 
                             match
-                                first && nextKey.StartsWith("event_target:", StringComparison.OrdinalIgnoreCase),
+                                // event_target lookups resolve globally, so they are valid at any
+                                // position in a scope chain (e.g. prevprev.event_target:x)
+                                nextKey.StartsWith("event_target:", StringComparison.OrdinalIgnoreCase),
                                 eventTargetLinkMatch,
                                 valueScopeMatch
                             with
