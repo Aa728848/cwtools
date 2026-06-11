@@ -120,6 +120,7 @@ module STLLookup =
                 | struct (f, _) when f.filepath.Contains("scripted_effects") -> Some f.entity
                 | _ -> None)
             |> Seq.collect getChildrenWithComments
+            |> List.ofSeq
 
         let scopedEffects =
             vanillaEffects
@@ -170,4 +171,4 @@ module STLLookup =
         while (not (ff ())) do
             ()
 
-        final, vanillaEffects
+        STLProcess.addNestedEventTargetsToEffects rawEffects final, vanillaEffects

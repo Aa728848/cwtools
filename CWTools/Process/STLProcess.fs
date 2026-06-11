@@ -225,6 +225,115 @@ module STLProcess =
             usedtargets |> Set.toList
         )
 
+    /// Propagates saved/used event targets through nested scripted-effect calls
+    /// with parameter substitution: if effect A contains `B = { TARGET = foo }`
+    /// and B contains `save_event_target_as = $TARGET$`, then A is credited with
+    /// saving `foo`. Iterates to a fixpoint so chains of nested calls resolve.
+    /// Targets still containing `$param$` placeholders are kept so an outer call
+    /// site (another effect or an event) can substitute them in turn.
+    let addNestedEventTargetsToEffects (rawEffects: (Node * string list) list) (effects: Effect list) : Effect list =
+        let scripted =
+            effects
+            |> List.choose (function
+                | :? ScriptedEffect as e -> Some e
+                | _ -> None)
+
+        if List.isEmpty scripted then
+            effects
+        else
+            let effectNames = scripted |> List.map (fun e -> e.Name.lower) |> Set.ofList
+
+            let extractCallParams (callNode: Node) =
+                callNode.Values |> List.map (fun l -> ("$" + l.Key + "$", l.ValueText))
+
+            // Calls to other scripted effects inside a body: leaf calls
+            // (`some_effect = yes`) carry no params, node calls carry their values.
+            let findNestedCalls (node: Node) =
+                let fNode =
+                    (fun (x: Node) children ->
+                        let leafCalls =
+                            x.Values
+                            |> List.choose (fun l ->
+                                if Set.contains l.KeyId.lower effectNames then
+                                    Some(l.KeyId.lower, [])
+                                else
+                                    None)
+
+                        let nodeCalls =
+                            x.Nodes
+                            |> Seq.choose (fun n ->
+                                if Set.contains n.KeyId.lower effectNames then
+                                    Some(n.KeyId.lower, extractCallParams n)
+                                else
+                                    None)
+                            |> List.ofSeq
+
+                        leafCalls @ nodeCalls @ children)
+
+                foldNode2 fNode (@) [] node
+
+            let callsByName =
+                rawEffects
+                |> List.choose (fun (node, _) ->
+                    if Set.contains node.KeyId.lower effectNames then
+                        match findNestedCalls node with
+                        | [] -> None
+                        | calls -> Some(node.KeyId.lower, calls)
+                    else
+                        None)
+                |> Map.ofList
+
+            let mutable current =
+                scripted
+                |> List.map (fun e ->
+                    e.Name.lower, (Set.ofList e.SavedEventTargets, Set.ofList e.UsedEventTargets))
+                |> Map.ofList
+
+            let step () =
+                let updated =
+                    current
+                    |> Map.map (fun name (saved, used) ->
+                        match Map.tryFind name callsByName with
+                        | None -> (saved, used)
+                        | Some calls ->
+                            calls
+                            |> List.fold
+                                (fun (s, u) (callee, callParams) ->
+                                    match Map.tryFind callee current with
+                                    | None -> (s, u)
+                                    | Some(cs, cu) ->
+                                        let sub = Set.map (substituteParams callParams)
+                                        (Set.union s (sub cs), Set.union u (sub cu)))
+                                (saved, used))
+
+                let changed = updated <> current
+                current <- updated
+                changed
+
+            let mutable i = 0
+
+            while step () && i < 10 do
+                i <- i + 1
+
+            effects
+            |> List.map (fun e ->
+                match e with
+                | :? ScriptedEffect as se ->
+                    match Map.tryFind se.Name.lower current with
+                    | Some(saved, used) ->
+                        ScriptedEffect(
+                            se.Name,
+                            se.Scopes,
+                            se.Type,
+                            se.Comments,
+                            se.GlobalEventTargets,
+                            saved |> Set.toList,
+                            used |> Set.toList
+                        )
+                        :> Effect
+                    | None -> e
+                | _ -> e)
+
     let rec cloneNode (source: Node) =
         let rec mapChild =
             function

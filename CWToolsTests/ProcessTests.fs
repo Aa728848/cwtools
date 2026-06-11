@@ -1630,3 +1630,106 @@ let dynamicParameterScanTests =
                   Expect.contains ps "BASE" $"should extract BASE, got %A{ps}"
                   Expect.contains ps "FACTOR" $"should strip default from $FACTOR|2$, got %A{ps}"
               | Failure(e, _, _) -> Expect.isTrue false e ]
+
+[<Tests>]
+let nestedEventTargetTests =
+    let mkScriptedEffect (node: Node) =
+        ScriptedEffect(
+            node.KeyId,
+            [],
+            EffectType.Effect,
+            "",
+            STLProcess.findAllSavedGlobalEventTargets node |> Set.toList,
+            STLProcess.findAllSavedEventTargets node |> Set.toList,
+            STLProcess.findAllUsedEventTargets node |> Set.toList
+        )
+        :> Effect
+
+    let buildEffects (input: string) =
+        match CKParser.parseString input "test.txt" with
+        | Success(r, _, _) ->
+            let root = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+            let rawEffects = root.Children |> List.map (fun n -> n, ([]: string list))
+            let effects = root.Children |> List.map mkScriptedEffect
+            STLProcess.addNestedEventTargetsToEffects rawEffects effects
+        | Failure(e, _, _) -> failtest e
+
+    let savedTargetsOf (name: string) (effects: Effect list) =
+        effects
+        |> List.pick (function
+            | :? ScriptedEffect as se when se.Name.GetString() == name -> Some se.SavedEventTargets
+            | _ -> None)
+
+    testList
+        "nested scripted effect event targets"
+        [ testCase "save via nested parameterised call propagates to caller"
+          <| fun () ->
+              // Mirrors vanilla cosmic storms: try_spawn calls choose_location
+              // with EVENT_TARGET_NAME, which does save_event_target_as = $EVENT_TARGET_NAME$
+              let input =
+                  "choose_location = {\n\
+                            random_system = {\n\
+                            save_event_target_as = $EVENT_TARGET_NAME$\n\
+                            }\n\
+                            }\n\
+                            try_spawn = {\n\
+                            choose_location = {\n\
+                            EVENT_TARGET_NAME = new_storm_location\n\
+                            }\n\
+                            spawn_thing = {\n\
+                            position = event_target:new_storm_location\n\
+                            }\n\
+                            }"
+
+              let saved = buildEffects input |> savedTargetsOf "try_spawn"
+
+              Expect.contains
+                  saved
+                  "new_storm_location"
+                  $"caller should be credited with the nested parameterised save, got %A{saved}"
+          testCase "parameter chains resolve across two levels of nesting"
+          <| fun () ->
+              let input =
+                  "saver = {\n\
+                            save_event_target_as = $TARGET$\n\
+                            }\n\
+                            wrapper = {\n\
+                            saver = {\n\
+                            TARGET = $NAME$\n\
+                            }\n\
+                            }\n\
+                            caller = {\n\
+                            wrapper = {\n\
+                            NAME = my_target\n\
+                            }\n\
+                            }"
+
+              let effects = buildEffects input
+              let wrapperSaved = effects |> savedTargetsOf "wrapper"
+              let callerSaved = effects |> savedTargetsOf "caller"
+
+              Expect.contains
+                  wrapperSaved
+                  "$NAME$"
+                  $"wrapper should keep the unresolved placeholder, got %A{wrapperSaved}"
+
+              Expect.contains
+                  callerSaved
+                  "my_target"
+                  $"caller should resolve the full parameter chain, got %A{callerSaved}"
+          testCase "leaf call without params propagates concrete saves"
+          <| fun () ->
+              let input =
+                  "save_it = {\n\
+                            save_event_target_as = concrete_target\n\
+                            }\n\
+                            outer = {\n\
+                            save_it = yes\n\
+                            }"
+
+              let saved = buildEffects input |> savedTargetsOf "outer"
+
+              Expect.contains
+                  saved
+                  "concrete_target"
+                  $"leaf-style call should propagate concrete saves, got %A{saved}" ]
