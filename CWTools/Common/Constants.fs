@@ -574,12 +574,13 @@ type Effect internal (name, scopes, effectType, refHint) =
         Effect(StringResource.stringManager.InternIdentifierToken name, scopes, effectType, refHint)
 
 [<Sealed>]
-type ScriptedEffect(name: StringTokens, scopes, effectType, comments, globals, settargets, usedtargets) =
+type ScriptedEffect(name: StringTokens, scopes, effectType, comments, globals, settargets, usedtargets, firedonactions) =
     inherit Effect(name, scopes, effectType)
     member val Comments: string = comments
     member val GlobalEventTargets: string list = globals
     member val SavedEventTargets: string list = settargets
     member val UsedEventTargets: string list = usedtargets
+    member val FiredOnActions: string list = firedonactions
 
     override x.Equals(y) =
         match y with

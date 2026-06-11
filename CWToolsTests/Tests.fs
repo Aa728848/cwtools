@@ -1582,6 +1582,85 @@ let overwriteTests =
         testVals |> Seq.iter inner
 // ]
 
+[<Tests>]
+let onActionLivenessTests =
+    testWithCapturedLogs "on_action liveness unless_subtyped"
+    <| fun () ->
+        let configtext =
+            "types = {\n\
+                type[on_action] = {\n\
+                    path = \"game/common/on_actions\"\n\
+                    should_be_used = unless_subtyped\n\
+                    ## type_key_filter = on_game_start\n\
+                    subtype[on_game_start] = { }\n\
+                    ## starts_with = on_destroy_planet_with_\n\
+                    subtype[dynamic_planet_killer] = { }\n\
+                }\n\
+                type[country_event] = {\n\
+                    path = \"game/events\"\n\
+                    name_field = \"id\"\n\
+                }\n\
+            }\n\
+            on_action = {\n\
+                ## cardinality = 0..1\n\
+                events = {\n\
+                    ## cardinality = 0..inf\n\
+                    <country_event>\n\
+                }\n\
+            }\n\
+            country_event = {\n\
+                ## cardinality = 0..1\n\
+                id = scalar\n\
+                ## cardinality = 0..1\n\
+                immediate = {\n\
+                    ## cardinality = 0..inf\n\
+                    alias_name[effect] = alias_match_left[effect]\n\
+                }\n\
+            }\n\
+            alias[effect:fire_on_action] = {\n\
+                ## severity = warning\n\
+                on_action = <on_action>\n\
+            }\n"
+
+        let settings = emptyStellarisSettings "./testfiles/onactiontests/gamefiles"
+
+        let settings =
+            { settings with
+                rules =
+                    Some
+                        { ruleFiles = [ "test.cwt", configtext ]
+                          validateRules = true
+                          debugRulesOnly = false
+                          debugMode = false } }
+
+        let stl = STLGame(settings) :> IGame<STLComputedData>
+
+        let unusedErrors =
+            stl.ValidationErrors() |> List.filter (fun e -> e.code = "CW239")
+
+        Expect.equal
+            unusedErrors.Length
+            1
+            $"Expected exactly one unused on_action (on_test_unused): %A{unusedErrors |> List.map (fun e -> e.message)}"
+
+        let error = unusedErrors |> List.head
+        Expect.stringContains error.message "on_test_unused" "The unused on_action should be on_test_unused"
+        Expect.equal error.severity Severity.Information "unless_subtyped liveness should be information severity"
+
+        // The editor's incremental path (didChange -> UpdateFile) must also surface it
+        let updatePath =
+            Path.GetFullPath "./testfiles/onactiontests/gamefiles/common/on_actions/test_actions.txt"
+
+        let updateErrors =
+            stl.UpdateFile true updatePath None
+            |> List.filter (fun e -> e.code = "CW239")
+
+        Expect.equal
+            updateErrors.Length
+            1
+            $"UpdateFile should also report the unused on_action: %A{updateErrors |> List.map (fun e -> e.message)}"
+
+
 
 // [<Tests>]
 // let logTests =

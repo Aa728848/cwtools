@@ -1091,6 +1091,7 @@ module private RulesParserImpl =
                 match node.Key with
                 | "localisation" -> ()
                 | "modifiers" -> ()
+                | "obsolete_keys" -> ()
                 | x when x.StartsWith "subtype" -> ()
                 | x -> log $"Unexpected node %s{x} found in type definition at %A{node.Position}"
             | LeafValueC leafvalue ->
@@ -1129,13 +1130,26 @@ module private RulesParserImpl =
             let subtypes = getNodeComments node |> List.choose parseSubType
             let warningOnly = node.TagText "severity" == "warning"
             let unique = node.TagText "unique" == "yes"
-            let shouldBeReferenced = node.TagText "should_be_used" == "yes"
+
+            let shouldBeReferenced =
+                match node.TagText "should_be_used" with
+                | "yes" -> RefRequired
+                | "unless_subtyped" -> RefRequiredUnlessSubtyped
+                | _ -> RefNotRequired
 
             let unknownKeyHandling =
                 match node.TagText "error_unknown_keys" with
                 | "yes" -> UnknownKeyError
                 | "suggest" -> UnknownKeySuggest
                 | _ -> UnknownKeyIgnore
+
+            let obsoleteKeys =
+                node.Child "obsolete_keys"
+                |> Option.map (fun o ->
+                    o.Leaves
+                    |> Seq.map (fun leaf -> leaf.Key.ToLowerInvariant(), leaf.ValueText)
+                    |> Map.ofSeq)
+                |> Option.defaultValue Map.empty
 
             let localisation =
                 node.Child "localisation"
@@ -1245,6 +1259,7 @@ module private RulesParserImpl =
                       unique = unique
                       shouldBeReferenced = shouldBeReferenced
                       unknownKeyHandling = unknownKeyHandling
+                      obsoleteKeys = obsoleteKeys
                       graphRelatedTypes = graphData
                       keyPrefix = key_prefix }
             | None -> None

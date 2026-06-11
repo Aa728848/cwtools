@@ -12,6 +12,7 @@ open CWTools.Common
 open CWTools.Utilities.Position
 open CWTools.Games
 open CWTools.Parser
+open CWTools.Rules
 
 module CommonValidation =
     let private scriptedParameterPattern =
@@ -776,12 +777,13 @@ module CommonValidation =
         fun l os _ ->
             let typesToCheck =
                 l.typeDefs
-                |> List.filter (fun t -> t.shouldBeReferenced)
-                |> List.map (fun t -> t.name)
+                |> List.filter (fun t -> t.shouldBeReferenced <> RefNotRequired)
+                |> List.map (fun t -> t.name, t.shouldBeReferenced)
+                |> Map.ofList
 
             let typeInfos =
                 l.typeDefInfo
-                |> Map.filter (fun typename _ -> typesToCheck |> List.contains typename)
+                |> Map.filter (fun typename _ -> typesToCheck |> Map.containsKey typename)
                 |> Map.toList
 
             let allReferences =
@@ -789,24 +791,125 @@ module CommonValidation =
                 |> List.choose (fun (_, lazydata) -> lazydata.Force().Referencedtypes)
                 |> Seq.fold (fun a b -> merge a b (fun _ (l1, l2) -> l1 @ l2)) Map.empty
 
-            let checkTypeDef (typename) (refs: string list) (typedef: TypeDefInfo) =
-                match List.contains typedef.id refs with
-                | true -> None
-                | false -> Some(invManual (ErrorCodes.UnusedType typename typedef.id) typedef.range typedef.id None)
+            let parameterisedFireEffects =
+                l.effects
+                |> List.choose (function
+                    | :? ScriptedEffect as se when se.FiredOnActions |> List.exists (fun t -> t.Contains '$') ->
+                        Some se
+                    | _ -> None)
+
+            let resolvedFireTargets =
+                if parameterisedFireEffects.IsEmpty then
+                    Set.empty
+                else
+                    let effectsByName =
+                        parameterisedFireEffects |> List.map (fun se -> se.Name.lower, se) |> Map.ofList
+
+                    let resolveCalls (root: Node) =
+                        let fNode =
+                            fun (x: Node) children ->
+                                let nodeCalls =
+                                    x.Nodes
+                                    |> Seq.collect (fun n ->
+                                        match Map.tryFind n.KeyId.lower effectsByName with
+                                        | Some se ->
+                                            let callParams =
+                                                n.Values |> List.map (fun lf -> lf.Key, lf.ValueText)
+
+                                            se.FiredOnActions
+                                            |> List.map (replaceScriptedParameters callParams)
+                                            |> List.filter (fun t -> not (t.Contains '$'))
+                                        | None -> [])
+                                    |> List.ofSeq
+
+                                nodeCalls @ children
+
+                        foldNode2 fNode (@) [] root
+
+                    // Per-entity cached; the key carries the parameterised
+                    // effect signatures so effect edits invalidate naturally.
+                    let cacheKey =
+                        "commonResolvedFireOnActions:"
+                        + string (
+                            parameterisedFireEffects
+                            |> List.map (fun se -> se.Name.lower, se.FiredOnActions)
+                            |> hash
+                        )
+
+                    os.AddOrGetCached cacheKey (fun e -> resolveCalls e.entity |> List.map box)
+                    |> List.map (fun o -> (o :?> string).ToLowerInvariant())
+                    |> Set.ofList
+
+            let checkTypeDef
+                (requirement: ReferenceRequirement)
+                (typename: string)
+                (exactRefs: Set<string>)
+                (wildcardRefs: System.Text.RegularExpressions.Regex list)
+                (typedef: TypeDefInfo)
+                =
+                // unless_subtyped: instances matching a subtype are engine-invoked.
+                if requirement = RefRequiredUnlessSubtyped && not (List.isEmpty typedef.subtypes) then
+                    None
+                elif exactRefs.Contains(typedef.id.ToLowerInvariant()) then
+                    None
+                elif wildcardRefs |> List.exists (fun regex -> regex.IsMatch typedef.id) then
+                    None
+                else
+                    let severity =
+                        if requirement = RefRequiredUnlessSubtyped then
+                            Severity.Information
+                        else
+                            Severity.Warning
+
+                    Some(invManual (ErrorCodes.UnusedType typename typedef.id severity) typedef.range typedef.id None)
 
             let checkType (typename: string, typedefs: TypeDefInfo array) =
-                match allReferences |> Map.tryFind typename with
-                | None -> failwith "no refernences?" //inv (ErrorCodes.CustomError "This type should be used" Severity.Error)
-                | Some refs ->
-                    typedefs
-                    |> Seq.choose (
-                        checkTypeDef
-                            typename
-                            (refs
-                             |> List.filter (fun ref -> ref.referenceType = ReferenceType.TypeDef)
-                             |> List.map (fun r -> r.name.GetString()))
-                    )
-                    |> Seq.toList
+                let requirement =
+                    typesToCheck |> Map.tryFind typename |> Option.defaultValue RefRequired
+
+                let refs =
+                    allReferences
+                    |> Map.tryFind typename
+                    |> Option.defaultValue []
+                    |> List.filter (fun ref -> ref.referenceType = ReferenceType.TypeDef)
+                    |> List.map (fun r -> r.name.GetString())
+
+                let exactRefs, paramRefs =
+                    refs |> List.partition (fun r -> not (r.Contains '$'))
+
+                let exactSet =
+                    let direct = exactRefs |> List.map _.ToLowerInvariant() |> Set.ofList
+                    // Resolved parameterised fire targets are on_action references.
+                    if typename == "on_action" then
+                        Set.union direct resolvedFireTargets
+                    else
+                        direct
+
+                let wildcardRefs =
+                    paramRefs
+                    |> List.distinct
+                    |> List.choose (fun r ->
+                        let escaped = System.Text.RegularExpressions.Regex.Escape r
+
+                        let pattern =
+                            System.Text.RegularExpressions.Regex.Replace(escaped, @"\\\$.*?\\\$", ".+")
+
+                        // A reference that is nothing but parameters (e.g.
+                        // on_action = $ACTION$) would match every instance and
+                        // disable the check entirely; require some literal text.
+                        if pattern.Replace(".+", "").Length = 0 then
+                            None
+                        else
+                            Some(
+                                System.Text.RegularExpressions.Regex(
+                                    $"^{pattern}$",
+                                    System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                                )
+                            ))
+
+                typedefs
+                |> Seq.choose (checkTypeDef requirement typename exactSet wildcardRefs)
+                |> Seq.toList
 
             match typeInfos |> List.collect checkType with
             | [] -> OK

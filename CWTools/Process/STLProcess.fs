@@ -193,6 +193,21 @@ module STLProcess =
         let fCombine = (@)
         event |> (foldNode2 fNode fCombine []) |> Set.ofList
 
+    /// Raw fire_on_action targets in an effect body. May contain $PARAM$
+    /// placeholders, resolved to concrete on_action names at call sites.
+    let findAllFiredOnActions (event: Node) =
+        let fNode =
+            (fun (x: Node) children ->
+                let inner (leaf: Leaf) =
+                    if x.Key == "fire_on_action" && leaf.Key == "on_action" then
+                        Some(leaf.Value.ToRawString())
+                    else
+                        None
+
+                (x.Values |> List.choose inner) @ children)
+
+        event |> (foldNode2 fNode (@) []) |> Set.ofList
+
     let getScriptedTriggerScope
         (firstRun: bool)
         (effectType: EffectType)
@@ -214,6 +229,7 @@ module STLProcess =
         let globals = findAllSavedGlobalEventTargets node
         let savetargets = findAllSavedEventTargets node
         let usedtargets = findAllUsedEventTargets node
+        let firedonactions = findAllFiredOnActions node
 
         ScriptedEffect(
             node.KeyId,
@@ -222,7 +238,8 @@ module STLProcess =
             commentString,
             globals |> Set.toList,
             savetargets |> Set.toList,
-            usedtargets |> Set.toList
+            usedtargets |> Set.toList,
+            firedonactions |> Set.toList
         )
 
     /// Propagates saved/used/global event targets through nested scripted-effect
@@ -325,7 +342,8 @@ module STLProcess =
                             se.Comments,
                             globals |> Set.toList,
                             saved |> Set.toList,
-                            used |> Set.toList
+                            used |> Set.toList,
+                            se.FiredOnActions
                         )
                         :> Effect
                     | None -> e

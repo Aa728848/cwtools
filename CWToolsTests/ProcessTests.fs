@@ -1,4 +1,4 @@
-module ProcessTests
+﻿module ProcessTests
 
 open System.Collections.Frozen
 open Expecto
@@ -159,29 +159,9 @@ let createStarbaseTypeDefLazy =
           unique = false
           graphRelatedTypes = []
           keyPrefix = None
-          shouldBeReferenced = false
-          unknownKeyHandling = UnknownKeyIgnore }
-// # strategic_resource: strategic resource, deprecated, strategic resource used by the building.
-// # allow: trigger to check for allowing construction of building.
-// # prerequisites: Tech requirements for building.
-// # empire_unique: boolean, can only build one if set to true.
-// # cost: resource table, cost of building.
-// # is_orbital: boolean, can only be built in orbital station.
-// # modifier: modifier, deprecated, applies a modifier to planet; use planet_modifier instead.
-// # planet_modifier, country_modifier, army_modifier: applies modifier to planet/country/armies
-// # triggered_planet_modifier = { key (optional), potential (scope: planet), modifier }: applies conditional modifier to planet
-// # base_buildtime: int, number of days for construction.
-// # requires_pop, boolean, building will require a pop for production.
-// # required_resources, resource table, required resources for production.
-// # produced_resources, resource table, produced resources in production.
-// # upgrades, buildings list, buildings this building can upgrade into.
-// # is_listed, boolean, toggles if this building is shown in the non-upgrade buildable list.
-// # planet_unique, toggles if one can build multiple of this type on a single planet.
-// # ai_weight, weight for AI, default is set to one, weight set to 0 means that AI will never build it
-// # is_colony: trigger to check if the building is a colony shelter for country (scope: country, from: planet). default: "always = no"
-// # active: trigger to check if a building can be active with a given pop worker (scope: pop) if you add a trigger here, you should also add the requirements in the description
-// # show_tech_unlock_if: trigger to show this building only conditionally in the technology screen. scope: country. default: { always = yes }
-// # planet_modifier_with_pop_trigger = { key (optional), potential (scope: pop), modifier }: applies modifier to pops on planet that satisfy condition in trigger
+          shouldBeReferenced = RefNotRequired
+          unknownKeyHandling = UnknownKeyIgnore
+          obsoleteKeys = Map.empty }
 
 let buildingLazy =
     lazy
@@ -191,39 +171,6 @@ let buildingLazy =
 
          NewRule(NodeRule(specificField "building", inner), optionalMany))
 
-// formation_priority = @corvette_formation_priority
-// max_speed = @speed_very_fast
-// acceleration = 0.35
-// rotation_speed = 0.1
-// collision_radius = @corvette_collision_radius
-// max_hitpoints = 300
-// modifier = {
-// 	ship_evasion_add = 60
-// }
-// size_multiplier = 1
-// fleet_slot_size = 1
-// section_slots = { "mid" = { locator = "part1" } }
-// num_target_locators = 2
-// is_space_station = no
-// icon_frame = 2
-// base_buildtime = 60
-// can_have_federation_design = yes
-// enable_default_design = yes	#if yes, countries will have an auto-generated design at start
-
-// default_behavior = swarm
-
-// prerequisites = { "tech_corvettes" }
-
-// combat_disengage_chance = 1.75
-
-// has_mineral_upkeep = yes
-// class = shipclass_military
-// construction_type = starbase_shipyard
-// required_component_set = "power_core"
-// required_component_set = "ftl_components"
-// required_component_set = "thruster_components"
-// required_component_set = "sensor_components"
-// required_component_set = "combat_computers"
 let shipsizeLazy =
     lazy
         (let inner =
@@ -276,8 +223,9 @@ let shipBehaviorTypeLazy =
           modifiers = []
           startsWith = None
           unique = false
-          shouldBeReferenced = false
+          shouldBeReferenced = RefNotRequired
           unknownKeyHandling = UnknownKeyIgnore
+          obsoleteKeys = Map.empty
           graphRelatedTypes = []
           keyPrefix = None }
 
@@ -301,8 +249,9 @@ let shipSizeTypeLazy =
           modifiers = []
           startsWith = None
           unique = false
-          shouldBeReferenced = false
+          shouldBeReferenced = RefNotRequired
           unknownKeyHandling = UnknownKeyIgnore
+          obsoleteKeys = Map.empty
           graphRelatedTypes = []
           keyPrefix = None }
 //  type[ship_behavior] = {
@@ -537,6 +486,77 @@ let testc =
                       let error = es |> List.head
                       Expect.stringContains error.message "did you mean 'on_game_start'" "Should suggest the close key"
                       Expect.equal error.severity Severity.Information "Suggestion should be information severity"
+              | Failure(e, _, _) -> Expect.isTrue false e
+
+          testWithCapturedLogs "test obsolete_keys reports removed and renamed keys"
+          <| fun () ->
+              let config =
+                  "types = {\n\
+                          type[on_action] = {\n\
+                          path = \"game/common/on_actions\"\n\
+                          error_unknown_keys = suggest\n\
+                          obsolete_keys = {\n\
+                          on_planet_conquer = \"removed from the game\"\n\
+                          on_planet_zero_pops = \"renamed to on_colony_zero_pops\"\n\
+                          }\n\
+                          ## type_key_filter = on_game_start\n\
+                          subtype[on_game_start] = {\n\
+                          }\n\
+                          }\n\
+                          }\n\
+                          on_action = {\n\
+                          }"
+
+              let rules, types, _, _, _ =
+                  parseConfig
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      ""
+                      config
+
+              let input =
+                  "on_planet_conquer = {\n\
+                            }\n\
+                            on_my_totally_custom_action = {\n\
+                            }"
+
+              match CKParser.parseString input "test" with
+              | Success(r, _, _) ->
+                  let node = (STLProcess.shipProcess.ProcessNode () "root" range.Zero r)
+
+                  let apply =
+                      RuleValidationService(
+                          RulesWrapper(rules |> List.toArray),
+                          types,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          [||],
+                          FrozenSet.Empty,
+                          effectMap,
+                          effectMap,
+                          (scopeManager.ParseScope () "Any"),
+                          changeScope,
+                          defaultContext,
+                          STL STLLang.Default,
+                          processLocalisationLazy.Value,
+                          validateLocalisationLazy.Value
+                      )
+
+                  let errors =
+                      apply.ManualRuleValidate("common/on_actions/test.txt", node)
+
+                  match errors with
+                  | OK -> Expect.isTrue false "Expected an obsolete key warning for on_planet_conquer"
+                  | Invalid(_, es) ->
+                      Expect.equal es.Length 1 $"Only the obsolete key should be flagged %A{es}"
+
+                      let error = es |> List.head
+                      Expect.stringContains error.message "obsolete on_action key" "Should explain the key is obsolete"
+                      Expect.stringContains error.message "removed from the game" "Should carry the configured message"
+                      Expect.equal error.severity Severity.Warning "Obsolete key in open key set should be a warning"
               | Failure(e, _, _) -> Expect.isTrue false e
 
           ]
@@ -1788,7 +1808,8 @@ let nestedEventTargetTests =
             "",
             STLProcess.findAllSavedGlobalEventTargets node |> Set.toList,
             STLProcess.findAllSavedEventTargets node |> Set.toList,
-            STLProcess.findAllUsedEventTargets node |> Set.toList
+            STLProcess.findAllUsedEventTargets node |> Set.toList,
+            STLProcess.findAllFiredOnActions node |> Set.toList
         )
 
     let parseRoot (input: string) =

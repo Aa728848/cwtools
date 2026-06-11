@@ -120,13 +120,15 @@ type SkipRootKey =
 /// How to treat root keys that match a type but none of its subtype
 /// type_key_filter values (closed vs open key sets).
 type UnknownKeyHandling =
-    /// No checking — open key sets where custom keys are legal (default).
     | UnknownKeyIgnore
-    /// The key set is closed (e.g. Stellaris game_rules): report error/warning.
     | UnknownKeyError
-    /// Open key set, but report (as information) when a close known key exists:
-    /// catches typos of known keys without flagging legitimate custom keys.
     | UnknownKeySuggest
+
+/// Whether instances of a type must be referenced somewhere (should_be_used).
+type ReferenceRequirement =
+    | RefNotRequired
+    | RefRequired
+    | RefRequiredUnlessSubtyped
 
 type SubTypeDefinition =
     { name: string
@@ -154,8 +156,9 @@ and TypeDefinition =
       keyPrefix: string option
       warningOnly: bool
       unique: bool
-      shouldBeReferenced: bool
+      shouldBeReferenced: ReferenceRequirement
       unknownKeyHandling: UnknownKeyHandling
+      obsoleteKeys: Map<string, string>
       localisation: TypeLocalisation list
       graphRelatedTypes: string list
       modifiers: TypeModifier list }

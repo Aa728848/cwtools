@@ -324,9 +324,9 @@ type ErrorCodes =
           Message = "An else/else_if is missing a preceding if" }
 
     static member UnusedType =
-        fun (typeName: string) (referenceName: string) ->
+        fun (typeName: string) (referenceName: string) (severity: Severity) ->
             { ID = "CW239"
-              Severity = Severity.Warning
+              Severity = severity
               Message = $"{referenceName} of type {typeName} is not used anywhere, but is expected to be" }
 
     static member ConfigRulesUnexpectedValue =
@@ -548,6 +548,12 @@ type ErrorCodes =
     static member ConfigRulesUnknownTypeKey =
         fun message severity ->
             { ID = "CW276"
+              Severity = severity
+              Message = message }
+
+    static member ObsoleteTypeKey =
+        fun message severity ->
+            { ID = "CW277"
               Severity = severity
               Message = message }
 

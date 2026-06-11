@@ -1164,50 +1164,66 @@ type RuleValidationService
                     ->
                     if FieldValidators.typekeyfilter typedef filterKey prefixKey then
                         let unknownKeyError =
-                            if typedef.unknownKeyHandling = UnknownKeyIgnore then
-                                OK
-                            else
-                                let knownKeys = typedef.subtypes |> List.choose (fun st -> st.typeKeyField)
+                            match typedef.obsoleteKeys.TryFind(filterKey.ToLowerInvariant()) with
+                            | Some message ->
+                                let severity =
+                                    match typedef.unknownKeyHandling with
+                                    | UnknownKeyError when not typedef.warningOnly -> Severity.Error
+                                    | _ -> Severity.Warning
 
-                                if
-                                    knownKeys.IsEmpty
-                                    || knownKeys |> List.exists (fun k -> k == filterKey)
-                                then
+                                Invalid(
+                                    Guid.NewGuid(),
+                                    [ inv
+                                          (ErrorCodes.ObsoleteTypeKey
+                                              $"%s{filterKey} is an obsolete %s{typedef.name} key: %s{message}"
+                                              severity)
+                                          (n :> IKeyPos) ]
+                                )
+                            | None ->
+                                if typedef.unknownKeyHandling = UnknownKeyIgnore then
                                     OK
                                 else
-                                    match typedef.unknownKeyHandling with
-                                    | UnknownKeyError ->
-                                        let suggestion = NameSuggestion.didYouMean filterKey knownKeys
+                                    let knownKeys = typedef.subtypes |> List.choose (fun st -> st.typeKeyField)
 
-                                        let severity =
-                                            if typedef.warningOnly then
-                                                Severity.Warning
-                                            else
-                                                Severity.Error
+                                    if
+                                        knownKeys.IsEmpty
+                                        || knownKeys |> List.exists (fun k -> k == filterKey)
+                                    then
+                                        OK
+                                    else
+                                        match typedef.unknownKeyHandling with
+                                        | UnknownKeyError ->
+                                            let suggestion = NameSuggestion.didYouMean filterKey knownKeys
 
-                                        Invalid(
-                                            Guid.NewGuid(),
-                                            [ inv
-                                                  (ErrorCodes.ConfigRulesUnknownTypeKey
-                                                      $"%s{filterKey} is not a known %s{typedef.name} key; this definition will never be used by the game%s{suggestion}"
-                                                      severity)
-                                                  (n :> IKeyPos) ]
-                                        )
-                                    | UnknownKeySuggest ->
-                                        // Open key set: custom keys are legal, so only
-                                        // surface near-misses of known keys, as hints.
-                                        match NameSuggestion.suggestClosest filterKey knownKeys with
-                                        | Some closest ->
+                                            let severity =
+                                                if typedef.warningOnly then
+                                                    Severity.Warning
+                                                else
+                                                    Severity.Error
+
                                             Invalid(
                                                 Guid.NewGuid(),
                                                 [ inv
                                                       (ErrorCodes.ConfigRulesUnknownTypeKey
-                                                          $"%s{filterKey} is not a known %s{typedef.name} key (did you mean '%s{closest}'?)"
-                                                          Severity.Information)
+                                                          $"%s{filterKey} is not a known %s{typedef.name} key; this definition will never be used by the game%s{suggestion}"
+                                                          severity)
                                                       (n :> IKeyPos) ]
                                             )
-                                        | None -> OK
-                                    | UnknownKeyIgnore -> OK
+                                        | UnknownKeySuggest ->
+                                            // Open key set: custom keys are legal, so only
+                                            // surface near-misses of known keys, as hints.
+                                            match NameSuggestion.suggestClosest filterKey knownKeys with
+                                            | Some closest ->
+                                                Invalid(
+                                                    Guid.NewGuid(),
+                                                    [ inv
+                                                          (ErrorCodes.ConfigRulesUnknownTypeKey
+                                                              $"%s{filterKey} is not a known %s{typedef.name} key (did you mean '%s{closest}'?)"
+                                                              Severity.Information)
+                                                          (n :> IKeyPos) ]
+                                                )
+                                            | None -> OK
+                                        | UnknownKeyIgnore -> OK
 
                         unknownKeyError <&&> applyNodeRuleRoot typedef rs o n
                     else
