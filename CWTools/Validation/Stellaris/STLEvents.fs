@@ -221,6 +221,42 @@ module STLEventValidation =
         let fCombine = (@)
         event |> (foldNode2 fNode fCombine []) |> Set.ofList
 
+    /// Local and global event targets saved by scripted-effect calls inside an
+    /// arbitrary effect block, with call-site parameters substituted (e.g.
+    /// `hire_effect = { GLOBAL_EVENT_TARGET = ganthuata }` where the callee does
+    /// `save_global_event_target_as = $GLOBAL_EVENT_TARGET$`). Unresolved
+    /// `$param$` placeholders are dropped.
+    let findSubstitutedCallSaves (effectsByName: Map<_, ScriptedEffect>) (node: Node) =
+        let substitutedSaves (callParams: (string * string) list) (effect: ScriptedEffect) =
+            effect.SavedEventTargets @ effect.GlobalEventTargets
+            |> List.map (substituteParams callParams)
+            |> List.filter (fun target -> not (target.Contains("$")))
+
+        let fNode =
+            (fun (x: Node) children ->
+                let leafCalls =
+                    x.Values
+                    |> List.collect (fun l ->
+                        match Map.tryFind l.KeyId.lower effectsByName with
+                        | Some e -> substitutedSaves [] e
+                        | None -> [])
+
+                let nodeCalls =
+                    x.Nodes
+                    |> Seq.collect (fun n ->
+                        match Map.tryFind n.KeyId.lower effectsByName with
+                        | Some e ->
+                            let callParams =
+                                n.Values |> List.map (fun l -> ("$" + l.Key + "$", l.ValueText))
+
+                            substitutedSaves callParams e
+                        | None -> [])
+                    |> List.ofSeq
+
+                leafCalls @ nodeCalls @ children)
+
+        node |> (foldNode2 fNode (@) []) |> Set.ofList
+
     let addScriptedEffectTargets
         (effects: ScriptedEffect list)
         (((eid, e), s, u, r, x): (string * Node) * Set<string> * Set<string> * string list * Set<string>)
@@ -575,9 +611,22 @@ module STLEventValidation =
                     |> List.map findAllSavedEventTargets
                     |> List.fold Set.union Set.empty
 
+                // Saves performed through parameterised scripted-effect calls anywhere
+                // in the workspace (local and global), substituted with each call
+                // site's arguments — e.g. `hire_effect = { GLOBAL_EVENT_TARGET = x }`
+                // where the callee does `save_global_event_target_as = $GLOBAL_EVENT_TARGET$`.
+                let effectsByName =
+                    seffects |> List.map (fun se -> se.Name.lower, se) |> Map.ofList
+
+                let substitutedCallSaves =
+                    effects
+                    |> List.map (findSubstitutedCallSaves effectsByName)
+                    |> List.fold Set.union Set.empty
+
                 let globals =
                     Set.union globalScriptedEffects globalSavedTargets
                     |> Set.union allSavedTargets
+                    |> Set.union substitutedCallSaves
 
                 let sinits =
                     os.GlobMatchChildren("**\\common\\solar_system_initializers\\**\\*.txt")

@@ -225,12 +225,13 @@ module STLProcess =
             usedtargets |> Set.toList
         )
 
-    /// Propagates saved/used event targets through nested scripted-effect calls
-    /// with parameter substitution: if effect A contains `B = { TARGET = foo }`
-    /// and B contains `save_event_target_as = $TARGET$`, then A is credited with
-    /// saving `foo`. Iterates to a fixpoint so chains of nested calls resolve.
-    /// Targets still containing `$param$` placeholders are kept so an outer call
-    /// site (another effect or an event) can substitute them in turn.
+    /// Propagates saved/used/global event targets through nested scripted-effect
+    /// calls with parameter substitution: if effect A contains `B = { TARGET = foo }`
+    /// and B contains `save_event_target_as = $TARGET$` (or the global variant),
+    /// then A is credited with saving `foo`. Iterates to a fixpoint so chains of
+    /// nested calls resolve. Targets still containing `$param$` placeholders are
+    /// kept so an outer call site (another effect or an event) can substitute
+    /// them in turn.
     let addNestedEventTargetsToEffects (rawEffects: (Node * string list) list) (effects: Effect list) : Effect list =
         let scripted =
             effects
@@ -286,25 +287,26 @@ module STLProcess =
             let mutable current =
                 scripted
                 |> List.map (fun e ->
-                    e.Name.lower, (Set.ofList e.SavedEventTargets, Set.ofList e.UsedEventTargets))
+                    e.Name.lower,
+                    (Set.ofList e.SavedEventTargets, Set.ofList e.UsedEventTargets, Set.ofList e.GlobalEventTargets))
                 |> Map.ofList
 
             let step () =
                 let updated =
                     current
-                    |> Map.map (fun name (saved, used) ->
+                    |> Map.map (fun name (saved, used, globals) ->
                         match Map.tryFind name callsByName with
-                        | None -> (saved, used)
+                        | None -> (saved, used, globals)
                         | Some calls ->
                             calls
                             |> List.fold
-                                (fun (s, u) (callee, callParams) ->
+                                (fun (s, u, g) (callee, callParams) ->
                                     match Map.tryFind callee current with
-                                    | None -> (s, u)
-                                    | Some(cs, cu) ->
+                                    | None -> (s, u, g)
+                                    | Some(cs, cu, cg) ->
                                         let sub = Set.map (substituteParams callParams)
-                                        (Set.union s (sub cs), Set.union u (sub cu)))
-                                (saved, used))
+                                        (Set.union s (sub cs), Set.union u (sub cu), Set.union g (sub cg)))
+                                (saved, used, globals))
 
                 let changed = updated <> current
                 current <- updated
@@ -320,13 +322,13 @@ module STLProcess =
                 match e with
                 | :? ScriptedEffect as se ->
                     match Map.tryFind se.Name.lower current with
-                    | Some(saved, used) ->
+                    | Some(saved, used, globals) ->
                         ScriptedEffect(
                             se.Name,
                             se.Scopes,
                             se.Type,
                             se.Comments,
-                            se.GlobalEventTargets,
+                            globals |> Set.toList,
                             saved |> Set.toList,
                             used |> Set.toList
                         )

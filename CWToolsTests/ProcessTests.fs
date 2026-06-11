@@ -1643,21 +1643,28 @@ let nestedEventTargetTests =
             STLProcess.findAllSavedEventTargets node |> Set.toList,
             STLProcess.findAllUsedEventTargets node |> Set.toList
         )
-        :> Effect
+
+    let parseRoot (input: string) =
+        match CKParser.parseString input "test.txt" with
+        | Success(r, _, _) -> STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+        | Failure(e, _, _) -> failtest e
 
     let buildEffects (input: string) =
-        match CKParser.parseString input "test.txt" with
-        | Success(r, _, _) ->
-            let root = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
-            let rawEffects = root.Children |> List.map (fun n -> n, ([]: string list))
-            let effects = root.Children |> List.map mkScriptedEffect
-            STLProcess.addNestedEventTargetsToEffects rawEffects effects
-        | Failure(e, _, _) -> failtest e
+        let root = parseRoot input
+        let rawEffects = root.Children |> List.map (fun n -> n, ([]: string list))
+        let effects = root.Children |> List.map (mkScriptedEffect >> fun e -> e :> Effect)
+        STLProcess.addNestedEventTargetsToEffects rawEffects effects
 
     let savedTargetsOf (name: string) (effects: Effect list) =
         effects
         |> List.pick (function
             | :? ScriptedEffect as se when se.Name.GetString() == name -> Some se.SavedEventTargets
+            | _ -> None)
+
+    let globalTargetsOf (name: string) (effects: Effect list) =
+        effects
+        |> List.pick (function
+            | :? ScriptedEffect as se when se.Name.GetString() == name -> Some se.GlobalEventTargets
             | _ -> None)
 
     testList
@@ -1732,4 +1739,56 @@ let nestedEventTargetTests =
               Expect.contains
                   saved
                   "concrete_target"
-                  $"leaf-style call should propagate concrete saves, got %A{saved}" ]
+                  $"leaf-style call should propagate concrete saves, got %A{saved}"
+          testCase "global save via nested parameterised call propagates to caller"
+          <| fun () ->
+              // Mirrors vanilla shroud leaders: hire_effect does
+              // save_global_event_target_as = $GLOBAL_EVENT_TARGET$
+              let input =
+                  "hire_effect = {\n\
+                            save_global_event_target_as = $GLOBAL_EVENT_TARGET$\n\
+                            }\n\
+                            outer_effect = {\n\
+                            hire_effect = {\n\
+                            GLOBAL_EVENT_TARGET = ganthuata\n\
+                            }\n\
+                            }"
+
+              let globals = buildEffects input |> globalTargetsOf "outer_effect"
+
+              Expect.contains
+                  globals
+                  "ganthuata"
+                  $"caller should be credited with the nested global save, got %A{globals}"
+          testCase "call-site substitution credits parameterised saves in effect blocks"
+          <| fun () ->
+              let input =
+                  "hire_effect = {\n\
+                            save_global_event_target_as = $GLOBAL_EVENT_TARGET$\n\
+                            }\n\
+                            event_block = {\n\
+                            hidden_effect = {\n\
+                            hire_effect = {\n\
+                            GLOBAL_EVENT_TARGET = ganthuata\n\
+                            }\n\
+                            }\n\
+                            }"
+
+              let root = parseRoot input
+
+              let hireEffect =
+                  root.Children
+                  |> List.find (fun n -> n.Key == "hire_effect")
+                  |> mkScriptedEffect
+
+              let effectsByName = Map.ofList [ hireEffect.Name.lower, hireEffect ]
+
+              let eventBlock = root.Children |> List.find (fun n -> n.Key == "event_block")
+
+              let saves =
+                  CWTools.Validation.Stellaris.STLEventValidation.findSubstitutedCallSaves effectsByName eventBlock
+
+              Expect.contains
+                  saves
+                  "ganthuata"
+                  $"call-site scan should substitute the global save parameter, got %A{saves}" ]
