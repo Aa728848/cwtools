@@ -1163,7 +1163,53 @@ type RuleValidationService
                     (stringManager.GetStringForID x.normal) == typedef.name
                     ->
                     if FieldValidators.typekeyfilter typedef filterKey prefixKey then
-                        applyNodeRuleRoot typedef rs o n
+                        let unknownKeyError =
+                            if typedef.unknownKeyHandling = UnknownKeyIgnore then
+                                OK
+                            else
+                                let knownKeys = typedef.subtypes |> List.choose (fun st -> st.typeKeyField)
+
+                                if
+                                    knownKeys.IsEmpty
+                                    || knownKeys |> List.exists (fun k -> k == filterKey)
+                                then
+                                    OK
+                                else
+                                    match typedef.unknownKeyHandling with
+                                    | UnknownKeyError ->
+                                        let suggestion = NameSuggestion.didYouMean filterKey knownKeys
+
+                                        let severity =
+                                            if typedef.warningOnly then
+                                                Severity.Warning
+                                            else
+                                                Severity.Error
+
+                                        Invalid(
+                                            Guid.NewGuid(),
+                                            [ inv
+                                                  (ErrorCodes.ConfigRulesUnknownTypeKey
+                                                      $"%s{filterKey} is not a known %s{typedef.name} key; this definition will never be used by the game%s{suggestion}"
+                                                      severity)
+                                                  (n :> IKeyPos) ]
+                                        )
+                                    | UnknownKeySuggest ->
+                                        // Open key set: custom keys are legal, so only
+                                        // surface near-misses of known keys, as hints.
+                                        match NameSuggestion.suggestClosest filterKey knownKeys with
+                                        | Some closest ->
+                                            Invalid(
+                                                Guid.NewGuid(),
+                                                [ inv
+                                                      (ErrorCodes.ConfigRulesUnknownTypeKey
+                                                          $"%s{filterKey} is not a known %s{typedef.name} key (did you mean '%s{closest}'?)"
+                                                          Severity.Information)
+                                                      (n :> IKeyPos) ]
+                                            )
+                                        | None -> OK
+                                    | UnknownKeyIgnore -> OK
+
+                        unknownKeyError <&&> applyNodeRuleRoot typedef rs o n
                     else
                         OK
                 | _ -> OK

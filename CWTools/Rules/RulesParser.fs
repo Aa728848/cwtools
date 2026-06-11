@@ -1077,7 +1077,8 @@ module private RulesParserImpl =
                "path_extension"
                "starts_with"
                "severity"
-               "unique" |]
+               "unique"
+               "error_unknown_keys" |]
 
         let checkTypeChildren (child: Child) =
             match child with
@@ -1129,6 +1130,12 @@ module private RulesParserImpl =
             let warningOnly = node.TagText "severity" == "warning"
             let unique = node.TagText "unique" == "yes"
             let shouldBeReferenced = node.TagText "should_be_used" == "yes"
+
+            let unknownKeyHandling =
+                match node.TagText "error_unknown_keys" with
+                | "yes" -> UnknownKeyError
+                | "suggest" -> UnknownKeySuggest
+                | _ -> UnknownKeyIgnore
 
             let localisation =
                 node.Child "localisation"
@@ -1237,6 +1244,7 @@ module private RulesParserImpl =
                       startsWith = startsWith
                       unique = unique
                       shouldBeReferenced = shouldBeReferenced
+                      unknownKeyHandling = unknownKeyHandling
                       graphRelatedTypes = graphData
                       keyPrefix = key_prefix }
             | None -> None

@@ -117,6 +117,17 @@ type SkipRootKey =
     | AnyKey
     | MultipleKeys of string list * bool
 
+/// How to treat root keys that match a type but none of its subtype
+/// type_key_filter values (closed vs open key sets).
+type UnknownKeyHandling =
+    /// No checking — open key sets where custom keys are legal (default).
+    | UnknownKeyIgnore
+    /// The key set is closed (e.g. Stellaris game_rules): report error/warning.
+    | UnknownKeyError
+    /// Open key set, but report (as information) when a close known key exists:
+    /// catches typos of known keys without flagging legitimate custom keys.
+    | UnknownKeySuggest
+
 type SubTypeDefinition =
     { name: string
       displayName: string option
@@ -144,6 +155,7 @@ and TypeDefinition =
       warningOnly: bool
       unique: bool
       shouldBeReferenced: bool
+      unknownKeyHandling: UnknownKeyHandling
       localisation: TypeLocalisation list
       graphRelatedTypes: string list
       modifiers: TypeModifier list }

@@ -545,6 +545,12 @@ type ErrorCodes =
               Severity = Severity.Warning
               Message = $"Localisation key %s{key} contains unexpected characters, and may not render correctly" }
 
+    static member ConfigRulesUnknownTypeKey =
+        fun message severity ->
+            { ID = "CW276"
+              Severity = severity
+              Message = message }
+
     static member RulesError =
         fun error severity ->
             { ID = "CW998"

@@ -159,7 +159,8 @@ let createStarbaseTypeDefLazy =
           unique = false
           graphRelatedTypes = []
           keyPrefix = None
-          shouldBeReferenced = false }
+          shouldBeReferenced = false
+          unknownKeyHandling = UnknownKeyIgnore }
 // # strategic_resource: strategic resource, deprecated, strategic resource used by the building.
 // # allow: trigger to check for allowing construction of building.
 // # prerequisites: Tech requirements for building.
@@ -276,6 +277,7 @@ let shipBehaviorTypeLazy =
           startsWith = None
           unique = false
           shouldBeReferenced = false
+          unknownKeyHandling = UnknownKeyIgnore
           graphRelatedTypes = []
           keyPrefix = None }
 
@@ -300,6 +302,7 @@ let shipSizeTypeLazy =
           startsWith = None
           unique = false
           shouldBeReferenced = false
+          unknownKeyHandling = UnknownKeyIgnore
           graphRelatedTypes = []
           keyPrefix = None }
 //  type[ship_behavior] = {
@@ -390,6 +393,150 @@ let testc =
                   | OK -> ()
                   | Invalid(_, es) ->
                       Expect.equal es.Length 1 $"Following lines are not expected to have an error %A{es}"
+              | Failure(e, _, _) -> Expect.isTrue false e
+
+          testWithCapturedLogs "test error_unknown_keys reports unknown type keys"
+          <| fun () ->
+              let config =
+                  "types = {\n\
+                          type[game_rule] = {\n\
+                          path = \"game/common/game_rules\"\n\
+                          error_unknown_keys = yes\n\
+                          ## type_key_filter = can_declare_war\n\
+                          subtype[can_declare_war] = {\n\
+                          }\n\
+                          ## type_key_filter = can_add_claim\n\
+                          subtype[can_add_claim] = {\n\
+                          }\n\
+                          }\n\
+                          }\n\
+                          game_rule = {\n\
+                          }"
+
+              let rules, types, _, _, _ =
+                  parseConfig
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      ""
+                      config
+
+              let input =
+                  "can_declare_war = {\n\
+                            }\n\
+                            can_declar_war = {\n\
+                            }"
+
+              match CKParser.parseString input "test" with
+              | Success(r, _, _) ->
+                  let node = (STLProcess.shipProcess.ProcessNode () "root" range.Zero r)
+
+                  let apply =
+                      RuleValidationService(
+                          RulesWrapper(rules |> List.toArray),
+                          types,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          [||],
+                          FrozenSet.Empty,
+                          effectMap,
+                          effectMap,
+                          (scopeManager.ParseScope () "Any"),
+                          changeScope,
+                          defaultContext,
+                          STL STLLang.Default,
+                          processLocalisationLazy.Value,
+                          validateLocalisationLazy.Value
+                      )
+
+                  let errors =
+                      apply.ManualRuleValidate("common/game_rules/test.txt", node)
+
+                  match errors with
+                  | OK -> Expect.isTrue false "Expected an unknown key error for can_declar_war"
+                  | Invalid(_, es) ->
+                      Expect.equal es.Length 1 $"Expected exactly one unknown key error %A{es}"
+
+                      Expect.stringContains
+                          (es |> List.head).message
+                          "is not a known game_rule key"
+                          "Error message should explain the unknown key"
+              | Failure(e, _, _) -> Expect.isTrue false e
+
+          testWithCapturedLogs "test error_unknown_keys suggest mode only flags near misses"
+          <| fun () ->
+              let config =
+                  "types = {\n\
+                          type[on_action] = {\n\
+                          path = \"game/common/on_actions\"\n\
+                          error_unknown_keys = suggest\n\
+                          ## type_key_filter = on_game_start\n\
+                          subtype[on_game_start] = {\n\
+                          }\n\
+                          ## type_key_filter = on_monthly_pulse\n\
+                          subtype[on_monthly_pulse] = {\n\
+                          }\n\
+                          }\n\
+                          }\n\
+                          on_action = {\n\
+                          }"
+
+              let rules, types, _, _, _ =
+                  parseConfig
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      ""
+                      config
+
+              let input =
+                  "on_game_start = {\n\
+                            }\n\
+                            on_gamestart = {\n\
+                            }\n\
+                            on_my_totally_custom_action = {\n\
+                            }"
+
+              match CKParser.parseString input "test" with
+              | Success(r, _, _) ->
+                  let node = (STLProcess.shipProcess.ProcessNode () "root" range.Zero r)
+
+                  let apply =
+                      RuleValidationService(
+                          RulesWrapper(rules |> List.toArray),
+                          types,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          [||],
+                          FrozenSet.Empty,
+                          effectMap,
+                          effectMap,
+                          (scopeManager.ParseScope () "Any"),
+                          changeScope,
+                          defaultContext,
+                          STL STLLang.Default,
+                          processLocalisationLazy.Value,
+                          validateLocalisationLazy.Value
+                      )
+
+                  let errors =
+                      apply.ManualRuleValidate("common/on_actions/test.txt", node)
+
+                  match errors with
+                  | OK -> Expect.isTrue false "Expected a suggestion for on_gamestart"
+                  | Invalid(_, es) ->
+                      Expect.equal
+                          es.Length
+                          1
+                          $"Custom on_action keys must not be flagged; only the near miss should be %A{es}"
+
+                      let error = es |> List.head
+                      Expect.stringContains error.message "did you mean 'on_game_start'" "Should suggest the close key"
+                      Expect.equal error.severity Severity.Information "Suggestion should be information severity"
               | Failure(e, _, _) -> Expect.isTrue false e
 
           ]
