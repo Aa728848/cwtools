@@ -40,20 +40,6 @@ module STLEventValidation =
                 |> List.ofSeq
 
             res |> List.map (fun vs -> vs |> List.map (fun v -> v.string))
-    // let nodes = g |> List.map fst |> Set.ofList
-    // let start = g |> List.head |> fst
-    // let rec loop acc g start nodes =
-    //     let dfst = depthFirstOrder g start |> Set.ofList
-    //     let nodes' = Set.difference nodes dfst
-    //     if Set.isEmpty nodes' then
-    //         g::acc
-    //     else
-    //         // once we have the dfst set we can remove those nodes from the graph and
-    //         // add them to the solution and continue with the remaining nodes
-    //         let (cg,g') = g |> List.fold(fun (xs,ys) v -> if Set.contains (fst v) dfst then (v::xs,ys) else (xs,v::ys)) ([],[])
-    //         let start' = List.head g' |> fst
-    //         loop (cg::acc) g' start' nodes'
-    // loop [] g start nodes
 
     let findAllReferencedEvents (projects: (Node * string) list) (event: Node) =
         let eventEffectKeys =

@@ -226,11 +226,6 @@ module STLProcess =
         )
 
     /// Propagates saved/used/global event targets through nested scripted-effect
-    /// calls with parameter substitution: if effect A contains `B = { TARGET = foo }`
-    /// and B contains `save_event_target_as = $TARGET$` (or the global variant),
-    /// then A is credited with saving `foo`. Iterates to a fixpoint so chains of
-    /// nested calls resolve. Targets still containing `$param$` placeholders are
-    /// kept so an outer call site (another effect or an event) can substitute
     /// them in turn.
     let addNestedEventTargetsToEffects (rawEffects: (Node * string list) list) (effects: Effect list) : Effect list =
         let scripted =
