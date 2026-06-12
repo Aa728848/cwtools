@@ -49,7 +49,7 @@ public static class FileManagerHelper
                 continue;
             }
 
-            matches.Add(++index);
+            matches.Add(index);
         }
 
         var result = sb.ToString();
@@ -62,6 +62,10 @@ public static class FileManagerHelper
         return result[minIndex..];
     }
 
+    /// <summary>
+    /// Returns the index where the folder's relative segment starts in the path
+    /// (i.e. just after its leading separator), or -1 if not present.
+    /// </summary>
     private static int FindFolderIndexInPath(
         ReadOnlySpan<char> pathSpan,
         string folder,
@@ -74,6 +78,17 @@ public static class FileManagerHelper
         builder.Append(folder);
         builder.Append('/');
         builder.Replace('\\', '/');
-        return pathSpan.IndexOf(builder.AsSpan(), StringComparison.Ordinal);
+
+        var pattern = builder.AsSpan();
+
+        // A path that has already lost its leading separator ("common/...") can never
+        // match "/folder/" at position 0; check the separator-less prefix explicitly.
+        if (pathSpan.StartsWith(pattern[1..], StringComparison.Ordinal))
+        {
+            return 0;
+        }
+
+        int index = pathSpan.IndexOf(pattern, StringComparison.Ordinal);
+        return index < 0 ? index : index + 1;
     }
 }

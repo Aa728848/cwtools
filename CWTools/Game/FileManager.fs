@@ -203,14 +203,20 @@ module Files =
             (fileLength: int64)
             (fileTextThunk: unit -> string)
             =
+            // filepath 来自 Directory.GetFiles（原生分隔符），normalisedPath 已统一为 '/'：
+            // 必须先归一化再定位，并保留前导 '/'，否则 ConvertPathToLogicalPath 的 "/folder/"
+            // 匹配在 Linux 上无法命中开头的 scriptFolder，会把 common/inline_scripts/events/...
+            // 错误截断成 events/...（Windows 此前靠 IndexOf 失配 -1 的巧合保留了分隔符）
+            let normalisedFilePath = filepath.Replace('\\', '/')
+
+            let rootIndex =
+                normalisedFilePath.IndexOf(normalisedPath, StringComparison.Ordinal)
+
             let rootedPath =
-                filepath
-                    .AsSpan()
-                    .Slice(
-                        filepath.IndexOf(normalisedPath, StringComparison.Ordinal)
-                        + normalisedPathLength
-                        + 1
-                    )
+                if rootIndex >= 0 then
+                    normalisedFilePath.AsSpan().Slice(rootIndex + normalisedPathLength)
+                else
+                    normalisedFilePath.AsSpan().Slice(normalisedPathLength)
 
             let logicalpath =
                 FileManagerHelper.ConvertPathToLogicalPath(
