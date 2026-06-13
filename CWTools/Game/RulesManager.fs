@@ -157,6 +157,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         FrozenDictionary.Empty
 
     let mutable rulesDataGenerated = false
+    let mutable baseConfigRules: RootRule array = [||]
 
 
     let loadBaseConfig (rulesSettings: RulesSettings) =
@@ -171,6 +172,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 settings.scopeGroups
                 settings.useFormulas
                 settings.stellarisScopeTriggers
+        baseConfigRules <- rules
         // tempEffects <- updateScriptedEffects game rules
         // effects <- tempEffects
         // tempTriggers <- updateScriptedTriggers game rules
@@ -189,6 +191,120 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         tempValues <- values |> Map.ofList //|> List.map (fun (s, sl) -> s, (sl |> List.map (fun s2 -> s2, range.Zero))) |> Map.ofList
         rulesDataGenerated <- false
     // log (sprintf "Update config rules def: %i" timer.ElapsedMilliseconds); timer.Restart()
+
+    let currentLoc () =
+        addEmbeddedLoc languages localisation.localisationKeys
+
+    let currentFiles () =
+        addEmbeddedFiles(resources.GetFileNames().ToHashSet()).ToFrozenSet()
+
+    let typeMapFromTypeDefInfo (typeDefInfo: Map<string, TypeDefInfo array>) =
+        typeDefInfo
+        |> Map.toSeq
+        |> PSeq.map (fun (k, s) -> k, s |> Seq.map _.id |> createStringSet)
+        |> Map.ofSeq
+
+    let typeDefInfoForValidationFrom (typeDefInfo: Map<string, TypeDefInfo array>) =
+        typeDefInfo
+        |> Map.map (fun _ v ->
+            v
+            |> Array.choose (fun tdi ->
+                if tdi.validate then
+                    Some(struct (tdi.id, tdi.range))
+                else
+                    None))
+
+    let buildRuleValidationService rulesWrapper typeMap varMap loc files =
+        let processLoc, validateLoc = settings.locFunctions lookup
+
+        RuleValidationService(
+            rulesWrapper,
+            lookup.typeDefs,
+            typeMap,
+            tempEnumMap,
+            varMap,
+            loc,
+            files,
+            lookup.eventTargetLinksMap,
+            lookup.valueTriggerMap,
+            settings.anyScope,
+            settings.changeScope,
+            settings.defaultContext,
+            settings.defaultLang,
+            processLoc,
+            validateLoc
+        )
+
+    let buildServices rulesWrapper typeMap =
+        let loc = currentLoc ()
+        let files = currentFiles ()
+
+        let varMap: FrozenDictionary<string, PrefixOptimisedStringSet> =
+            (lookup.varDefInfo
+             |> Map.toSeq
+             |> PSeq.map (fun (k, s) -> KeyValuePair(k, s |> Seq.map fst |> createStringSet)))
+                .ToFrozenDictionary()
+
+        let dataTypes =
+            embeddedSettings.localisationCommands
+            |> function
+                | Jomini dts -> dts
+                | _ ->
+                    { promotes = Map.empty
+                      confidentFunctions = Map.empty
+                      functions = Map.empty
+                      dataTypes = Map.empty
+                      dataTypeNames = Set.empty }
+
+        let processLoc, validateLoc = settings.locFunctions lookup
+        let globalScriptVariables = lookup.scriptedVariables |> List.map fst
+
+        let ruleValidationService =
+            buildRuleValidationService rulesWrapper typeMap varMap loc files
+
+        let infoService =
+            InfoService(
+                rulesWrapper,
+                lookup.typeDefs,
+                typeMap,
+                tempEnumMap,
+                varMap,
+                loc,
+                files,
+                lookup.eventTargetLinksMap,
+                lookup.valueTriggerMap,
+                ruleValidationService,
+                settings.changeScope,
+                settings.defaultContext,
+                settings.anyScope,
+                settings.defaultLang,
+                processLoc,
+                validateLoc
+            )
+
+        let completionService =
+            CompletionService(
+                rulesWrapper,
+                lookup.typeDefs,
+                typeMap,
+                tempEnumMap,
+                varMap,
+                loc,
+                files,
+                lookup.eventTargetLinksMap,
+                lookup.valueTriggerMap,
+                globalScriptVariables,
+                settings.changeScope,
+                settings.defaultContext,
+                settings.anyScope,
+                settings.oneToOneScopesNames,
+                settings.defaultLang,
+                dataTypes,
+                processLoc,
+                validateLoc
+            )
+
+        ruleValidationService, infoService, completionService
 
     let refreshConfig () =
         let timer = System.Diagnostics.Stopwatch()
@@ -222,33 +338,22 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 .ToFrozenDictionary()
 
         /// First pass type defs
-        let loc = addEmbeddedLoc languages localisation.localisationKeys
+        let loc = currentLoc ()
         // log "Refresh rule caches time: %i" timer.ElapsedMilliseconds; timer.Restart()
-        let files = addEmbeddedFiles(resources.GetFileNames().ToHashSet()).ToFrozenSet()
+        let files = currentFiles ()
         // log "Refresh rule caches time: %i" timer.ElapsedMilliseconds; timer.Restart()
         // log "Refresh rule caches time: %i" timer.ElapsedMilliseconds; timer.Restart()
 
         let refreshTypeInfo () =
-            let processLoc, validateLoc = settings.locFunctions lookup
+            let emptyVarMap: FrozenDictionary<string, PrefixOptimisedStringSet> = FrozenDictionary.Empty
 
             let tempRuleValidationService =
-                RuleValidationService(
-                    rulesWrapper,
-                    lookup.typeDefs,
-                    tempTypeMap.ToFrozenDictionary(),
-                    tempEnumMap,
-                    FrozenDictionary.Empty,
-                    loc,
-                    files,
-                    lookup.eventTargetLinksMap,
-                    lookup.valueTriggerMap,
-                    settings.anyScope,
-                    settings.changeScope,
-                    settings.defaultContext,
-                    settings.defaultLang,
-                    processLoc,
-                    validateLoc
-                )
+                buildRuleValidationService
+                    rulesWrapper
+                    (tempTypeMap.ToFrozenDictionary())
+                    emptyVarMap
+                    loc
+                    files
 
             let allEntities = allEntitiesList |> Seq.map structFst
             let typeDefInfo =
@@ -256,13 +361,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
             lookup.typeDefInfo <- addEmbeddedTypeDefData typeDefInfo // |> Map.map (fun _ v -> v |> List.map (fun (_, t, r) -> (t, r)))
 
-            let newTypeMap =
-                lookup.typeDefInfo
-                |> Map.toSeq
-                |> PSeq.map (fun (k, s) -> k, s |> Seq.map _.id |> createStringSet)
-                |> Map.ofSeq
-
-            newTypeMap
+            typeMapFromTypeDefInfo lookup.typeDefInfo
 
         logDiag $"Pre-refresh types time: %0.3f{float timer.ElapsedMilliseconds / 1000.0}"
         timer.Restart()
@@ -285,44 +384,21 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         while not (step ()) do
             ()
 
-        let processLoc, validateLoc = settings.locFunctions lookup
+        let emptyVarMap: FrozenDictionary<string, PrefixOptimisedStringSet> = FrozenDictionary.Empty
 
         let tempRuleValidationService =
-            RuleValidationService(
-                rulesWrapper,
-                lookup.typeDefs,
-                tempTypeMap.ToFrozenDictionary(),
-                tempEnumMap,
-                FrozenDictionary.Empty,
-                loc,
-                files,
-                lookup.eventTargetLinksMap,
-                lookup.valueTriggerMap,
-                settings.anyScope,
-                settings.changeScope,
-                settings.defaultContext,
-                settings.defaultLang,
-                processLoc,
-                validateLoc
-            )
+            buildRuleValidationService
+                rulesWrapper
+                (tempTypeMap.ToFrozenDictionary())
+                emptyVarMap
+                loc
+                files
 
-        lookup.typeDefInfoForValidation <-
-            lookup.typeDefInfo
-            |> Map.map (fun _ v ->
-                v
-                |> Array.choose (fun tdi ->
-                    if tdi.validate then
-                        Some(struct (tdi.id, tdi.range))
-                    else
-                        None))
+        lookup.typeDefInfoForValidation <- typeDefInfoForValidationFrom lookup.typeDefInfo
 
         settings.refreshConfigAfterFirstTypesHook lookup resources embeddedSettings
 
-        tempTypeMap <-
-            lookup.typeDefInfo
-            |> Map.toSeq
-            |> PSeq.map (fun (k, s) -> k, s |> Seq.map _.id |> createStringSet)
-            |> Map.ofSeq
+        tempTypeMap <- typeMapFromTypeDefInfo lookup.typeDefInfo
 
         let processLoc, validateLoc = settings.locFunctions lookup
 
@@ -396,27 +472,6 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         //|> Seq.fold (fun m map -> Map.toList map |>  List.fold (fun m2 (n,k) -> if Map.containsKey n m2 then Map.add n ((k |> List.ofSeq)@m2.[n]) m2 else Map.add n (k |> List.ofSeq) m2) m) tempValues
         settings.refreshConfigAfterVarDefHook lookup resources embeddedSettings
 
-        let varMap: FrozenDictionary<string, PrefixOptimisedStringSet> =
-            (lookup.varDefInfo
-             |> Map.toSeq
-             |> PSeq.map (fun (k, s) -> KeyValuePair(k, s |> Seq.map fst |> createStringSet)))
-                .ToFrozenDictionary()
-
-        // log "Refresh rule caches time: %i" timer.ElapsedMilliseconds; timer.Restart()
-        // log "Refresh rule caches time: %i" timer.ElapsedMilliseconds; timer.Restart()
-        let dataTypes =
-            embeddedSettings.localisationCommands
-            |> function
-                | Jomini dts -> dts
-                | _ ->
-                    { promotes = Map.empty
-                      confidentFunctions = Map.empty
-                      functions = Map.empty
-                      dataTypes = Map.empty
-                      dataTypeNames = Set.empty }
-
-        let processLoc, validateLoc = settings.locFunctions lookup
-
         // Collect global scripted variables with their actual values from all entities
         let globalScriptVariablesWithValues =
             allEntitiesList
@@ -436,66 +491,9 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         // Store in lookup for later use (with actual values)
         lookup.scriptedVariables <- globalScriptVariablesWithValues
 
-        let completionService =
-            CompletionService(
-                rulesWrapper,
-                lookup.typeDefs,
-                tempTypeMap.ToFrozenDictionary(),
-                tempEnumMap,
-                varMap,
-                loc,
-                files,
-                lookup.eventTargetLinksMap,
-                lookup.valueTriggerMap,
-                globalScriptVariables,
-                settings.changeScope,
-                settings.defaultContext,
-                settings.anyScope,
-                settings.oneToOneScopesNames,
-                settings.defaultLang,
-                dataTypes,
-                processLoc,
-                validateLoc
-            )
-        // log "Refresh rule caches time: %i" timer.ElapsedMilliseconds; timer.Restart()
-        let ruleValidationService =
-            RuleValidationService(
-                rulesWrapper,
-                lookup.typeDefs,
-                tempTypeMap.ToFrozenDictionary(),
-                tempEnumMap,
-                varMap,
-                loc,
-                files,
-                lookup.eventTargetLinksMap,
-                lookup.valueTriggerMap,
-                settings.anyScope,
-                settings.changeScope,
-                settings.defaultContext,
-                settings.defaultLang,
-                processLoc,
-                validateLoc
-            )
-        // log "Refresh rule caches time: %i" timer.ElapsedMilliseconds; timer.Restart()
-        let infoService =
-            InfoService(
-                rulesWrapper,
-                lookup.typeDefs,
-                tempTypeMap.ToFrozenDictionary(),
-                tempEnumMap,
-                varMap,
-                loc,
-                files,
-                lookup.eventTargetLinksMap,
-                lookup.valueTriggerMap,
-                ruleValidationService,
-                settings.changeScope,
-                settings.defaultContext,
-                settings.anyScope,
-                settings.defaultLang,
-                processLoc,
-                validateLoc
-            )
+        let ruleValidationService, infoService, completionService =
+            buildServices rulesWrapper (tempTypeMap.ToFrozenDictionary())
+
         // log "Refresh rule caches time: %i" timer.ElapsedMilliseconds; timer.Restart()
         // game.RefreshValidationManager()
         logInfo $"Refresh all lookups: %0.3f{float endToEndTimer.ElapsedMilliseconds / 1000.0}s"
@@ -505,5 +503,86 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         logInfo $"Type counts: scripted_trigger=%d{stCount}, scripted_effect=%d{seCount}, total types=%d{lookup.typeDefInfo.Count}"
         ruleValidationService, infoService, completionService
 
+    let normaliseFilePath (path: string) =
+        try
+            FileInfo(path).FullName.Replace('\\', '/').ToLowerInvariant()
+        with _ ->
+            path.Replace('\\', '/').ToLowerInvariant()
+
+    let getEntityByFilePathWithFallback (path: string) =
+        match resources.GetEntityByFilePath path with
+        | Some entity -> Some entity
+        | None ->
+            let target = normaliseFilePath path
+            let fallback =
+                resources.AllEntities()
+                |> Seq.tryFind (fun struct (entity, _) -> normaliseFilePath entity.filepath = target)
+            if fallback.IsSome then
+                logDiag $"Refresh scripted types used normalised entity lookup fallback for %s{path}"
+            fallback
+
+    let refreshScriptedTypes (files: string list) (typeKeys: string list) =
+        let timer = System.Diagnostics.Stopwatch.StartNew()
+        let typeKeys = typeKeys |> List.distinct
+        let typeKeySet = typeKeys |> Set.ofList
+        let fileSet = files |> List.map normaliseFilePath |> Set.ofList
+
+        lookup.configRules <- settings.loadConfigRulesHook baseConfigRules lookup embeddedSettings
+        let rulesWrapper = RulesWrapper(lookup.configRules)
+        let loc = currentLoc ()
+        let allFiles = currentFiles ()
+        let emptyVarMap: FrozenDictionary<string, PrefixOptimisedStringSet> = FrozenDictionary.Empty
+
+        let tempRuleValidationService =
+            buildRuleValidationService
+                rulesWrapper
+                (tempTypeMap.ToFrozenDictionary())
+                emptyVarMap
+                loc
+                allFiles
+
+        let entities =
+            files
+            |> List.choose (fun path ->
+                getEntityByFilePathWithFallback path
+                |> Option.map (fun struct (entity, _) -> entity))
+
+        let changedTypes =
+            tempTypes |> List.filter (fun t -> typeKeySet.Contains t.name)
+
+        let changedTypeDefInfo =
+            if entities.IsEmpty || changedTypes.IsEmpty then
+                Map.empty
+            else
+                getTypesFromDefinitions (Some tempRuleValidationService) changedTypes entities
+
+        lookup.typeDefInfo <-
+            typeKeys
+            |> List.fold
+                (fun typeDefInfo typeKey ->
+                    let existing =
+                        typeDefInfo
+                        |> Map.tryFind typeKey
+                        |> Option.defaultValue [||]
+                        |> Array.filter (fun tdi -> not (fileSet.Contains(normaliseFilePath tdi.range.FileName)))
+
+                    let updated =
+                        changedTypeDefInfo
+                        |> Map.tryFind typeKey
+                        |> Option.defaultValue [||]
+
+                    typeDefInfo |> Map.add typeKey (Array.append existing updated))
+                lookup.typeDefInfo
+
+        tempTypeMap <- typeMapFromTypeDefInfo lookup.typeDefInfo
+        lookup.typeDefInfoForValidation <- typeDefInfoForValidationFrom lookup.typeDefInfo
+
+        let ruleValidationService, infoService, completionService =
+            buildServices rulesWrapper (tempTypeMap.ToFrozenDictionary())
+
+        logInfo $"Refresh scripted types: files=%d{files.Length}, typeKeys=%d{typeKeys.Length}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
+        ruleValidationService, infoService, completionService
+
     member _.LoadBaseConfig(rulesSettings) = loadBaseConfig rulesSettings
     member _.RefreshConfig() = refreshConfig ()
+    member _.RefreshScriptedTypes(files, typeKeys) = refreshScriptedTypes files typeKeys

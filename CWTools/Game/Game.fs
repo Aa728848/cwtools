@@ -318,6 +318,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         this.completionService <- Some completion
         this.RefreshValidationManager()
         LanguageFeatures.clearCompletionEntityCache ()
+        LanguageFeatures.clearTypeReferenceIndexCache ()
 
         // Check if previous instances were collected (diagnostic)
         match prevRuleServiceRef, prevInfoServiceRef, prevCompletionServiceRef with
@@ -327,6 +328,14 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         prevRuleServiceRef <- oldRule
         prevInfoServiceRef <- oldInfo
         prevCompletionServiceRef <- oldCompletion
+
+    let updateScriptedTypesCache files typeKeys =
+        let rules, info, completion = rulesManager.RefreshScriptedTypes(files, typeKeys)
+        this.RuleValidationService <- Some rules
+        this.InfoService <- Some info
+        this.completionService <- Some completion
+        this.RefreshValidationManager()
+        LanguageFeatures.clearCompletionEntityCache ()
 
     let initialConfigRules () =
         log "Initial config rules update"
@@ -380,6 +389,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member _.ValidationManager = validationManager
     member _.Settings = settings
     member _.UpdateFile shallow file text = updateFile shallow file text
+    member _.RemoveFile file = resourceManager.Api.RemoveFile file
 
     member _.RefreshValidationManager() =
         validationManager <-
@@ -420,6 +430,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
     member _.ReplaceConfigRules rules = rulesManager.LoadBaseConfig rules
     member _.RefreshCaches() = updateRulesCache ()
+    member _.RefreshScriptedTypesForFiles(files, typeKeys) = updateScriptedTypesCache files typeKeys
     member _.InitialConfigRules() = initialConfigRules ()
     member private _.DebugSettings = debugSettings
 

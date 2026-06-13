@@ -120,6 +120,16 @@ module STLGameFunctions =
         | x when x.Contains("static_modifiers") -> updateStaticodifiers (game)
         | _ -> ()
 
+    let scriptedTypeKeyForPath (filepath: string) =
+        let path = filepath.Replace('\\', '/').ToLowerInvariant()
+        if path.Contains("common/scripted_triggers/") then Some "scripted_trigger"
+        elif path.Contains("common/scripted_effects/") then Some "scripted_effect"
+        elif path.Contains("common/script_values/") then Some "script_value"
+        else None
+
+    let scriptedTypeKeysForFiles files =
+        files |> List.choose scriptedTypeKeyForPath |> List.distinct
+
     let globalLocalisation (game: GameObject) =
         let locfiles =
             game.Resources.GetResources()
@@ -672,6 +682,22 @@ type STLGame(setupSettings: StellarisSettings) =
                   debugMode = false } //refreshRuleCaches game (Some { ruleFiles = rules; validateRules = true; debugRulesOnly = false; debugMode = false})
 
         member _.RefreshCaches() = game.RefreshCaches()
+
+        member _.RefreshScriptedTypes files =
+            let typeKeys = scriptedTypeKeysForFiles files
+            if typeKeys.IsEmpty then false
+            else
+                game.RefreshScriptedTypesForFiles(files, typeKeys)
+                true
+
+        member _.RemoveScriptedTypes files =
+            let typeKeys = scriptedTypeKeysForFiles files
+            if typeKeys.IsEmpty then false
+            else
+                for file in files do
+                    game.RemoveFile file |> ignore
+                game.RefreshScriptedTypesForFiles(files, typeKeys)
+                true
 
         member _.RefreshLocalisationCaches() =
             game.LocalisationManager.UpdateProcessedLocalisation()

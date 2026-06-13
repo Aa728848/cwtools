@@ -198,6 +198,7 @@ type ResourceInput =
 
 type UpdateFile<'T> = ResourceInput -> Resource * struct (Entity * Lazy<'T>) option
 type UpdateFiles<'T> = ResourceInput array -> (Resource * struct (Entity * Lazy<'T>) option) list
+type RemoveFile = string -> bool
 type GetResources = unit -> Resource list
 type ValidatableFiles = unit -> EntityResource list
 type AllEntities<'T> = unit -> struct (Entity * Lazy<'T>) seq
@@ -207,6 +208,7 @@ type FileNames = unit -> string seq
 type IResourceAPI<'T when 'T :> ComputedData> =
     abstract UpdateFiles: UpdateFiles<'T>
     abstract UpdateFile: UpdateFile<'T>
+    abstract RemoveFile: RemoveFile
     abstract GetResources: GetResources
     abstract ValidatableFiles: ValidatableFiles
     abstract AllEntities: AllEntities<'T>
@@ -1175,7 +1177,15 @@ type ResourceManager<'T when 'T :> ComputedData>
                     let item = struct (e, lazyi)
                     entitiesMap[e.filepath] <- item
                     yield resource, Some item
-                | None -> yield resource, None
+                | None ->
+                    let resourcePath =
+                        match resource with
+                        | EntityResource(f, _) -> f
+                        | FileResource(f, _) -> f
+                        | FileWithContentResource(f, _) -> f
+                    entitiesMap.Remove resourcePath |> ignore
+                    removeCallerContributions resourcePath
+                    yield resource, None
             } |> Seq.toList
 
         // 3. 处理 inline script 展开（仅针对本文件）
@@ -1193,6 +1203,34 @@ type ResourceManager<'T when 'T :> ComputedData>
             log (sprintf "File %A returned multiple resources" file)
 
         res.[0]
+
+    let normaliseFilePath (path: string) =
+        try
+            FileInfo(path).FullName.Replace('\\', '/').ToLowerInvariant()
+        with _ ->
+            path.Replace('\\', '/').ToLowerInvariant()
+
+    let tryFindStoredFileKey (filepath: string) =
+        let target = normaliseFilePath filepath
+        fileMap.Keys
+        |> Seq.tryFind (fun key -> normaliseFilePath key = target)
+        |> Option.orElseWith (fun () ->
+            entitiesMap.Keys |> Seq.tryFind (fun key -> normaliseFilePath key = target))
+
+    let removeFile (filepath: string) =
+        ResourceManagerEager.nextVersion () |> ignore
+        let storedPath = tryFindStoredFileKey filepath |> Option.defaultValue filepath
+        let removedResource = fileMap.Remove storedPath
+        let removedEntity = entitiesMap.Remove storedPath
+        if removedResource || removedEntity then
+            invalidateInlineScriptsCache ()
+            removeCallerContributions storedPath
+            updateOverwrite ()
+            if enableInlineScripts then
+                rebuildInlineScriptCallerIndex ()
+            true
+        else
+            false
 
     let getResources () = fileMap.Values |> List.ofSeq
 
@@ -1240,6 +1278,7 @@ type ResourceManager<'T when 'T :> ComputedData>
         { new IResourceAPI<'T> with
             member _.UpdateFiles = updateFiles
             member _.UpdateFile = updateFile
+            member _.RemoveFile = removeFile
             member _.GetResources = getResources
             member _.ValidatableFiles = validatableFiles
             member _.AllEntities = allEntities

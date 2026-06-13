@@ -521,6 +521,10 @@ type EU4Game(setupSettings: EU4Settings) =
 
         member _.RefreshCaches() = game.RefreshCaches()
 
+        member _.RefreshScriptedTypes _ = false
+
+        member _.RemoveScriptedTypes _ = false
+
         member _.RefreshLocalisationCaches() =
             game.LocalisationManager.UpdateProcessedLocalisation()
 

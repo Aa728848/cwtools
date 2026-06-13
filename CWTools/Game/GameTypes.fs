@@ -84,6 +84,8 @@ type IGame =
     abstract TypeReferenceIndex: unit -> Map<string * string, range list>
     abstract ReplaceConfigRules: (string * string) list -> unit
     abstract RefreshCaches: unit -> unit
+    abstract RefreshScriptedTypes: string list -> bool
+    abstract RemoveScriptedTypes: string list -> bool
     abstract RefreshLocalisationCaches: unit -> unit
     abstract CleanupCache: Set<string> -> unit
     abstract InvalidateFileCache: string -> unit

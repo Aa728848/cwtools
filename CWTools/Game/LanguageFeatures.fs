@@ -28,6 +28,9 @@ module LanguageFeatures =
         completionEntityCache.Clear()
         infoEntityCache.Clear()
 
+    let clearTypeReferenceIndexCache () =
+        typeReferenceIndexCache.Clear()
+
     let private isSameText (left: string) (right: string) =
         String.Equals(left, right, StringComparison.Ordinal)
 
