@@ -269,8 +269,9 @@ module Helpers =
     let hardcodedLocalisation = []
 
     let validateProcessedLocalisation
+        (scriptedVarNames: Set<string>)
         : ((Lang * LocKeySet) array -> (Lang * Map<string, LocEntry>) list -> ValidationResult) =
-        validateProcessedLocalisationBase hardcodedLocalisation
+        validateProcessedLocalisationBase hardcodedLocalisation scriptedVarNames
 
     let createJominiLocalisationFunctions
         (jominiLocDataTypes: CWTools.Parser.DataTypeParser.JominiLocDataTypes option)

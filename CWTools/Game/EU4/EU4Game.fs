@@ -80,7 +80,9 @@ module EU4GameFunctions =
         let globalTypeLoc = game.ValidationManager.ValidateGlobalLocalisation()
 
         game.Lookup.proccessedLoc
-        |> validateProcessedLocalisation game.LocalisationManager.taggedLocalisationKeys
+        |> validateProcessedLocalisation
+            (game.Lookup.scriptedVariables |> List.map fst |> Set.ofList)
+            game.LocalisationManager.taggedLocalisationKeys
         <&&> globalTypeLoc
         |> (function
         | Invalid(_, es) -> es

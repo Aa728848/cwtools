@@ -85,7 +85,7 @@ module LocalisationString =
         runParserOnString jominiLocStringParser () filename fileString
 
     /// Check that reference loc key `r` is defined and is not recursive, else return an error
-    let private checkRef hardcodedLocalisation (lang: Lang) (keys: LocKeySet) (entry: LocEntry) (r: string) =
+    let private checkRef hardcodedLocalisation (scriptedVarNames: Set<string>) (lang: Lang) (keys: LocKeySet) (entry: LocEntry) (r: string) =
         match keys.Contains r with
         | true ->
             if String.Equals(r, entry.key, StringComparison.Ordinal) && not (List.contains r hardcodedLocalisation) then
@@ -93,7 +93,17 @@ module LocalisationString =
             else
                 OK
         | false ->
-            if r.StartsWith("var_") || r.StartsWith("event_target:") || r.StartsWith("parameter:") || r.Contains("_planet") || r.Contains("_system") || r.Contains("_country") then
+            // `$@var$` references a globally-defined scripted variable (@var = value).
+            // It is a valid loc reference form, but validate that the variable exists.
+            if r.StartsWith("@") then
+                if Set.contains r scriptedVarNames then
+                    OK
+                else
+                    Invalid(
+                        Guid.NewGuid(),
+                        [ invManual (ErrorCodes.UndefinedLocReference entry.key r (lang :> obj)) entry.position entry.key None ]
+                    )
+            elif r.StartsWith("var_") || r.StartsWith("event_target:") || r.StartsWith("parameter:") || r.Contains("_planet") || r.Contains("_system") || r.Contains("_country") then
                 OK
             else
                 match
@@ -121,6 +131,7 @@ module LocalisationString =
     /// Checks quotes, localisation command chains, localisation references
     let validateProcessedLocalisationBase
         hardcodedLocalisation
+        (scriptedVarNames: Set<string>)
         (rawKeys: (Lang * LocKeySet) array)
         (api: (Lang * Map<string, LocEntry>) list)
         =
@@ -130,7 +141,9 @@ module LocalisationString =
             | Some value -> Invalid(Guid.NewGuid(), [ invManual (ErrorCodes.LocInvalidChars e.key) value e.key None ])
 
         let validateQuotes _ (e: LocEntry) =
-            let desc = e.desc.Trim()
+            let invisibleChars =
+                [| '​'; '‌'; '‍'; '‎'; '‏'; '⁠'; '﻿' |]
+            let desc = e.desc.Trim().Trim(invisibleChars).Trim()
             // let lastHash = desc.LastIndexOf "#"
             let lastQuote = desc.LastIndexOf '\"'
 
@@ -138,7 +151,9 @@ module LocalisationString =
                 if lastQuote = -1 then
                     desc.IndexOf '#'
                 else
-                    (desc.Substring(lastQuote).IndexOf '#') + lastQuote
+                    match desc.Substring(lastQuote).IndexOf '#' with
+                    | -1 -> -1
+                    | i -> i + lastQuote
 
             let desc =
                 match firstHashAfterQuote, lastQuote with
@@ -147,7 +162,10 @@ module LocalisationString =
                 | h, q when h > q -> desc.Substring(0, h).Trim()
                 | _ -> desc
 
-            if desc.StartsWith '\"' <> desc.EndsWith '\"' then
+            let properlyWrapped =
+                desc.Length >= 2 && desc.StartsWith '\"' && desc.EndsWith '\"'
+
+            if desc <> "" && not properlyWrapped then
                 Invalid(Guid.NewGuid(), [ invManual (ErrorCodes.LocMissingQuote e.key) e.position e.key None ])
             else
                 OK
@@ -196,7 +214,7 @@ module LocalisationString =
             |> Array.iter keys.UnionWith
 
             m
-            |> Map.map (fun _ e -> e.refs <&!&> checkRef hardcodedLocalisation lang keys e)
+            |> Map.map (fun _ e -> e.refs <&!&> checkRef hardcodedLocalisation scriptedVarNames lang keys e)
             |> Map.toList
             |> List.map snd
             |> List.fold (<&&>) OK

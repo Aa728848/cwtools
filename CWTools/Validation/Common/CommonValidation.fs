@@ -70,6 +70,32 @@ module CommonValidation =
             | LeafValueC lv -> lv.ValueText.Trim() = "]"
             | _ -> false
 
+        let valueHasGluedClose =
+            function
+            | Value.String s ->
+                let str = s.GetString()
+                str.Length > 1 && str.[str.Length - 1] = ']' && str.IndexOf '[' < 0
+            | _ -> false
+
+        let stripGluedClose =
+            function
+            | Value.String s ->
+                let str = s.GetString()
+                String(StringResource.stringManager.InternIdentifierToken(str.Substring(0, str.Length - 1)))
+            | v -> v
+
+        let childHasGluedClose =
+            function
+            | LeafC l -> valueHasGluedClose l.Value
+            | LeafValueC lv -> valueHasGluedClose lv.Value
+            | _ -> false
+
+        let stripChildGluedClose =
+            function
+            | LeafC l -> l.Value <- stripGluedClose l.Value
+            | LeafValueC lv -> lv.Value <- stripGluedClose lv.Value
+            | _ -> ()
+
         let rec processChildren (items: Child array) =
             let rec findClose depth index =
                 if index >= items.Length then
@@ -82,6 +108,16 @@ module CommonValidation =
                         if depth = 1 then Some index else findClose (depth - 1) (index + 1)
                     | _ ->
                         findClose depth (index + 1)
+
+            let rec findGluedClose index =
+                if index >= items.Length then
+                    None
+                else
+                    match items.[index] with
+                    | LeafValueC lv when bracketParameterName lv.ValueText |> Option.isSome -> None
+                    | NodeC node when node.KeyPrefix |> Option.bind bracketParameterName |> Option.isSome -> None
+                    | child when childHasGluedClose child -> Some index
+                    | _ -> findGluedClose (index + 1)
 
             let rec loop index acc =
                 if index >= items.Length then
@@ -103,7 +139,21 @@ module CommonValidation =
                                 else
                                     loop (closeIndex + 1) acc
                             | None ->
-                                loop (index + 1) (items.[index] :: acc)
+                                match findGluedClose (index + 1) with
+                                | Some gluedIndex ->
+                                    stripChildGluedClose items.[gluedIndex]
+
+                                    let block =
+                                        items.[index + 1 .. gluedIndex]
+                                        |> processChildren
+                                        |> Array.toList
+
+                                    if parameterAllowsBlock name negated then
+                                        loop (gluedIndex + 1) ((block |> List.rev) @ acc)
+                                    else
+                                        loop (gluedIndex + 1) acc
+                                | None ->
+                                    loop (index + 1) (items.[index] :: acc)
                         | None ->
                             loop (index + 1) (items.[index] :: acc)
                     | NodeC node ->

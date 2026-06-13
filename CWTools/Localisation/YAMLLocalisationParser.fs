@@ -15,18 +15,7 @@ module YAMLLocalisationParser =
           entries: IReadOnlyCollection<Entry> }
 
     let inline isLocValueChar (c: char) =
-        isAsciiLetter c
-        || (c >= '\u0020' && c <= '\u007E')
-        || (c >= '\u00A0' && c <= '\u024F')
-        || (c >= '\u0401' && c <= '\u045F')
-        || (c >= '\u0490' && c <= '\u0491')
-        || (c >= '\u1E00' && c <= '\u1EFF')
-        || (c >= '\u2013' && c <= '\u2044')
-        || (c >= '\u2460' && c <= '\u24FF')
-        || (c >= '\u4E00' && c <= '\u9FFF')
-        || (c >= '\u3000' && c <= '\u30FF')
-        || (c >= '\uFE30' && c <= '\uFE4F')
-        || (c >= '\uFF00' && c <= '\uFFEF')
+        c = '\t' || not (System.Char.IsControl c)
 
     let key = many1Satisfy ((=) ':' >> not) .>> skipChar ':' .>> spaces <?> "key"
 
