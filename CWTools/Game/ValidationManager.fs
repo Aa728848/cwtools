@@ -96,6 +96,10 @@ type ErrorCache() =
                         | false, _ -> () // 键不存在，跳过
                 | _ -> ()
 
+            match selfErrors.TryRemove fromEntity.filepath with
+            | true, _ -> impactedFiles.Add fromEntity.filepath |> ignore
+            | _ -> ()
+
             // Add new errors
             let groupedErrors = errorsForFiles |> Seq.groupBy (fun x -> x.range.FileName)
             let newErrors = new ConcurrentDictionary<string, CWError list>()

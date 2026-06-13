@@ -705,7 +705,11 @@ module internal FieldValidators =
                           (ErrorCodes.ConfigRulesErrorInTarget command (prevscope.ToString()) $"%A{expected}")
                           leafornode ]
                 )
-            | _, _, NotFound -> inv ErrorCodes.ConfigRulesExpectedVariableValue leafornode <&&&> errors
+            | _, _, NotFound ->
+                if checkMacroTemplateMatch (key.ToString()) varSet then
+                    errors
+                else
+                    inv ErrorCodes.ConfigRulesExpectedVariableValue leafornode <&&&> errors
             | _ ->
                 inv (ErrorCodes.CustomError "Expecting a variable, but got a scope" Severity.Information) leafornode
                 <&&&> errors
@@ -789,13 +793,16 @@ module internal FieldValidators =
             inv (ErrorCodes.ConfigRulesErrorInTarget command (prevscope.ToString()) $"%A{expected}") leafornode
             <&&&> errors
         | _, _, _, NotFound ->
-            match enumsMap.TryFind "static_values" with
-            | Some(_, es) ->
-                if es.Contains(key.Trim('\"')) then
-                    errors
-                else
-                    inv ErrorCodes.ConfigRulesExpectedVariableValue leafornode <&&&> errors
-            | None -> inv ErrorCodes.ConfigRulesExpectedVariableValue leafornode <&&&> errors
+            if checkMacroTemplateMatch (key.ToString()) varSet then
+                errors
+            else
+                match enumsMap.TryFind "static_values" with
+                | Some(_, es) ->
+                    if es.Contains(key.Trim('\"')) then
+                        errors
+                    else
+                        inv ErrorCodes.ConfigRulesExpectedVariableValue leafornode <&&&> errors
+                | None -> inv ErrorCodes.ConfigRulesExpectedVariableValue leafornode <&&&> errors
         | _ ->
             inv (ErrorCodes.CustomError "Expecting a variable, but got a scope" Severity.Information) leafornode
             <&&&> errors
