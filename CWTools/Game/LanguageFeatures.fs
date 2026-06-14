@@ -13,23 +13,43 @@ open CWTools.Parser
 
 module LanguageFeatures =
 
-    /// Cache for ManualProcessResource results. Key: filepath, Value: (content_hash, Entity).
-    /// Avoids re-parsing the entire file on every completion/hover/goto request
-    /// when the file content hasn't changed.
     let private completionEntityCache = ConcurrentDictionary<string, struct (int * Entity)>()
     let private infoEntityCache = ConcurrentDictionary<string, struct (int * Entity)>()
 
     let private typeReferenceIndexCache =
         ConcurrentDictionary<struct (int * int), Map<string * string, range list>>()
 
-    /// Clear the completion entity cache. Call during RefreshCaches to release
-    /// stale Entity ASTs for files that are no longer relevant.
     let clearCompletionEntityCache () =
         completionEntityCache.Clear()
         infoEntityCache.Clear()
 
     let clearTypeReferenceIndexCache () =
         typeReferenceIndexCache.Clear()
+
+    let private scriptedEffectParamMapCache =
+        ConcurrentDictionary<string, struct (obj * Map<string, string list>)>()
+
+    let private buildScriptedEffectParamMap (e: Entity) : Map<string, string list> =
+        let addNodes (root: Node) (acc: Map<string, string list>) =
+            root.Children
+            |> List.fold (fun (m: Map<string, string list>) (n: Node) ->
+                match Compute.Jomini.getScriptedEffectParams n with
+                | [] -> m
+                | ps ->
+                    let key = n.Key.ToLowerInvariant()
+                    let prev = Map.tryFind key m |> Option.defaultValue []
+                    Map.add key (prev @ ps |> List.distinct) m) acc
+        let raw = addNodes e.rawEntity Map.empty
+        if System.Object.ReferenceEquals(e.entity, e.rawEntity) then raw
+        else addNodes e.entity raw
+
+    let private entityScriptedParamMap (e: Entity) (lazyObj: obj) : Map<string, string list> =
+        match scriptedEffectParamMapCache.TryGetValue e.filepath with
+        | true, struct (cached, m) when System.Object.ReferenceEquals(cached, lazyObj) -> m
+        | _ ->
+            let m = buildScriptedEffectParamMap e
+            scriptedEffectParamMapCache.[e.filepath] <- struct (lazyObj, m)
+            m
 
     let private isSameText (left: string) (right: string) =
         String.Equals(left, right, StringComparison.Ordinal)
@@ -757,6 +777,65 @@ module LanguageFeatures =
             else
                 None
 
+        // 特殊处理：scripted_effect / scripted_trigger 调用块内，按【被调用的那个具体定义】的
+        // $PARAM$ 提供参数补全，而不是全局 enum[scripted_effect_params] 的全部参数。
+        let tryScriptedEffectParamCompletion () =
+            if currentLineIdx < 0 || currentLineIdx >= split.Length then None
+            else
+                let line = split.[currentLineIdx]
+                if line.TrimStart().StartsWith("#") then None
+                else
+                    match processResourceCached () with
+                    | None -> None
+                    | Some entity ->
+                        // 光标所在的最内层块节点，其 key 即被调用的 scripted_effect/trigger 名。
+                        let rec deepest (node: Node) =
+                            match node.Nodes |> Seq.tryFind (fun c -> rangeContainsPos c.Position pos) with
+                            | Some child -> deepest child
+                            | None -> node
+                        let enclosingKey = (deepest entity.entity).Key
+                        if String.IsNullOrWhiteSpace enclosingKey || enclosingKey = "root" then None
+                        else
+                            let isScriptedDefPath (lp: string) =
+                                lp.StartsWith("common/scripted_effects", StringComparison.OrdinalIgnoreCase)
+                                || lp.StartsWith("common/scripted_triggers", StringComparison.OrdinalIgnoreCase)
+                                || lp.StartsWith("common\\scripted_effects", StringComparison.OrdinalIgnoreCase)
+                                || lp.StartsWith("common\\scripted_triggers", StringComparison.OrdinalIgnoreCase)
+                            // 找名为 enclosingKey 的那个定义声明的参数。每个定义文件的「名->参数」表按
+                            // 其 Lazy 身份缓存，所以在调用方文件里打字时不会重复折叠 AST（tryPick 命中即停）。
+                            let lookupKey = enclosingKey.ToLowerInvariant()
+                            let scriptParams =
+                                resourceManager.Api.AllEntities()
+                                |> Seq.filter (fun struct (e, _) -> isScriptedDefPath e.logicalpath)
+                                |> Seq.tryPick (fun struct (e, l) ->
+                                    match Map.tryFind lookupKey (entityScriptedParamMap e (box l)) with
+                                    | Some ps when not (List.isEmpty ps) -> Some ps
+                                    | _ -> None)
+                                |> Option.defaultValue []
+                            if List.isEmpty scriptParams then None
+                            else
+                                let col = pos.Column
+                                let textBefore = if col <= line.Length then line.Substring(0, col) else line
+                                // 词首：剥掉光标处正在输入的标识符。
+                                let wordStart =
+                                    let mutable s = textBefore.Length
+                                    while s > 0 && (System.Char.IsLetterOrDigit(textBefore.[s - 1]) || textBefore.[s - 1] = '_') do
+                                        s <- s - 1
+                                    s
+                                // 值位置（紧跟 `key =`）交还常规补全（值可能是 scope/event_target 等）。
+                                let isValuePos = textBefore.Substring(0, wordStart).TrimEnd().EndsWith("=")
+                                if isValuePos then None
+                                else
+                                    let currentWord = textBefore.Substring(wordStart)
+                                    let filtered =
+                                        if currentWord.Length > 0 then
+                                            scriptParams |> List.filter (fun p -> p.StartsWith(currentWord, StringComparison.OrdinalIgnoreCase))
+                                        else scriptParams
+                                    filtered
+                                    |> List.mapi (fun i p ->
+                                        CompletionResponse.Detailed(p, Some(sprintf "Parameter: %s" p), Some(i + 1), CompletionCategory.Variable))
+                                    |> Some
+
         // 先尝试 @[ expression ] 内部的 scripted_variable 补全
         let exprResult = tryExpressionCompletion()
         match exprResult with
@@ -779,6 +858,13 @@ module LanguageFeatures =
                 log (sprintf "ScriptValue completion returning %d items" items.Length)
                 items
             | None ->
+                // 再尝试 scripted_effect / scripted_trigger 调用块的按定义参数补全
+                match tryScriptedEffectParamCompletion() with
+                | Some items ->
+                    log (sprintf "Scripted effect/trigger param completion returning %d items" items.Length)
+                    items
+                | None ->
+
                 // 如果是 inline_script 文件，需要找到调用者的上下文
                 if isInlineScriptFile then
                     log (sprintf "completion: processing inline_script file, looking for caller context")
@@ -2317,14 +2403,7 @@ module LanguageFeatures =
                 |> List.filter (fun (_, _, r, _, _) ->
                     refs
                     |> List.exists (fun (_, r2, isOutgoing, refLabel) -> rangeContainsRange r r2))
-            // let allIncomingRefs = getNewIncomingRefs files allTypeNamesInFiles
-            // let typesNotDefinedInFiles = getTypesFromRefs allTypeNamesInFiles allIncomingRefs
-            // let typesNotDefinedInFilesNames = typesNotDefinedInFiles |> List.map (fun (k, n, r, _, _) -> n)
-            // let allIncomingMinusOneRefs = getNewIncomingRefs files typesNotDefinedInFilesNames
-            // let typesNotDefinedInFilesMinusOne = getTypesFromRefs (allTypeNamesInFiles @ typesNotDefinedInFilesNames) allIncomingMinusOneRefs
-            // let typesNotDefinedInFilesMinusOneNames = typesNotDefinedInFilesMinusOne |> List.map (fun (k, n, r, _, _) -> n)
-            // let allIncomingMinusTwoRefs = getNewIncomingRefs files typesNotDefinedInFilesMinusOneNames
-            // let typesNotDefinedInFilesMinusTwo = getTypesFromRefs (allTypeNamesInFiles @ typesNotDefinedInFilesNames @ typesNotDefinedInFilesMinusOneNames) allIncomingMinusTwoRefs
+
             let searchBackwards typesToSearchBackFrom allPreviousTypes =
                 let typesToSearchBackFromNames =
                     typesToSearchBackFrom |> List.map (fun (k, n, r, _, _) -> n)
@@ -2332,8 +2411,7 @@ module LanguageFeatures =
                 let allIncoming = getNewIncomingRefs files typesToSearchBackFromNames
                 let allNewTypes = getTypesFromRefs allPreviousTypes allIncoming
                 allIncoming, allNewTypes, typesToSearchBackFromNames
-            // let directBackRefs, directBackTypes, directNowSearched = searchBackwards typesNotDefinedInFiles allTypeNamesInFiles
-            // let minusOneBackRefs, minusOneBackTypes, minusOneNowSearched = searchBackwards directBackTypes (directNowSearched @ allTypeNamesInFiles)
+
             let folder (allRefs, backTypes, backSearched, allBackTypes) =
                 let nextBackRefs, nextBackTypes, nextNowSearched =
                     searchBackwards backTypes backSearched
@@ -2342,12 +2420,7 @@ module LanguageFeatures =
 
             let allIncomingRefs, _, _, allIncomingTypes =
                 repeatN folder depth ([], typesDefinedInFiles, allTypeNamesInFiles, [])
-            // let allIncomingRefs = resourceManager.Api.AllEntities() |> List.filter (fun struct(e, _) -> allOtherFiles |> List.contains e.filepath)
-            //                         |> List.collect (fun struct(_, data) -> data.Force().Referencedtypes |> Option.map (getSourceTypes >> List.map (fun (_, v, r, isOutgoing, refLabel, _) -> (v, r, isOutgoing, refLabel))) |> Option.defaultValue [])
-            //                         |> List.filter (fun (v, r, isOutgoing, refLabel) -> allTypeNamesInFiles |> List.contains v)
-            // let typesNotDefinedInFiles = t |> List.filter (fun (_, name, r, el, _) -> (allTypeNamesInFiles |> List.contains name |> not) && (secondaryNames |> List.contains name |> not))
-            //                                |> List.filter (fun (_, _, r, _, _) -> allIncomingRefs |> List.exists (fun (_, r2, isOutgoing, refLabel) -> rangeContainsRange r r2))
-            // let allRefs = allIncomingRefs @ allIncomingMinusOneRefs @ allIncomingMinusTwoRefs
+
             let secondaries =
                 allOutgoingRefs @ allIncomingTypes
                 |> List.map (fun (entityType, name, range, el, sts) ->
