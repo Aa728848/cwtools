@@ -388,7 +388,21 @@ module LanguageFeatures =
                                 if newDepth < -50 then None
                                 else findInlineScriptContext (lineIdx - 1) newDepth newMaxDepth
 
-                    match findInlineScriptContext currentLineIdx 0 0 with
+                    let singleLineInlineIdx =
+                        let openIdx = line.IndexOf('{')
+                        if trimmedLine.StartsWith("inline_script") && openIdx >= 0 && col > openIdx then
+                            let upToCursor = line.Substring(0, min col line.Length)
+                            let opens = upToCursor |> Seq.filter (fun c -> c = '{') |> Seq.length
+                            let closes = upToCursor |> Seq.filter (fun c -> c = '}') |> Seq.length
+                            if opens - closes > 0 then Some currentLineIdx else None
+                        else None
+
+                    let inlineContext =
+                        match singleLineInlineIdx with
+                        | Some _ -> singleLineInlineIdx
+                        | None -> findInlineScriptContext currentLineIdx 0 0
+
+                    match inlineContext with
                     | Some inlineScriptLineIdx ->
                         // Confirmed inside inline_script block.
                         // ALL paths MUST return Some to block wrong regular completion.
@@ -453,29 +467,24 @@ module LanguageFeatures =
                             // Search BOTH upward AND downward from cursor within the inline_script block
                             // to find the "script = xxx" line
                             let findScriptNameInBlock () =
-                                // Find the closing brace of the inline_script block
-                                let rec findBlockEnd lineIdx braceDepth =
+                                let rec findBlockEnd lineIdx depth =
                                     if lineIdx >= split.Length then lineIdx - 1
                                     else
-                                        let l = split.[lineIdx].Trim()
+                                        let l = split.[lineIdx]
                                         let openBraces = l.ToCharArray() |> Array.filter (fun c -> c = '{') |> Array.length
                                         let closeBraces = l.ToCharArray() |> Array.filter (fun c -> c = '}') |> Array.length
-                                        let newDepth = braceDepth + openBraces - closeBraces
+                                        let newDepth = depth + openBraces - closeBraces
                                         if newDepth <= 0 then lineIdx
                                         else findBlockEnd (lineIdx + 1) newDepth
-                                let blockEndLine = findBlockEnd (inlineScriptLineIdx + 1) 1
+                                let blockEndLine = findBlockEnd inlineScriptLineIdx 0
 
-                                // Now search all lines within [inlineScriptLineIdx .. blockEndLine]
+                                let scriptPattern = System.Text.RegularExpressions.Regex(@"\bscript\s*=\s*([^\s}]+)")
                                 let mutable result = None
                                 for i in inlineScriptLineIdx .. blockEndLine do
                                     if result.IsNone && i >= 0 && i < split.Length then
-                                        let l = split.[i].Trim()
-                                        // Skip lines with inline_script keyword
-                                        if not (l.Contains("inline_script")) then
-                                            let scriptPattern = System.Text.RegularExpressions.Regex(@"^\s*script\s*=\s*([^\s}]+)")
-                                            let m = scriptPattern.Match(split.[i])
-                                            if m.Success then
-                                                result <- Some (m.Groups.[1].Value)
+                                        let m = scriptPattern.Match(split.[i])
+                                        if m.Success then
+                                            result <- Some (m.Groups.[1].Value)
                                 result
 
                             match findScriptNameInBlock() with
@@ -561,17 +570,19 @@ module LanguageFeatures =
 
                                     log (sprintf "tryInlineScriptCompletion: currentWord='%s'" currentWord)
 
-                                    // Detect if cursor is in value position (after = sign)
+                                    // Detect if cursor is in value position (right after `key =`).
+                                    // Strip the in-progress identifier under the cursor and any
+                                    // trailing spaces; if what remains ends with `=` the user is
+                                    // typing a value (stay silent), otherwise a new parameter key.
                                     let isAfterEquals =
                                         let lineText = split.[currentLineIdx]
                                         let cursorCol = min col lineText.Length
                                         if cursorCol > 0 then
                                             let textBefore = lineText.Substring(0, cursorCol)
-                                            let lastEq = textBefore.LastIndexOf('=')
-                                            if lastEq >= 0 then
-                                                let afterEq = textBefore.Substring(lastEq + 1).Trim()
-                                                not (afterEq.Contains("="))
-                                            else false
+                                            let mutable e = textBefore.Length
+                                            while e > 0 && (System.Char.IsLetterOrDigit(textBefore.[e - 1]) || textBefore.[e - 1] = '_') do
+                                                e <- e - 1
+                                            textBefore.Substring(0, e).TrimEnd().EndsWith("=")
                                         else false
 
                                     if isAfterEquals then
