@@ -336,6 +336,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         this.completionService <- Some completion
         this.RefreshValidationManager()
         LanguageFeatures.clearCompletionEntityCache ()
+        LanguageFeatures.clearTypeReferenceIndexCache ()
 
     let initialConfigRules () =
         log "Initial config rules update"
@@ -414,6 +415,12 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     /// 在文件编辑时调用，确保 shallow lint 不会返回过时的 deep 错误。
     member _.InvalidateFileCache(filepath: string) =
         errorCache.TryRemove(filepath) |> ignore
+
+    member _.RefreshInlineScriptCallers(scriptNames: string list) =
+        let callers = resourceManager.Api.RefreshInlineScriptCallers scriptNames
+        for filepath in callers do
+            errorCache.TryRemove(filepath) |> ignore
+        callers
 
     member this.InfoAtPos pos file text =
         if PdxShaderFeatures.isShaderFile file then

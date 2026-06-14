@@ -92,6 +92,7 @@ type IGame =
     abstract ForceRecompute: unit -> unit
     abstract ForceDynamicParameterData: int * int -> int
     abstract GetInlineScriptCallers: string -> string list
+    abstract RefreshInlineScriptCallers: string list -> string list
     abstract Types: unit -> Map<string, TypeDefInfo array>
     abstract TypeDefs: unit -> CWTools.Rules.TypeDefinition list
     abstract InfoAtPos: pos -> string -> string -> SymbolInformation option

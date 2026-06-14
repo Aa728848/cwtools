@@ -217,6 +217,7 @@ type IResourceAPI<'T when 'T :> ComputedData> =
     abstract ForceDynamicParameterData: int * int -> int
     abstract ForceRulesDataGenerate: unit -> unit
     abstract GetInlineScriptCallers: string -> string list
+    abstract RefreshInlineScriptCallers: string list -> string list
     abstract GetFileNames: FileNames
     abstract GetEntityByFilePath: string -> struct (Entity * Lazy<'T>) option
 
@@ -719,15 +720,23 @@ type ResourceManager<'T when 'T :> ComputedData>
             inlineScriptCallerKeysByFile.TryRemove filepath |> ignore
         | _ -> ()
 
+    let isInlineScriptEntity (e: Entity) =
+        e.logicalpath.StartsWith(inlinePath, StringComparison.OrdinalIgnoreCase)
+
+    let tryInlineScriptNameForEntity (e: Entity) =
+        if isInlineScriptEntity e then
+            Some(normalizeCallerRefKey (e.logicalpath.Substring inlinePathLength))
+        else
+            None
+
     let addCallerContributions (e: Entity) =
-        if not (e.logicalpath.StartsWith(inlinePath, StringComparison.OrdinalIgnoreCase)) then
-            let keys = collectInlineScriptRefs e.rawEntity
-            if not (List.isEmpty keys) then
-                inlineScriptCallerKeysByFile[e.filepath] <- List.toArray keys
-                for key in keys do
-                    let set =
-                        inlineScriptCallerIndex.GetOrAdd(key, fun _ -> System.Collections.Generic.HashSet<string>())
-                    lock set (fun () -> set.Add e.filepath |> ignore)
+        let keys = collectInlineScriptRefs e.rawEntity
+        if not (List.isEmpty keys) then
+            inlineScriptCallerKeysByFile[e.filepath] <- List.toArray keys
+            for key in keys do
+                let set =
+                    inlineScriptCallerIndex.GetOrAdd(key, fun _ -> System.Collections.Generic.HashSet<string>())
+                lock set (fun () -> set.Add e.filepath |> ignore)
 
     /// 全量重建反向索引（首次载入后调用）。
     let rebuildInlineScriptCallerIndex () =
@@ -762,7 +771,7 @@ type ResourceManager<'T when 'T :> ComputedData>
                     sb.ToString(),
                     System.Text.RegularExpressions.RegexOptions.Compiled))
 
-    let getInlineScriptCallers (scriptName: string) =
+    let getDirectInlineScriptCallers (scriptName: string) =
         let target = normalizeCallerRefKey scriptName
         if String.IsNullOrWhiteSpace target then
             []
@@ -781,6 +790,24 @@ type ResourceManager<'T when 'T :> ComputedData>
                         for f in kv.Value do
                             result.Add f |> ignore)
             result |> List.ofSeq
+
+    let getInlineScriptCallers (scriptName: string) =
+        let result = System.Collections.Generic.HashSet<string>()
+        let visitedScripts = System.Collections.Generic.HashSet<string>()
+
+        let rec visit script =
+            let target = normalizeCallerRefKey script
+            if not (String.IsNullOrWhiteSpace target) && visitedScripts.Add target then
+                for caller in getDirectInlineScriptCallers target do
+                    match entitiesMap.TryGetValue caller with
+                    | true, struct (e, _) ->
+                        match tryInlineScriptNameForEntity e with
+                        | Some callerScript -> visit callerScript
+                        | None -> result.Add caller |> ignore
+                    | _ -> result.Add caller |> ignore
+
+        visit scriptName
+        result |> List.ofSeq
 
     let updateInlineScripts (news: (Resource * struct (Entity * Lazy<'T>) option) list) =
         // 如果被修改的文件是 inline_script 本身，先失效缓存
@@ -1217,6 +1244,36 @@ type ResourceManager<'T when 'T :> ComputedData>
         |> Option.orElseWith (fun () ->
             entitiesMap.Keys |> Seq.tryFind (fun key -> normaliseFilePath key = target))
 
+    let refreshInlineScriptCallers (scriptNames: string list) =
+        if not enableInlineScripts || List.isEmpty scriptNames then
+            []
+        else
+            invalidateInlineScriptsCache ()
+
+            let callers =
+                scriptNames
+                |> List.collect getInlineScriptCallers
+                |> List.distinctBy normaliseFilePath
+
+            let refreshInputs =
+                callers
+                |> List.choose (fun caller ->
+                    let storedPath = tryFindStoredFileKey caller |> Option.defaultValue caller
+                    match fileMap.TryGetValue storedPath, entitiesMap.TryGetValue storedPath with
+                    | (true, resource), (true, struct (entity, lazyData)) when not (isInlineScriptEntity entity) ->
+                        let rawEntity = { entity with entity = entity.rawEntity }
+                        Some(storedPath, resource, Some struct (rawEntity, lazyData))
+                    | _ -> None)
+
+            if not (List.isEmpty refreshInputs) then
+                refreshInputs
+                |> List.map (fun (_, resource, entity) -> resource, entity)
+                |> updateInlineScripts
+                |> Seq.length
+                |> ignore
+
+            refreshInputs |> List.map (fun (path, _, _) -> path)
+
     let removeFile (filepath: string) =
         ResourceManagerEager.nextVersion () |> ignore
         let storedPath = tryFindStoredFileKey filepath |> Option.defaultValue filepath
@@ -1288,5 +1345,6 @@ type ResourceManager<'T when 'T :> ComputedData>
                 forceDynamicParameterData timeoutMs maxEntities
             member _.ForceRulesDataGenerate() = forceRulesData ()
             member _.GetInlineScriptCallers scriptName = getInlineScriptCallers scriptName
+            member _.RefreshInlineScriptCallers scriptNames = refreshInlineScriptCallers scriptNames
             member _.GetFileNames = getFileNames
             member _.GetEntityByFilePath path = getEntityByFilePath path }

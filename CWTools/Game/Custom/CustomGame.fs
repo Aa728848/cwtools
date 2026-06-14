@@ -298,6 +298,7 @@ type CustomGame(setupSettings: CustomSettings, gameFolderName: string) =
         member _.ForceDynamicParameterData(timeoutMs, maxEntities) =
             resources.ForceDynamicParameterData(timeoutMs, maxEntities)
         member _.GetInlineScriptCallers scriptName = resources.GetInlineScriptCallers scriptName
+        member _.RefreshInlineScriptCallers scriptNames = game.RefreshInlineScriptCallers scriptNames
         member _.Types() = game.Lookup.typeDefInfo
         member _.TypeDefs() = game.Lookup.typeDefs
         member _.GetPossibleCodeEdits file text = []
