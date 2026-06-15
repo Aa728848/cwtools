@@ -574,7 +574,17 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     typeDefInfo |> Map.add typeKey (Array.append existing updated))
                 lookup.typeDefInfo
 
-        tempTypeMap <- typeMapFromTypeDefInfo lookup.typeDefInfo
+        tempTypeMap <-
+            typeKeys
+            |> List.fold
+                (fun acc typeKey ->
+                    let ids =
+                        lookup.typeDefInfo
+                        |> Map.tryFind typeKey
+                        |> Option.defaultValue [||]
+                        |> Seq.map _.id
+                    Map.add typeKey (createStringSet ids) acc)
+                tempTypeMap
         lookup.typeDefInfoForValidation <- typeDefInfoForValidationFrom lookup.typeDefInfo
 
         let ruleValidationService, infoService, completionService =
