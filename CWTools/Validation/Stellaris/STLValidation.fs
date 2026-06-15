@@ -295,12 +295,14 @@ module STLValidation =
 
     /// Make sure an event either has a mean_time_to_happen or is stopped from checking all the time
     /// Not mandatory, but performance reasons, suggested by Caligula
-    /// Check "mean_time_to_happen", "is_triggered_only", "fire_only_once" and "trigger = { always = no }".
+    /// Check "mean_time_to_happen", "is_triggered_only", "fire_only_once", "is_test_event",
+    /// and "trigger = { always = no }".
     /// Create issue if none are true
     let validateEventValsInternal (event: Node) =
         let isMTTH = event.Has "mean_time_to_happen"
         let isTrig = event.Has "is_triggered_only"
         let isOnce = event.Has "fire_only_once"
+        let isTest = event.Has "is_test_event"
         let isInherited = event.Has "base"
 
         let isAlwaysNo =
@@ -312,7 +314,7 @@ module STLValidation =
             | None -> false
 
         let e =
-            match isMTTH || isTrig || isOnce || isAlwaysNo || isInherited with
+            match isMTTH || isTrig || isOnce || isTest || isAlwaysNo || isInherited with
             | false -> Invalid(Guid.NewGuid(), [ inv ErrorCodes.EventEveryTick event ])
             | true -> OK
 

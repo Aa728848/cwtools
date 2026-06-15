@@ -37,7 +37,7 @@ module STLGameFunctions =
     type GameObject = GameObject<STLComputedData, STLLookup>
 
     let createLocDynamicSettings (lookup: Lookup) =
-        let eventtargets =
+        let definedEventTargets =
             Array.append
                 (lookup.varDefInfo.TryFind "event_target"
                  |> Option.defaultValue [||]
@@ -46,6 +46,17 @@ module STLGameFunctions =
                  |> Option.defaultValue [||]
                  |> Array.map fst)
 
+        let savedEventTargets =
+            lookup.savedEventTargets
+            |> Seq.map (fun (name, _, scope) -> name, scope)
+
+        let eventTargets =
+            Seq.append
+                (definedEventTargets |> Seq.map (fun name -> name, scopeManager.AnyScope))
+                savedEventTargets
+            |> Seq.distinct
+            |> Array.ofSeq
+
         let definedVariables =
             (lookup.varDefInfo.TryFind "variable"
              |> Option.defaultValue [||]
@@ -53,7 +64,7 @@ module STLGameFunctions =
              |> IgnoreCaseStringSet)
 
         { scriptedLocCommands = lookup.scriptedLoc |> Array.map (fun s -> s, [ scopeManager.AnyScope ])
-          eventTargets = eventtargets |> Array.map (fun s -> s, scopeManager.AnyScope)
+          eventTargets = eventTargets
           setVariables = definedVariables }
 
     let updateScriptedTriggers (game: GameObject) =
@@ -470,7 +481,6 @@ type STLGame(setupSettings: StellarisSettings) =
               valPlanetClassGraphics, "pcg"
               validateDeprecatedSetName, "setname"
               validateEvents, "eventsSimple"
-              validateNOTMultiple, "not"
               validatePreTriggers, "pre"
               validateIfWithNoEffect, "ifnoeffect" ]
           experimentalValidators = [ valSectionGraphics, "sections"; valComponentGraphics, "component" ]

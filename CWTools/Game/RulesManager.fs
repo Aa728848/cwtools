@@ -3,12 +3,15 @@ namespace CWTools.Games
 open System
 open System.Collections.Generic
 open System.Linq
+open System.Text.RegularExpressions
 open CWTools.Rules
 open CWTools.Common
 open CWTools.Utilities.Position
 open FSharp.Collections.ParallelSeq
 open CWTools.Process.Localisation
 open CWTools.Process.Scopes
+open CWTools.Process
+open CWTools.Parser
 open CWTools.Utilities.Utils
 open CWTools.Utilities.Utils2
 open CWTools.Rules.RulesHelpers
@@ -306,6 +309,90 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
         ruleValidationService, infoService, completionService
 
+    let scriptedParameterPattern =
+        Regex(@"\$([^$|]+)(?:\|([^$]*))?\$", RegexOptions.Compiled)
+
+    let parameterName (text: string) =
+        let pipeIndex = text.IndexOf('|')
+        if pipeIndex >= 0 then text.Substring(0, pipeIndex) else text
+
+    let normalizeParameterKey (key: string) =
+        key.Trim().Trim('$') |> parameterName
+
+    let replaceScriptedParameters (parameters: (string * string) seq) (text: string) =
+        let values =
+            parameters
+            |> Seq.choose (fun (key, value) ->
+                let name = normalizeParameterKey key
+                if String.IsNullOrWhiteSpace name then None else Some(name, value))
+            |> Map.ofSeq
+
+        scriptedParameterPattern.Replace(
+            text,
+            MatchEvaluator(fun m ->
+                let name = m.Groups.[1].Value
+                match values |> Map.tryFind name with
+                | Some value -> value
+                | None when m.Groups.[2].Success -> m.Groups.[2].Value
+                | None -> m.Value)
+        )
+
+    let replaceNodeScriptedParameters (parameters: (string * string) list) (node: Node) =
+        let stringReplace = replaceScriptedParameters parameters
+
+        let rec foldOverNode (node: Node) =
+            node.Key <- stringReplace node.Key
+
+            node.Leaves
+            |> Seq.iter (fun (l: Leaf) ->
+                l.Key <- stringReplace l.Key
+
+                match l.Value with
+                | Value.String s ->
+                    l.Value <-
+                        String(
+                            stringReplace (s.GetString())
+                            |> CWTools.Utilities.StringResource.stringManager.InternIdentifierToken
+                        )
+                | Value.QString s ->
+                    l.Value <-
+                        QString(
+                            stringReplace (s.GetString())
+                            |> CWTools.Utilities.StringResource.stringManager.InternIdentifierToken
+                        )
+                | _ -> ())
+
+            node.LeafValues
+            |> Seq.iter (fun (l: LeafValue) ->
+                match l.Value with
+                | Value.String s ->
+                    l.Value <-
+                        String(
+                            stringReplace (s.GetString())
+                            |> CWTools.Utilities.StringResource.stringManager.InternIdentifierToken
+                        )
+                | Value.QString s ->
+                    l.Value <-
+                        QString(
+                            stringReplace (s.GetString())
+                            |> CWTools.Utilities.StringResource.stringManager.InternIdentifierToken
+                        )
+                | _ -> ())
+
+            node.Nodes |> Seq.iter foldOverNode
+
+        foldOverNode node
+
+    let mergeDefinedVariables (m: Map<string, (string * range) array>) (map: Map<string, ResizeArray<string * range>>) =
+        Map.toList map
+        |> List.fold
+            (fun m2 (n, k) ->
+                if Map.containsKey n m2 then
+                    Map.add n (Array.append (k.ToArray()) m2[n]) m2
+                else
+                    Map.add n (k.ToArray()) m2)
+            m
+
     let refreshConfig () =
         let timer = System.Diagnostics.Stopwatch()
         let endToEndTimer = System.Diagnostics.Stopwatch()
@@ -443,17 +530,134 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             |> PSeq.map (fun struct (e, l) ->
                 (l.Force().Definedvariables
                  |> (Option.defaultWith (fun () -> tempInfoService.GetDefinedVariables e))))
-            |> Seq.fold
-                (fun m map ->
-                    Map.toList map
-                    |> List.fold
-                        (fun m2 (n, k) ->
-                            if Map.containsKey n m2 then
-                                Map.add n (Array.append (k.ToArray()) m2[n]) m2
-                            else
-                                Map.add n (k.ToArray()) m2)
-                        m)
-                predefValues
+            |> Seq.fold mergeDefinedVariables predefValues
+
+        let collectExpandedScriptedDefinedVariables () =
+            let entityMap =
+                allEntitiesList
+                |> Seq.map (fun struct (e, d) -> e.filepath, struct (e, d))
+                |> Map.ofSeq
+
+            let rec findNodeAtPosition (node: Node) (pos: range) =
+                if node.Position.Equals pos then
+                    Some node
+                else
+                    node.Nodes
+                    |> Seq.tryFind (fun n -> rangeContainsRange n.Position pos)
+                    |> Option.bind (fun child -> findNodeAtPosition child pos)
+
+            let findEntityNode (pos: range) =
+                entityMap
+                |> Map.tryFind pos.FileName
+                |> Option.bind (fun struct (e, _) -> findNodeAtPosition e.entity pos |> Option.map (fun n -> e, n))
+
+            let lower (s: string) = s.ToLowerInvariant()
+
+            let scriptedDefinitions =
+                lookup.typeDefInfo
+                |> Map.tryFind "scripted_effect"
+                |> Option.defaultValue [||]
+                |> Array.choose (fun se ->
+                    findEntityNode se.range
+                    |> Option.map (fun (entity, node) -> lower se.id, (entity, node)))
+                |> Map.ofArray
+
+            if Map.isEmpty scriptedDefinitions then
+                Seq.empty
+            else
+                let extractCallParams (callNode: Node) =
+                    callNode.Values |> List.map (fun l -> "$" + l.Key + "$", l.ValueText)
+
+                let findCallParams (pos: range) =
+                    findEntityNode pos |> Option.map (snd >> extractCallParams) |> Option.defaultValue []
+
+                let rec findNestedCalls (node: Node) =
+                    let leafCalls =
+                        node.Values
+                        |> List.choose (fun l ->
+                            let key = lower l.Key
+                            if Map.containsKey key scriptedDefinitions then Some(l.Key, []) else None)
+
+                    let nodeCalls =
+                        node.Nodes
+                        |> Seq.choose (fun n ->
+                            let key = lower n.Key
+                            if Map.containsKey key scriptedDefinitions then Some(n.Key, extractCallParams n) else None)
+                        |> List.ofSeq
+
+                    let childCalls =
+                        node.Nodes |> Seq.collect findNestedCalls |> List.ofSeq
+
+                    leafCalls @ nodeCalls @ childCalls
+
+                let canonicalParams parameters =
+                    parameters
+                    |> List.sortBy fst
+                    |> List.map (fun (k, v) -> k + "=" + v)
+                    |> String.concat ";"
+
+                let onlyConcreteValues (definedVariables: Map<string, ResizeArray<string * range>>) =
+                    definedVariables
+                    |> Map.toSeq
+                    |> Seq.choose (fun (name, values) ->
+                        let concrete =
+                            values
+                            |> Seq.filter (fun (value, _) -> value.IndexOf('$') < 0)
+                            |> ResizeArray
+
+                        if concrete.Count = 0 then None else Some(name, concrete))
+                    |> Map.ofSeq
+
+                let visited = HashSet<string>()
+
+                let rec collectFromScriptedEffect depth name parameters =
+                    if depth > 12 then
+                        []
+                    else
+                        let nameKey = lower name
+                        let visitedKey = nameKey + "|" + canonicalParams parameters
+
+                        if not (visited.Add visitedKey) then
+                            []
+                        else
+                            match Map.tryFind nameKey scriptedDefinitions with
+                            | None -> []
+                            | Some(definitionEntity, definitionNode) ->
+                                let expandedNode = STLProcess.cloneNode definitionNode
+                                replaceNodeScriptedParameters parameters expandedNode
+
+                                let rootNode = Node("root")
+                                rootNode.AllArray <- [| NodeC expandedNode |]
+
+                                let expandedEntity =
+                                    { definitionEntity with
+                                        rawEntity = rootNode
+                                        entity = rootNode }
+
+                                let direct =
+                                    tempInfoService.GetDefinedVariables expandedEntity
+                                    |> onlyConcreteValues
+
+                                let nested =
+                                    findNestedCalls expandedNode
+                                    |> List.collect (fun (nestedName, nestedParams) ->
+                                        collectFromScriptedEffect (depth + 1) nestedName nestedParams)
+
+                                direct :: nested
+
+                allEntitiesList
+                |> Seq.collect (fun struct (_, d) ->
+                    d.Force().Referencedtypes
+                    |> Option.bind (Map.tryFind "scripted_effect")
+                    |> Option.defaultValue [])
+                |> Seq.filter (fun ref -> ref.referenceType = ReferenceType.TypeDef)
+                |> Seq.collect (fun ref ->
+                    let effectName = ref.name.GetString()
+                    collectFromScriptedEffect 0 effectName (findCallParams ref.position))
+
+        let results =
+            collectExpandedScriptedDefinedVariables ()
+            |> Seq.fold mergeDefinedVariables results
 
         lookup.varDefInfo <- addEmbeddedVarDefData results
         // eprintfn "vdi %A" results

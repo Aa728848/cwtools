@@ -67,6 +67,70 @@ module internal FieldValidators =
     let inline getLowerKey (ids: StringTokens) = stringManager.GetLowerStringForIDs(ids)
     let inline getOriginalKey (ids: StringTokens) = stringManager.GetStringForIDs ids
 
+    let private tryResolveScopedTriggerValue
+        (linkMap: EffectMap)
+        (valueTriggerMap: EffectMap)
+        (wildcardLinks: ScopedEffect list)
+        varSet
+        (changeScope: ChangeScope)
+        (scope: ScopeContext)
+        (key: ReadOnlySpan<char>)
+        =
+        let key = key.ToString()
+        let marker = ".trigger:"
+        let markerIndex = key.IndexOf(marker, StringComparison.OrdinalIgnoreCase)
+
+        if markerIndex < 0 then
+            None
+        else
+            let scopePath = key.Substring(0, markerIndex)
+            let triggerName = key.Substring(markerIndex + marker.Length)
+
+            if String.IsNullOrWhiteSpace triggerName || triggerName.IndexOf('$') >= 0 then
+                None
+            else
+                let scopedContextResult =
+                    if String.IsNullOrWhiteSpace scopePath then
+                        Some(Choice1Of2 scope)
+                    else
+                        match
+                            changeScope.Invoke(
+                                false,
+                                true,
+                                linkMap,
+                                valueTriggerMap,
+                                wildcardLinks,
+                                varSet,
+                                scopePath.AsSpan(),
+                                scope
+                            )
+                        with
+                        | ScopeResult.NewScope(newScope, _, _) -> Some(Choice1Of2 newScope)
+                        | ScopeResult.WrongScope _ as result -> Some(Choice2Of2 result)
+                        | ScopeResult.VarNotFound _ as result -> Some(Choice2Of2 result)
+                        | _ -> None
+
+                match scopedContextResult with
+                | Some(Choice1Of2 scopedContext) ->
+                    match
+                        changeScope.Invoke(
+                            false,
+                            true,
+                            linkMap,
+                            valueTriggerMap,
+                            wildcardLinks,
+                            varSet,
+                            triggerName.AsSpan(),
+                            scopedContext
+                        )
+                    with
+                    | ScopeResult.ValueFound _ as result -> Some result
+                    | ScopeResult.WrongScope _ as result -> Some result
+                    | ScopeResult.VarNotFound _ as result -> Some result
+                    | _ -> None
+                | Some(Choice2Of2 result) -> Some result
+                | None -> None
+
     let checkValidValue
         (varMap: FrozenDictionary<_, PrefixOptimisedStringSet>)
         (enumsMap: FrozenDictionary<_, string * PrefixOptimisedStringSet>)
@@ -777,12 +841,20 @@ module internal FieldValidators =
             | true -> key.AsSpan().SplitFirst('|')
             | _ -> key.AsSpan()
 
-        match
-            firstCharEqualsAmp ids.lower || key.IndexOf('$') >= 0,
-            TryParser.parseDecimalSpan key,
-            TryParser.parseIntSpan key,
+        let scopeResult =
             changeScope.Invoke(false, true, linkMap, valueTriggerMap, wildcardLinks, varSet, key, scope)
-        with
+
+        let scopeResult =
+            match scopeResult with
+            | ScopeResult.ValueFound _
+            | ScopeResult.VarFound
+            | ScopeResult.VarNotFound _
+            | ScopeResult.WrongScope _ -> scopeResult
+            | _ ->
+                tryResolveScopedTriggerValue linkMap valueTriggerMap wildcardLinks varSet changeScope scope key
+                |> Option.defaultValue scopeResult
+
+        match firstCharEqualsAmp ids.lower || key.IndexOf('$') >= 0, TryParser.parseDecimalSpan key, TryParser.parseIntSpan key, scopeResult with
         | true, _, _, _ -> errors
         | _, _, ValueSome i, _ when isInt && min <= decimal i && max >= decimal i -> errors
         | _, ValueSome f, _, _ when min <= f && max >= f -> errors
@@ -823,12 +895,20 @@ module internal FieldValidators =
         let scope = ctx.scopes
         let key = getOriginalKey ids
 
-        match
-            firstCharEqualsAmp ids.lower || key.IndexOf('$') >= 0,
-            TryParser.parseDecimal key,
-            TryParser.parseInt key,
+        let scopeResult =
             changeScope.Invoke(false, true, linkMap, valueTriggerMap, wildcardLinks, varSet, key, scope)
-        with
+
+        let scopeResult =
+            match scopeResult with
+            | ScopeResult.ValueFound _
+            | ScopeResult.VarFound
+            | ScopeResult.VarNotFound _
+            | ScopeResult.WrongScope _ -> scopeResult
+            | _ ->
+                tryResolveScopedTriggerValue linkMap valueTriggerMap wildcardLinks varSet changeScope scope (key.AsSpan())
+                |> Option.defaultValue scopeResult
+
+        match firstCharEqualsAmp ids.lower || key.IndexOf('$') >= 0, TryParser.parseDecimal key, TryParser.parseInt key, scopeResult with
         | true, _, _, _ -> true
         | _, _, ValueSome i, _ -> isInt && min <= decimal i && max >= decimal i
         | _, ValueSome f, _, _ -> min <= f && max >= f

@@ -129,6 +129,10 @@ module ChangeLocScope =
                             dynamicSettings.scriptedLocCommands |> Seq.tryFind (fun (c, _) -> c == nextKey)
                         )
 
+                    let explicitEventTarget =
+                        nextKey.StartsWith("event_target:", StringComparison.OrdinalIgnoreCase)
+                        || nextKey.StartsWith("global_event_target:", StringComparison.OrdinalIgnoreCase)
+
                     match
                         matchedCommand,
                         first,
@@ -146,7 +150,10 @@ module ChangeLocScope =
                         | _, false -> LocNotFound nextKey
                     | None, true, false ->
                         // TODO: Add scope push
-                        match dynamicSettings.eventTargets |> Seq.exists (fun (et, _) -> et == nextKey) with
+                        match
+                            explicitEventTarget
+                            || (dynamicSettings.eventTargets |> Seq.exists (fun (et, _) -> et == nextKey))
+                        with
                         | true ->
                             LocContextResult.NewScope
                                 { source with
