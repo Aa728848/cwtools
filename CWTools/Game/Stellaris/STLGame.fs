@@ -711,6 +711,13 @@ type STLGame(setupSettings: StellarisSettings) =
                 game.RefreshScriptedTypesForFiles(files, typeKeys)
                 true
 
+        member _.PrepareScriptedTypes files =
+            let typeKeys = scriptedTypeKeysForFiles files
+            if typeKeys.IsEmpty then None
+            else game.PrepareScriptedTypesForFiles(files, typeKeys)
+
+        member _.CommitScriptedTypes staged = game.CommitScriptedTypesForFiles staged
+
         member _.RefreshLocalisationCaches() =
             game.LocalisationManager.UpdateProcessedLocalisation()
 

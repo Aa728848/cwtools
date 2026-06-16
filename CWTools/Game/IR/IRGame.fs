@@ -361,6 +361,10 @@ type IRGame(setupSettings: IRSettings) =
 
         member _.RemoveScriptedTypes _ = false
 
+        member _.PrepareScriptedTypes _ = None
+
+        member _.CommitScriptedTypes _ = false
+
         member _.RefreshLocalisationCaches() =
             game.LocalisationManager.UpdateProcessedLocalisation()
 

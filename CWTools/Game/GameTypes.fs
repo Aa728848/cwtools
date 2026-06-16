@@ -69,6 +69,16 @@ type CompletionResponse =
     static member CreateSnippet(label, snippet, desc) =
         Snippet(label, snippet, desc, None, CompletionCategory.Other)
 
+type StagedScriptedTypes =
+    { typeDefInfo: Map<string, TypeDefInfo array>
+      tempTypeMap: Map<string, CWTools.Utilities.Utils2.PrefixOptimisedStringSet>
+      typeDefInfoForValidation: Map<string, struct (string * range) array>
+      /// lookup.typeDefInfo reference the fold was seeded from; commit-time ReferenceEquals guard
+      baseTypeDefInfo: Map<string, TypeDefInfo array>
+      ruleService: obj
+      infoService: obj
+      completionService: obj }
+
 type IGame =
     abstract ParserErrors: unit -> (string * string * FParsec.Position) list
     abstract ValidationErrors: unit -> CWError list
@@ -86,6 +96,10 @@ type IGame =
     abstract RefreshCaches: unit -> unit
     abstract RefreshScriptedTypes: string list -> bool
     abstract RemoveScriptedTypes: string list -> bool
+    /// Lockless build phase of an incremental scripted-type refresh; None when not applicable.
+    abstract PrepareScriptedTypes: string list -> StagedScriptedTypes option
+    /// Write-locked swap phase; false when a guard fails and a full refresh is needed.
+    abstract CommitScriptedTypes: StagedScriptedTypes -> bool
     abstract RefreshLocalisationCaches: unit -> unit
     abstract CleanupCache: Set<string> -> unit
     abstract InvalidateFileCache: string -> unit

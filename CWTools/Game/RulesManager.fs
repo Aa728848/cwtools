@@ -797,6 +797,106 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         logInfo $"Refresh scripted types: files=%d{files.Length}, typeKeys=%d{typeKeys.Length}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
         ruleValidationService, infoService, completionService
 
+    let prepareScriptedTypes (files: string list) (typeKeys: string list) : StagedScriptedTypes option =
+        let timer = System.Diagnostics.Stopwatch.StartNew()
+        let typeKeys = typeKeys |> List.distinct
+        let typeKeySet = typeKeys |> Set.ofList
+        let fileSet = files |> List.map normaliseFilePath |> Set.ofList
+
+        // Snapshot the shared maps once; the folds below seed from these locals, never the
+        // live lookup fields, so this whole function leaves shared state untouched.
+        let baseTypeDefInfo = lookup.typeDefInfo
+        let baseTempTypeMap = tempTypeMap
+
+        let rulesWrapper = RulesWrapper(lookup.configRules)
+        let loc = currentLoc ()
+        let allFiles = currentFiles ()
+        let emptyVarMap: FrozenDictionary<string, PrefixOptimisedStringSet> = FrozenDictionary.Empty
+
+        let tempRuleValidationService =
+            buildRuleValidationService
+                rulesWrapper
+                (baseTempTypeMap.ToFrozenDictionary())
+                emptyVarMap
+                loc
+                allFiles
+
+        let entities =
+            files
+            |> List.choose (fun path ->
+                getEntityByFilePathWithFallback path
+                |> Option.map (fun struct (entity, _) -> entity))
+
+        let changedTypes =
+            tempTypes |> List.filter (fun t -> typeKeySet.Contains t.name)
+
+        let changedTypeDefInfo =
+            if entities.IsEmpty || changedTypes.IsEmpty then
+                Map.empty
+            else
+                getTypesFromDefinitions (Some tempRuleValidationService) changedTypes entities
+
+        let newTypeDefInfo =
+            typeKeys
+            |> List.fold
+                (fun typeDefInfo typeKey ->
+                    let existing =
+                        typeDefInfo
+                        |> Map.tryFind typeKey
+                        |> Option.defaultValue [||]
+                        |> Array.filter (fun tdi -> not (fileSet.Contains(normaliseFilePath tdi.range.FileName)))
+
+                    let updated =
+                        changedTypeDefInfo
+                        |> Map.tryFind typeKey
+                        |> Option.defaultValue [||]
+
+                    typeDefInfo |> Map.add typeKey (Array.append existing updated))
+                baseTypeDefInfo
+
+        let newTempTypeMap =
+            typeKeys
+            |> List.fold
+                (fun acc typeKey ->
+                    let ids =
+                        newTypeDefInfo
+                        |> Map.tryFind typeKey
+                        |> Option.defaultValue [||]
+                        |> Seq.map _.id
+                    Map.add typeKey (createStringSet ids) acc)
+                baseTempTypeMap
+
+        let newTypeDefInfoForValidation = typeDefInfoForValidationFrom newTypeDefInfo
+
+        let ruleValidationService, infoService, completionService =
+            buildServices rulesWrapper (newTempTypeMap.ToFrozenDictionary())
+
+        logInfo $"Prepare scripted types: files=%d{files.Length}, typeKeys=%d{typeKeys.Length}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
+
+        Some
+            { typeDefInfo = newTypeDefInfo
+              tempTypeMap = newTempTypeMap
+              typeDefInfoForValidation = newTypeDefInfoForValidation
+              baseTypeDefInfo = baseTypeDefInfo
+              ruleService = box ruleValidationService
+              infoService = box infoService
+              completionService = box completionService }
+
+    let commitScriptedTypes (staged: StagedScriptedTypes) =
+        if not (System.Object.ReferenceEquals(lookup.typeDefInfo, staged.baseTypeDefInfo)) then
+            None
+        else
+            lookup.typeDefInfo <- staged.typeDefInfo
+            tempTypeMap <- staged.tempTypeMap
+            lookup.typeDefInfoForValidation <- staged.typeDefInfoForValidation
+            Some(
+                staged.ruleService :?> RuleValidationService,
+                staged.infoService :?> InfoService,
+                staged.completionService :?> CompletionService
+            )
+
     member _.LoadBaseConfig(rulesSettings) = loadBaseConfig rulesSettings
     member _.RefreshConfig() = refreshConfig ()
     member _.RefreshScriptedTypes(files, typeKeys) = refreshScriptedTypes files typeKeys
+    member _.PrepareScriptedTypes(files, typeKeys) = prepareScriptedTypes files typeKeys
+    member _.CommitScriptedTypes(staged) = commitScriptedTypes staged

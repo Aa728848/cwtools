@@ -654,6 +654,7 @@ let tests =
               let result =
                   CWTools.Validation.LocalisationString.validateProcessedLocalisationBase
                       []
+                      Set.empty
                       [| STL STLLang.English, keys |]
                       [ STL STLLang.English, Map.ofList [ entry.key, entry ] ]
 
@@ -1256,6 +1257,62 @@ country_event = {
                   labels
                   "test_scripted_trigger_value"
                   "Scripted triggers wrapping count_* without count should complete as trigger conditions" ]
+
+[<Tests>]
+let incrementalScriptedRefreshTests =
+    let stlScriptedGame () =
+        let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
+        let configtext = configFilesFromDir folder
+
+        let settings =
+            { emptyStellarisSettings folder with
+                rules =
+                    Some
+                        { ruleFiles = configtext
+                          validateRules = true
+                          debugRulesOnly = false
+                          debugMode = false } }
+
+        STLGame(settings) :> IGame<STLComputedData>, folder
+
+    // Sequenced: constructing an STLGame re-inits the global ScopeManager singleton, which
+    // races with any other game construction running in parallel.
+    testSequenced
+    <| testList
+        "incremental scripted refresh"
+        [ testWithCapturedLogs "prepare is pure and commit swaps the type index" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let triggerFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
+
+              let typesBefore = stl.Types()
+              let staged = stl.PrepareScriptedTypes [ triggerFile ]
+              Expect.isSome staged "prepare should stage a scripted_triggers file"
+              Expect.isTrue
+                  (System.Object.ReferenceEquals(stl.Types(), typesBefore))
+                  "prepare must not reassign the live type index"
+
+              let committed = stl.CommitScriptedTypes staged.Value
+              Expect.isTrue committed "commit should succeed when the type index is unchanged since prepare"
+              Expect.isFalse
+                  (System.Object.ReferenceEquals(stl.Types(), typesBefore))
+                  "commit should install the staged type index"
+              Expect.contains
+                  (stl.Types().["scripted_trigger"] |> Array.map (fun t -> t.id))
+                  "test_scripted_trigger_country"
+                  "committed type index should still contain the fixture's scripted triggers"
+
+          testWithCapturedLogs "commit is rejected when the type index changed since prepare" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let triggerFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
+
+              let staged = stl.PrepareScriptedTypes [ triggerFile ]
+              Expect.isSome staged "prepare should stage a scripted_triggers file"
+
+              // Simulate an external writer replacing lookup.typeDefInfo between prepare and commit.
+              stl.RefreshScriptedTypes [ triggerFile ] |> ignore
+
+              let committed = stl.CommitScriptedTypes staged.Value
+              Expect.isFalse committed "commit must reject a staged result whose base type index was replaced" ]
 
 [<Tests>]
 let irSubfolderTests =

@@ -331,6 +331,10 @@ type VIC2Game(setupSettings: VIC2Settings) =
 
         member _.RemoveScriptedTypes _ = false
 
+        member _.PrepareScriptedTypes _ = None
+
+        member _.CommitScriptedTypes _ = false
+
         member _.RefreshLocalisationCaches() =
             game.LocalisationManager.UpdateProcessedLocalisation()
 
