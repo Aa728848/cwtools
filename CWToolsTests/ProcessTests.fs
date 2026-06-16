@@ -1837,7 +1837,35 @@ let nestedEventTargetTests =
 
     testList
         "nested scripted effect event targets"
-        [ testCase "save via nested parameterised call propagates to caller"
+        [ testCase "event target existence suffix is not part of the saved target key"
+          <| fun () ->
+              let input =
+                  "test_effect = {\n\
+                            event_target:wg_dragon_own_country? = { set_country_flag = checked }\n\
+                            exists = event_target:wg_dragon_own_country?\n\
+                            is_same_value = event_target:other_target?\n\
+                            }"
+
+              let node = parseRoot input
+              let used = STLProcess.findAllUsedEventTargets node
+              let exists = STLProcess.findAllExistsEventTargets node
+
+              Expect.contains
+                  used
+                  "wg_dragon_own_country"
+                  $"used event target should drop existence suffix, got %A{used}"
+
+              Expect.contains used "other_target" $"value event target should drop existence suffix, got %A{used}"
+              Expect.contains exists "wg_dragon_own_country" $"exists target should drop existence suffix, got %A{exists}"
+              Expect.isFalse
+                  (Set.contains "wg_dragon_own_country?" used)
+                  $"used event target should not include '?' in the key, got %A{used}"
+
+              Expect.isFalse
+                  (Set.contains "wg_dragon_own_country?" exists)
+                  $"exists event target should not include '?' in the key, got %A{exists}"
+
+          testCase "save via nested parameterised call propagates to caller"
           <| fun () ->
               // Mirrors vanilla cosmic storms: try_spawn calls choose_location
               // with EVENT_TARGET_NAME, which does save_event_target_as = $EVENT_TARGET_NAME$

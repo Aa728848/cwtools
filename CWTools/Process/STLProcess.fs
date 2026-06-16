@@ -106,12 +106,15 @@ module STLProcess =
         let atIndex = raw.IndexOf('@')
         let dotIndex = raw.IndexOf('.')
 
-        if atIndex >= 0 && (dotIndex < 0 || dotIndex > atIndex) then
-            raw
-        else if dotIndex >= 0 then
-            raw.Substring(0, dotIndex)
-        else
-            raw
+        let name =
+            if atIndex >= 0 && (dotIndex < 0 || dotIndex > atIndex) then
+                raw
+            else if dotIndex >= 0 then
+                raw.Substring(0, dotIndex)
+            else
+                raw
+
+        if name.EndsWith('?') then name.Substring(0, name.Length - 1) else name
 
     let findAllUsedEventTargetsWithParams (parameters: (string * string) list) (event: Node) =
         let fNode =
