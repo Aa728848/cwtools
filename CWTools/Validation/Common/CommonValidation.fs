@@ -418,6 +418,23 @@ module CommonValidation =
             // If validation fails, return OK to not break the entire validation pipeline
             OK
 
+    let private isInsideLogicalOrBranch (root: Node) (target: range) =
+        let rec loop insideOr (node: Node) =
+            if not (rangeContainsRange node.Position target) then
+                false
+            else
+                let insideOr = insideOr || node.Key == "OR"
+
+                node.Nodes
+                |> Seq.tryPick (fun child ->
+                    if rangeContainsRange child.Position target then
+                        Some(loop insideOr child)
+                    else
+                        None)
+                |> Option.defaultValue insideOr
+
+        loop false root
+
     let valScriptedEffectParams<'T when 'T :> ComputedData> : CWTools.Games.LookupFileValidator<'T> =
         (fun fileManager rulesValidator lu res es ->
             let res = res.AllEntities()
@@ -598,15 +615,26 @@ module CommonValidation =
                           data = None
                           relatedErrors = Some [ { location = callSite; message = sprintf "Call site of %s" name } ] }
 
+                    let capTriggerOrBranchErrorsAtWarning (errs: CWError list) =
+                        if scriptedType <> "scripted_trigger" then
+                            errs
+                        else
+                            errs
+                            |> List.map (fun e ->
+                                if isInsideLogicalOrBranch newNode e.range then
+                                    { e with severity = max e.severity Severity.Warning }
+                                else
+                                    e)
+
                     let combined =
                         match varValidation, ruleRes with
                         | OK, OK -> OK
                         | OK, Invalid(_, innerErrs) ->
-                            Invalid(System.Guid.NewGuid(), definitionHint :: relocate innerErrs)
+                            Invalid(System.Guid.NewGuid(), definitionHint :: relocate (capTriggerOrBranchErrorsAtWarning innerErrs))
                         | Invalid(_, varInv), OK ->
-                            Invalid(System.Guid.NewGuid(), definitionHint :: relocate varInv)
+                            Invalid(System.Guid.NewGuid(), definitionHint :: relocate (capTriggerOrBranchErrorsAtWarning varInv))
                         | Invalid(_, varInv), Invalid(_, resInv) ->
-                            Invalid(System.Guid.NewGuid(), definitionHint :: relocate (varInv @ resInv))
+                            Invalid(System.Guid.NewGuid(), definitionHint :: relocate (capTriggerOrBranchErrorsAtWarning (varInv @ resInv)))
 
                     combined
 

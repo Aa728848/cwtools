@@ -1361,6 +1361,144 @@ country_event = {
                   "Scripted triggers wrapping count_* without count should complete as trigger conditions" ]
 
 [<Tests>]
+let scriptedTriggerOrValidationSeverityTests =
+    let writeFile (path: string) (text: string) =
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllText(path, text.TrimStart().Replace("\r\n", "\n"))
+
+    testSequenced
+    <| testList
+        "scripted trigger OR validation severity"
+        [ testWithCapturedLogs "call-site errors inside OR branches are warnings" <| fun () ->
+              let folder =
+                  Path.Combine(Path.GetTempPath(), "cwtools-scripted-or-severity-" + Guid.NewGuid().ToString("N"))
+
+              try
+                  let rulesPath = Path.Combine(folder, "rules.cwt")
+                  let scriptedTriggersPath = Path.Combine(folder, "common", "scripted_triggers", "test.txt")
+                  let eventPath = Path.Combine(folder, "events", "test.txt")
+
+                  writeFile
+                      rulesPath
+                      """
+types = {
+    type[event] = {
+        path = "game/events"
+        subtype[country] = {
+        }
+    }
+    type[scripted_trigger] = {
+        path = "game/common/scripted_triggers"
+    }
+}
+
+alias[trigger:<scripted_trigger>] = bool
+alias[trigger:<scripted_trigger>] = {
+    enum[scripted_effect_params] = scalar
+    enum[scripted_effect_params] = scope_field
+}
+alias[trigger:has_country_flag] = bool
+alias[trigger:OR] = { alias_name[trigger] = alias_match_left[trigger] }
+
+event = {
+    is_triggered_only = yes
+    trigger = {
+        alias_name[trigger] = alias_match_left[trigger]
+    }
+}
+
+scripted_trigger = {
+    alias_name[trigger] = alias_match_left[trigger]
+}
+"""
+
+                  writeFile
+                      scriptedTriggersPath
+                      """
+scripted_trigger_or_param = {
+    OR = {
+        has_country_flag = yes
+        has_country_flag = $PARAM$
+    }
+}
+
+scripted_trigger_plain_param = {
+    has_country_flag = $PARAM$
+}
+"""
+
+                  writeFile
+                      eventPath
+                      """
+namespace = test
+
+country_event = {
+    is_triggered_only = yes
+    trigger = {
+        scripted_trigger_or_param = {
+            PARAM = maybe
+        }
+        scripted_trigger_plain_param = {
+            PARAM = maybe
+        }
+    }
+}
+"""
+
+                  let settings =
+                      { emptyStellarisSettings folder with
+                          rules =
+                              Some
+                                  { ruleFiles = [ rulesPath, File.ReadAllText rulesPath ]
+                                    validateRules = true
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+
+                  let stl = STLGame(settings) :> IGame<STLComputedData>
+                  let diagnostics = stl.ValidationErrors()
+
+                  let callSiteErrors =
+                      diagnostics
+                      |> List.filter (fun e ->
+                          e.message.StartsWith("This call of scripted trigger", StringComparison.Ordinal))
+
+                  let diagnosticSummary =
+                      let scriptedTriggerTypes =
+                          stl.Types()
+                          |> Map.tryFind "scripted_trigger"
+                          |> Option.map (Array.map (fun t -> t.id) >> String.concat ", ")
+                          |> Option.defaultValue "<missing scripted_trigger type map>"
+
+                      diagnostics
+                      |> List.map (fun e -> $"{e.code} {e.severity}: {e.message}")
+                      |> String.concat "\n"
+                      |> fun errors -> $"scripted_trigger types: {scriptedTriggerTypes}\n{errors}"
+
+                  let findCallSiteError (name: string) =
+                      match callSiteErrors |> List.tryFind (fun e -> e.message.Contains(name)) with
+                      | Some e -> e
+                      | None -> failtest $"Expected scripted trigger call-site diagnostic for {name}, got:\n{diagnosticSummary}"
+
+                  let orError = findCallSiteError "scripted_trigger_or_param"
+                  let plainError = findCallSiteError "scripted_trigger_plain_param"
+
+                  Expect.equal
+                      orError.severity
+                      Severity.Warning
+                      "Invalid values under a scripted trigger OR branch should be reported as warnings at the call site"
+
+                  Expect.equal
+                      plainError.severity
+                      Severity.Error
+                      "Invalid values outside OR branches should remain call-site errors"
+              finally
+                  try
+                      if Directory.Exists folder then
+                          Directory.Delete(folder, true)
+                  with _ ->
+                      () ]
+
+[<Tests>]
 let incrementalScriptedRefreshTests =
     let stlScriptedGame () =
         let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
