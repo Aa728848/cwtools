@@ -356,6 +356,108 @@ module STLGameFunctions =
             |> Array.map (fun m -> createTypeDefInfo false m.tag range.Zero [] [])
         )
 
+    let private planetKillerOnActionNames (resources: IResourceAPI<_>) =
+        let seen = System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+
+        let addIfNew name pos =
+            if seen.Add name then Some(name, pos) else None
+
+        EntitySet(resources.AllEntities()).AllOfTypeChildren EntityType.ComponentTemplates
+        |> Seq.filter (fun ct -> String.Equals(ct.TagText "type", "planet_killer", StringComparison.OrdinalIgnoreCase))
+        |> Seq.collect (fun ct ->
+            let key = ct.TagText "key"
+
+            if String.IsNullOrWhiteSpace key then
+                Seq.empty
+            else
+                let baseName = "on_destroy_planet_with_" + key
+
+                seq {
+                    yield baseName, ct.Position
+                    yield baseName + "_queued", ct.Position
+                    yield baseName + "_unqueued", ct.Position
+                })
+        |> Seq.choose (fun (name, pos) -> addIfNew name pos)
+        |> Array.ofSeq
+
+    let private addDynamicPlanetKillerOnActions (lookup: Lookup) (resources: IResourceAPI<_>) =
+        if lookup.typeDefs |> List.exists (fun td -> String.Equals(td.name, "on_action", StringComparison.OrdinalIgnoreCase)) then
+            let generated = planetKillerOnActionNames resources
+            let generatedIds = generated |> Array.map fst
+
+            let isGeneratedPlanetKillerTypeDef (tdi: TypeDefInfo) =
+                not tdi.validate
+                && tdi.subtypes = [ "dynamic_planet_killer" ]
+                && tdi.id.StartsWith("on_destroy_planet_with_", StringComparison.OrdinalIgnoreCase)
+
+            let existingOnActions =
+                lookup.typeDefInfo
+                |> Map.tryFind "on_action"
+                |> Option.defaultValue [||]
+                |> Array.filter (isGeneratedPlanetKillerTypeDef >> not)
+
+            let existingIds =
+                System.Collections.Generic.HashSet<string>(
+                    existingOnActions |> Seq.map (fun tdi -> tdi.id),
+                    StringComparer.OrdinalIgnoreCase
+                )
+
+            let generatedTypeDefs =
+                generated
+                |> Array.choose (fun (id, pos) ->
+                    if existingIds.Add id then
+                        Some(createTypeDefInfo false id pos [] [ "dynamic_planet_killer" ])
+                    else
+                        None)
+
+            lookup.typeDefInfo <-
+                lookup.typeDefInfo
+                |> Map.add "on_action" (Array.append existingOnActions generatedTypeDefs)
+
+            lookup.typeDefs <-
+                lookup.typeDefs
+                |> List.map (fun td ->
+                    if String.Equals(td.name, "on_action", StringComparison.OrdinalIgnoreCase) then
+                        let preservedSubtypes =
+                            td.subtypes
+                            |> List.filter (fun st ->
+                                not (
+                                    String.Equals(st.name, "dynamic_planet_killer", StringComparison.OrdinalIgnoreCase)
+                                    && st.typeKeyField.IsSome
+                                ))
+
+                        let template =
+                            td.subtypes
+                            |> List.tryFind (fun st ->
+                                String.Equals(st.name, "dynamic_planet_killer", StringComparison.OrdinalIgnoreCase)
+                                && st.startsWith.IsSome)
+
+                        match template with
+                        | Some template ->
+                            let existingSubtypeKeys =
+                                System.Collections.Generic.HashSet<string>(
+                                    preservedSubtypes |> Seq.choose (fun st -> st.typeKeyField),
+                                    StringComparer.OrdinalIgnoreCase
+                                )
+
+                            let generatedSubtypes =
+                                generatedIds
+                                |> Array.choose (fun id ->
+                                    if existingSubtypeKeys.Add id then
+                                        Some(
+                                            { template with
+                                                typeKeyField = Some id
+                                                startsWith = None }
+                                        )
+                                    else
+                                        None)
+                                |> Array.toList
+
+                            { td with subtypes = preservedSubtypes @ generatedSubtypes }
+                        | None -> td
+                    else
+                        td)
+
     let refreshConfigAfterFirstTypesHook
         (lookup: Lookup)
         (resources: IResourceAPI<_>)
@@ -363,6 +465,7 @@ module STLGameFunctions =
         =
         addModifiersFromCoreAndTypes lookup embeddedSettings resources
         lookup.typeDefInfo <- lookup.typeDefInfo |> addModifiersAsTypes lookup
+        addDynamicPlanetKillerOnActions lookup resources
 
         lookup.allCoreLinks <-
             lookup.triggers

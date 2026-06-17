@@ -1957,6 +1957,117 @@ let onActionLivenessTests =
             1
             $"UpdateFile should also report the unused on_action: %A{updateErrors |> List.map (fun e -> e.message)}"
 
+[<Tests>]
+let dynamicPlanetKillerOnActionTests =
+    let writeFile (path: string) (text: string) =
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllText(path, text.TrimStart().Replace("\r\n", "\n"))
+
+    testSequenced
+    <| testList
+        "dynamic planet killer on_actions"
+        [ testWithCapturedLogs "planet killer component keys generate on_action keys" <| fun () ->
+              let folder =
+                  Path.Combine(Path.GetTempPath(), "cwtools-dynamic-planet-killer-on-actions-" + Guid.NewGuid().ToString("N"))
+
+              try
+                  let rulesPath = Path.Combine(folder, "rules.cwt")
+                  let componentsPath = Path.Combine(folder, "common", "component_templates", "planet_killers.txt")
+                  let onActionsPath = Path.Combine(folder, "common", "on_actions", "planet_killers.txt")
+
+                  writeFile
+                      rulesPath
+                      """
+types = {
+    type[on_action] = {
+        path = "game/common/on_actions"
+        error_unknown_keys = suggest
+        ## starts_with = on_destroy_planet_with_
+        subtype[dynamic_planet_killer] = { }
+        ## type_key_filter = on_destroy_planet_with_PLANET_KILLER_DELUGE_unqueued
+        subtype[on_destroy_planet_with_PLANET_KILLER_DELUGE_unqueued] = { }
+    }
+    type[component_template] = {
+        path = "game/common/component_templates"
+    }
+}
+
+on_action = {
+}
+
+component_template = {
+    key = scalar
+    type = scalar
+}
+"""
+
+                  writeFile
+                      componentsPath
+                      """
+ge_deluge_planet_killer = {
+    key = "GE_PLANET_KILLER_DELUGE"
+    type = planet_killer
+}
+"""
+
+                  writeFile
+                      onActionsPath
+                      """
+on_destroy_planet_with_GE_PLANET_KILLER_DELUGE = {
+}
+
+on_destroy_planet_with_GE_PLANET_KILLER_DELUGE_queued = {
+}
+
+on_destroy_planet_with_GE_PLANET_KILLER_DELUGE_unqueued = {
+}
+"""
+
+                  let settings =
+                      { emptyStellarisSettings folder with
+                          rules =
+                              Some
+                                  { ruleFiles = [ rulesPath, File.ReadAllText rulesPath ]
+                                    validateRules = true
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+
+                  let stl = STLGame(settings) :> IGame<STLComputedData>
+                  let diagnostics = stl.ValidationErrors()
+
+                  let generatedNames =
+                      [ "on_destroy_planet_with_GE_PLANET_KILLER_DELUGE"
+                        "on_destroy_planet_with_GE_PLANET_KILLER_DELUGE_queued"
+                        "on_destroy_planet_with_GE_PLANET_KILLER_DELUGE_unqueued" ]
+
+                  let onActionIds =
+                      stl.Types()
+                      |> Map.tryFind "on_action"
+                      |> Option.defaultValue [||]
+                      |> Array.map _.id
+
+                  for name in generatedNames do
+                      Expect.contains
+                          onActionIds
+                          name
+                          $"Planet killer component should generate on_action type {name}"
+
+                  let unknownGeneratedOnActions =
+                      diagnostics
+                      |> List.filter (fun e ->
+                          e.code = "CW276"
+                          && generatedNames |> List.exists (fun name -> e.message.Contains(name)))
+
+                  Expect.isEmpty
+                      unknownGeneratedOnActions
+                      $"Generated planet killer on_actions should not be reported as unknown: %A{unknownGeneratedOnActions |> List.map _.message}"
+              finally
+                  try
+                      if Directory.Exists folder then
+                          Directory.Delete(folder, true)
+                  with _ ->
+                      () ]
+
 
 
 // [<Tests>]
