@@ -1153,7 +1153,8 @@ let scriptedBracketParameterRegressionTests =
         | Detailed(label, _, _, _)
         | Snippet(label, _, _, _, _) -> label
 
-    testList
+    testSequenced
+    <| testList
         "scripted bracket parameter regression"
         [ testWithCapturedLogs "bracket params feed call-site completion" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripteddefaults"
@@ -1222,6 +1223,107 @@ country_event = {
               let labels = stl.Complete pos filename filetext |> List.map label
 
               Expect.contains labels "BRACKET" "Script value bracket condition should complete as a value parameter"
+
+          testWithCapturedLogs "script value names complete after value prefix" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let filename = Path.GetFullPath(Path.Combine(folder, "events", "test.txt"))
+              let filetext, pos =
+                  cursorAtTildeMarker
+                      """
+namespace = test
+
+country_event = {
+    is_triggered_only = yes
+    trigger = {
+        test_value = value:~
+    }
+}
+"""
+
+              let labels = stl.Complete pos filename filetext |> List.map label
+
+              Expect.contains labels "value:scripted_param" "Script values should complete after value:"
+              Expect.contains labels "value:scripted_bracket_positive" "Script value names should include bracket-param definitions"
+
+          testWithCapturedLogs "script value param completion skips value slot" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let filename = Path.GetFullPath(Path.Combine(folder, "events", "test.txt"))
+              let filetext, pos =
+                  cursorAtTildeMarker
+                      """
+namespace = test
+
+country_event = {
+    is_triggered_only = yes
+    trigger = {
+        test_value = value:scripted_param|PARAM|~
+    }
+}
+"""
+
+              let labels = stl.Complete pos filename filetext |> List.map label
+
+              Expect.isFalse (labels |> List.contains "PARAM") "Script value value slots should not suggest parameter names"
+
+          testWithCapturedLogs "script value parameterized call goes to definition" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let filename = Path.GetFullPath(Path.Combine(folder, "events", "test.txt"))
+              let filetext, pos =
+                  cursorAtTildeMarker
+                      """
+namespace = test
+
+country_event = {
+    is_triggered_only = yes
+    trigger = {
+        test_value = value:scri~pted_param|PARAM|abs|
+    }
+}
+"""
+
+              let target = stl.GoToType pos filename filetext
+
+              Expect.isSome target "Parameterized script value call should go to its definition"
+              Expect.stringContains
+                  (target.Value.FileName.Replace("\\", "/"))
+                  "common/script_values/test.txt"
+                  "Go to definition should target the script_values file"
 
           testWithCapturedLogs "scripted count wrapper completes as trigger" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"

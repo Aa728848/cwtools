@@ -674,10 +674,59 @@ module LanguageFeatures =
                     // 情况1：已经存在 | 的情况 - value:xxx|
                     let searchEnd = min col line.Length
                     if searchEnd > 0 then
+                        let textBeforeCursor =
+                            if searchEnd <= line.Length then line.Substring(0, searchEnd)
+                            else line
+
+                        let scriptValueNameCompletions () =
+                            let valuePrefixIdx =
+                                textBeforeCursor.LastIndexOf("value:", StringComparison.OrdinalIgnoreCase)
+
+                            if valuePrefixIdx < 0 then
+                                None
+                            else
+                                let isTokenStart =
+                                    if valuePrefixIdx = 0 then
+                                        true
+                                    else
+                                        let c = textBeforeCursor.[valuePrefixIdx - 1]
+                                        Char.IsWhiteSpace c
+                                        || c = '='
+                                        || c = '{'
+                                        || c = '('
+                                        || c = '"'
+                                        || c = '\''
+
+                                let suffix = textBeforeCursor.Substring(valuePrefixIdx + 6)
+
+                                if not isTokenStart || suffix.IndexOf('|') >= 0 || suffix |> Seq.exists Char.IsWhiteSpace then
+                                    None
+                                else
+                                    let names =
+                                        resourceManager.Api.AllEntities()
+                                        |> Seq.filter (fun struct (e, _) ->
+                                            e.logicalpath.Contains("common/script_values", StringComparison.OrdinalIgnoreCase) ||
+                                            e.logicalpath.Contains("common\\script_values", StringComparison.OrdinalIgnoreCase))
+                                        |> Seq.collect (fun struct (e, _) -> e.entity.Children |> Seq.map _.Key)
+                                        |> Seq.distinct
+                                        |> Seq.sort
+                                        |> Seq.toArray
+
+                                    if names.Length = 0 then
+                                        None
+                                    else
+                                        names
+                                        |> Array.mapi (fun i name ->
+                                            CompletionResponse.Simple(sprintf "value:%s" name, Some(i + 1), CompletionCategory.Value))
+                                        |> Array.toList
+                                        |> Some
+
                         let valuePattern = System.Text.RegularExpressions.Regex(@"value\s*:\s*([^|\s]+)\|")
                         let m = valuePattern.Match(line.Substring(0, searchEnd))
 
-                        if m.Success then
+                        match scriptValueNameCompletions () with
+                        | Some _ as completions -> completions
+                        | None when m.Success ->
                             let scriptValueName = m.Groups.[1].Value
 
                             // 计算第一个 | 之后的位置
@@ -699,16 +748,15 @@ module LanguageFeatures =
                                 if isParamPosition then
                                     // 直接从所有实体中提取 script_value 参数
                                     // 不依赖预计算数据，而是实时提取
-                                    let allEntities = resourceManager.Api.AllEntities()
-                                    let extractParams (e: Entity) =
-                                        Compute.Jomini.getScriptValueParams e.entity
-
                                     let allParams =
-                                        allEntities
+                                        resourceManager.Api.AllEntities()
                                         |> Seq.filter (fun struct (e, _) ->
                                             e.logicalpath.Contains("common/script_values", StringComparison.OrdinalIgnoreCase) ||
                                             e.logicalpath.Contains("common\\script_values", StringComparison.OrdinalIgnoreCase))
-                                        |> Seq.collect (fun struct (e, _) -> extractParams e)
+                                        |> Seq.collect (fun struct (e, _) ->
+                                            e.entity.Children
+                                            |> Seq.filter (fun child -> child.Key.Equals(scriptValueName, StringComparison.OrdinalIgnoreCase))
+                                            |> Seq.collect Compute.Jomini.getScriptValueParams)
                                         |> Seq.distinct
                                         |> Seq.toArray
 
@@ -729,49 +777,7 @@ module LanguageFeatures =
                                     None
                             else
                                 None
-                        else
-                            // 情况2：刚输入 | 但文档中可能还没有 - value:xxx 后面紧跟 |
-                            // 检查光标前是否有 value:xxx 模式（没有 |）
-                            let valueNoPipePattern = System.Text.RegularExpressions.Regex(@"value\s*:\s*([^|\s]+)$")
-                            let textBeforeCursor =
-                                if searchEnd <= line.Length then line.Substring(0, searchEnd)
-                                else line
-                            let m2 = valueNoPipePattern.Match(textBeforeCursor)
-
-                            if m2.Success then
-                                let scriptValueName = m2.Groups.[1].Value
-                                let endOfMatch = m2.Index + m2.Length
-                                // 确认光标就在 value:xxx 末尾或后面紧跟 |
-                                if col >= endOfMatch - 1 && col <= endOfMatch + 1 then
-                                    // 直接从所有实体中提取 script_value 参数
-                                    let allEntities = resourceManager.Api.AllEntities()
-                                    let extractParams (e: Entity) =
-                                        Compute.Jomini.getScriptValueParams e.entity
-
-                                    let allParams =
-                                        allEntities
-                                        |> Seq.filter (fun struct (e, _) ->
-                                            e.logicalpath.Contains("common/script_values", StringComparison.OrdinalIgnoreCase) ||
-                                            e.logicalpath.Contains("common\\script_values", StringComparison.OrdinalIgnoreCase))
-                                        |> Seq.collect (fun struct (e, _) -> extractParams e)
-                                        |> Seq.distinct
-                                        |> Seq.toArray
-
-                                    if allParams.Length > 0 then
-                                        log (sprintf "ScriptValue completion (no pipe) params: %A" allParams)
-                                        let completionItems =
-                                            allParams
-                                            |> Array.map (fun p ->
-                                                CompletionResponse.Simple(p, None, CompletionCategory.Value))
-                                            |> Array.toList
-                                        log (sprintf "ScriptValue completion (no pipe) items count: %d" completionItems.Length)
-                                        Some completionItems
-                                    else
-                                        None
-                                else
-                                    None
-                            else
-                                None
+                        | None -> None
                     else
                         None
             else

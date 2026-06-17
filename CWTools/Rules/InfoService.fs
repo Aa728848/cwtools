@@ -805,6 +805,11 @@ type InfoService
             | _ -> None
 
         let changeValueScopeInner (key: string) scope =
+            let key =
+                let trimmed = key.Trim('"')
+                let pipeIndex = trimmed.IndexOf('|')
+                if pipeIndex >= 0 then trimmed.Substring(0, pipeIndex) else trimmed
+
             match changeScope.Invoke(false, true, links, valueTriggers, wildCardLinks, varSet, key, scope) with
             | ValueFound rh -> rh
             | WrongScope(_, _, _, rh) -> rh

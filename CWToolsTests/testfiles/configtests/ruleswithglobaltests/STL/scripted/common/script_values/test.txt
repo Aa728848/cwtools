@@ -2,8 +2,8 @@
     abs = yes
 }
 
+#error
 scripted_param = {
-    #error
     $PARAM$ = yes
 }
 

@@ -210,6 +210,78 @@ module CommonValidation =
         parts.Add(current.ToString())
         parts |> List.ofSeq
 
+    let private scriptValueCallError (referenceDetails: ReferenceDetails) (message: string) =
+        invManual
+            (ErrorCodes.CustomError message Severity.Error)
+            referenceDetails.position
+            (referenceDetails.originalValue.GetString())
+            None
+
+    let private parseScriptValueCallParams (referenceDetails: ReferenceDetails) =
+        let splitStringList =
+            referenceDetails.originalValue.GetString()
+            |> splitScriptValueParameterParts
+
+        let parameterParts =
+            if splitStringList.Length > 1 then
+                let parts = List.tail splitStringList
+
+                match List.rev parts with
+                | last :: rest when String.IsNullOrWhiteSpace last -> List.rev rest
+                | _ -> parts
+            else
+                []
+
+        let rec loop parts replacementParams parameterNames errors =
+            match parts with
+            | key :: value :: rest ->
+                let paramName = normalizeParameterKey key
+
+                let replacementParams =
+                    if String.IsNullOrWhiteSpace paramName || String.IsNullOrWhiteSpace value then
+                        replacementParams
+                    else
+                        ($"${paramName}$", value) :: replacementParams
+
+                let parameterNames =
+                    if String.IsNullOrWhiteSpace paramName || String.IsNullOrWhiteSpace value then
+                        parameterNames
+                    else
+                        paramName :: parameterNames
+
+                let errors =
+                    if String.IsNullOrWhiteSpace paramName then
+                        scriptValueCallError referenceDetails "Script value call contains an empty parameter name"
+                        :: errors
+                    elif String.IsNullOrWhiteSpace value then
+                        scriptValueCallError
+                            referenceDetails
+                            (sprintf "Script value parameter %s is missing a value" paramName)
+                        :: errors
+                    else
+                        errors
+
+                loop rest replacementParams parameterNames errors
+            | [ key ] ->
+                let paramName = normalizeParameterKey key
+                let displayName =
+                    if String.IsNullOrWhiteSpace paramName then
+                        "<empty>"
+                    else
+                        paramName
+
+                let error =
+                    scriptValueCallError
+                        referenceDetails
+                        (sprintf "Script value parameter %s is missing a value" displayName)
+
+                List.rev replacementParams, List.rev parameterNames, List.rev (error :: errors)
+            | [] -> List.rev replacementParams, List.rev parameterNames, List.rev errors
+
+        let replacementParams, parameterNames, errors = loop parameterParts [] [] []
+        let replacementParams = if List.isEmpty replacementParams then None else Some replacementParams
+        replacementParams, parameterNames, errors
+
     let validateMixedBlocks: StructureValidator<_> =
         fun _ es ->
             let fNode =
@@ -578,25 +650,7 @@ module CommonValidation =
                 res |> Seq.map (fun struct (e, d) -> e.filepath, struct (e, d)) |> Map.ofSeq
 
             let findParams (referenceDetails: ReferenceDetails) =
-                //                logInfo (sprintf "vsvp %s" key)
-                let splitStringList =
-                    referenceDetails.originalValue.GetString()
-                    |> splitScriptValueParameterParts
-
-                let rec getParamsFromArray =
-                    function
-                    | key :: value :: rest -> ($"${key}$", value) :: getParamsFromArray rest
-                    | _ -> []
-                //                logInfo (sprintf "vsvp b %A" splitString)
-                let svparams =
-                    getParamsFromArray (
-                        if splitStringList.Length > 1 then
-                            List.tail splitStringList
-                        else
-                            splitStringList
-                    )
-                //                logInfo (sprintf "vsvp c %A" svparams)
-                if List.isEmpty svparams then None else Some svparams
+                parseScriptValueCallParams referenceDetails
 
             let findScriptValue (pos: range) =
                 match entityMap |> Map.tryFind pos.FileName with
@@ -633,9 +687,13 @@ module CommonValidation =
                         |> Option.defaultValue [])
                     |> List.filter (fun ref -> ref.referenceType = ReferenceType.TypeDef)
                     |> List.map (fun ref ->
+                        let seParams, parameterNames, parameterErrors = findParams ref
+
                         {| effectName = ref.name.GetString()
                            callSite = ref.position
-                           seParams = findParams ref |})
+                           seParams = seParams
+                           parameterNames = parameterNames
+                           parameterErrors = parameterErrors |})
                     |> List.groupBy (fun ref -> ref.effectName)
                     |> Map.ofList
                 // eprintfn "ar %A" allRefs
@@ -755,6 +813,33 @@ module CommonValidation =
                     let memFun = validateSESpecific
                     memoize keyFun memFun
 
+                let validateCallParams name (node: Node) callSite parameterNames parameterErrors =
+                    let expectedParams =
+                        Compute.Jomini.getScriptValueParams node
+                        |> List.map normalizeParameterKey
+                        |> Set.ofList
+
+                    let unknownParameterErrors =
+                        parameterNames
+                        |> List.distinct
+                        |> List.filter (fun paramName -> not (expectedParams |> Set.contains paramName))
+                        |> List.map (fun paramName ->
+                            { invManual
+                                  (ErrorCodes.CustomError
+                                      (sprintf "Unknown parameter %s for scripted value %s" paramName name)
+                                      Severity.Error)
+                                  callSite
+                                  paramName
+                                  None with
+                                relatedErrors =
+                                    Some
+                                        [ { location = node.Position
+                                            message = sprintf "Related source: definition of scripted value %s" name } ] })
+
+                    match parameterErrors @ unknownParameterErrors with
+                    | [] -> OK
+                    | errors -> Invalid(System.Guid.NewGuid(), errors)
+
                 let validateSE
                     (name: string)
                     (logicalpath: string)
@@ -762,14 +847,18 @@ module CommonValidation =
                     (refs:
                         {| callSite: range
                            effectName: string
-                           seParams: (string * string) list option |} list)
+                           seParams: (string * string) list option
+                           parameterNames: string list
+                           parameterErrors: CWError list |} list)
                     =
                     // eprintfn "vse %A %A %A" name node refs
                     let res =
                         match node with
                         | Some node ->
                             refs
-                            <&!&> (fun ref -> memoizeValidation (name, logicalpath, node, ref.callSite, ref.seParams))
+                            <&!&> (fun ref ->
+                                validateCallParams name node ref.callSite ref.parameterNames ref.parameterErrors
+                                <&&> memoizeValidation (name, logicalpath, node, ref.callSite, ref.seParams))
                         | None -> OK
 
                     res

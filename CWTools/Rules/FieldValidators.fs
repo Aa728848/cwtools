@@ -865,7 +865,16 @@ module internal FieldValidators =
             inv (ErrorCodes.ConfigRulesErrorInTarget command (prevscope.ToString()) $"%A{expected}") leafornode
             <&&&> errors
         | _, _, _, NotFound ->
-            if checkMacroTemplateMatch (key.ToString()) varSet then
+            let keyText = key.ToString()
+
+            if keyText.StartsWith("value:", StringComparison.OrdinalIgnoreCase) then
+                let valueName = keyText.Substring("value:".Length)
+
+                inv
+                    (ErrorCodes.CustomError $"Script value %s{valueName} is not defined" Severity.Error)
+                    leafornode
+                <&&&> errors
+            elif checkMacroTemplateMatch keyText varSet then
                 errors
             else
                 match enumsMap.TryFind "static_values" with
