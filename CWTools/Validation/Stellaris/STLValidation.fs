@@ -1135,14 +1135,15 @@ module STLValidation =
     let validateEconomicCatAIBudget: LookupValidator<_> =
         fun lu os es ->
             let budgets =
-                os.GlobMatchChildren("**/ai_budget/*.txt")
+                (os.GlobMatchChildren("**/ai_budget/*.txt")
+                 @ es.GlobMatchChildren("**/ai_budget/*.txt"))
                 |> List.map (fun b -> b.TagText "category")
                 |> Set.ofList
 
             let econs = es.GlobMatchChildren("**/economic_categories/*.txt")
 
             let econWithParent =
-                econs
+                (os.GlobMatchChildren("**/economic_categories/*.txt") @ econs)
                 |> List.choose (fun e ->
                     if e.Has "parent" then
                         Some(e.Key, e.TagText "parent")

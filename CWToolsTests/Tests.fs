@@ -1061,6 +1061,57 @@ let stlGlobalSubfolderTests =
          |> List.ofSeq)
 
 [<Tests>]
+let economicCategoryAIBudgetRegressionTests =
+    let makeEntity logicalpath text =
+        match CKParser.parseString text logicalpath with
+        | Success(statements, _, _) ->
+            let node = STLProcess.shipProcess.ProcessNode () "root" (mkZeroFile logicalpath) statements
+
+            { filepath = logicalpath
+              logicalpath = logicalpath
+              rawEntity = node
+              entity = node
+              validate = true
+              entityType = EntityType.Other
+              overwrite = Overwrite.No }
+        | Failure(error, _, _) -> failwith error
+
+    let makeSet entities =
+        entities
+        |> List.map (fun entity ->
+            struct (
+                entity,
+                lazy (STLComputedData(None, None, None, false, None, None, None))
+            ))
+        |> EntitySet
+
+    testList
+        "economic category ai budget regression"
+        [ testCase "uses existing parent chain when validating a changed economic category"
+          <| fun _ ->
+              let oldCategories =
+                  makeEntity
+                      "game/common/economic_categories/00_planet_jobs.txt"
+                      "planet_jobs = {}\n\
+                       planet_jobs_specialist = { parent = planet_jobs }"
+
+              let oldBudget =
+                  makeEntity "game/common/ai_budget/00_jobs.txt" "job_budget = { category = planet_jobs }"
+
+              let newCategory =
+                  makeEntity
+                      "mod/common/economic_categories/kuat_eco_cate.txt"
+                      "planet_researchers = { parent = planet_jobs_specialist }"
+
+              let result =
+                  CWTools.Validation.Stellaris.STLValidation.validateEconomicCatAIBudget
+                      Unchecked.defaultof<_>
+                      (makeSet [ oldCategories; oldBudget ])
+                      (makeSet [ newCategory ])
+
+              Expect.equal result OK "Parent chains from existing entities should satisfy AI budget lookup" ]
+
+[<Tests>]
 let inlineScriptCompletionRegressionTests =
     testList
         "inline script completion regression"

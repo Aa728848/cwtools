@@ -948,6 +948,24 @@ module CommonValidation =
                 |> List.map (fun t -> t.name, t.shouldBeReferenced)
                 |> Map.ofList
 
+            let obsoleteKeysByType =
+                l.typeDefs
+                |> List.fold
+                    (fun acc typeDef ->
+                        if Map.isEmpty typeDef.obsoleteKeys then
+                            acc
+                        else
+                            let obsoleteKeys =
+                                typeDef.obsoleteKeys
+                                |> Map.toSeq
+                                |> Seq.map fst
+                                |> Set.ofSeq
+
+                            match Map.tryFind typeDef.name acc with
+                            | Some existing -> Map.add typeDef.name (Set.union existing obsoleteKeys) acc
+                            | None -> Map.add typeDef.name obsoleteKeys acc)
+                    Map.empty
+
             let typeInfos =
                 l.typeDefInfo
                 |> Map.filter (fun typename _ -> typesToCheck |> Map.containsKey typename)
@@ -1014,10 +1032,15 @@ module CommonValidation =
                 (wildcardRefs: System.Text.RegularExpressions.Regex list)
                 (typedef: TypeDefInfo)
                 =
+                let id = typedef.id.ToLowerInvariant()
+                let obsoleteKeys = obsoleteKeysByType |> Map.tryFind typename |> Option.defaultValue Set.empty
+
                 // unless_subtyped: instances matching a subtype are engine-invoked.
-                if requirement = RefRequiredUnlessSubtyped && not (List.isEmpty typedef.subtypes) then
+                if obsoleteKeys.Contains id then
                     None
-                elif exactRefs.Contains(typedef.id.ToLowerInvariant()) then
+                elif requirement = RefRequiredUnlessSubtyped && not (List.isEmpty typedef.subtypes) then
+                    None
+                elif exactRefs.Contains id then
                     None
                 elif wildcardRefs |> List.exists (fun regex -> regex.IsMatch typedef.id) then
                     None

@@ -495,6 +495,7 @@ let testc =
                           type[on_action] = {\n\
                           path = \"game/common/on_actions\"\n\
                           error_unknown_keys = suggest\n\
+                          should_be_used = unless_subtyped\n\
                           obsolete_keys = {\n\
                           on_planet_conquer = \"removed from the game\"\n\
                           on_planet_zero_pops = \"renamed to on_colony_zero_pops\"\n\
@@ -558,6 +559,24 @@ let testc =
                       Expect.stringContains error.message "removed from the game" "Should carry the configured message"
                       Expect.equal error.severity Severity.Warning "Obsolete key in open key set should be a warning"
               | Failure(e, _, _) -> Expect.isTrue false e
+
+              let lookup = STLLookup()
+              lookup.typeDefs <- types
+              lookup.typeDefInfo <-
+                  Map.ofList
+                      [ "on_action",
+                        [| { id = "on_planet_conquer"
+                             validate = true
+                             range = range.Zero
+                             explicitLocalisation = []
+                             subtypes = [] } |] ]
+
+              let emptySet = EntitySet<STLComputedData>(Seq.empty)
+
+              let unusedErrors =
+                  CWTools.Validation.Common.CommonValidation.validateUnusuedTypes lookup emptySet emptySet
+
+              Expect.equal unusedErrors OK "Obsolete on_action keys should not also be reported as unused"
 
           ]
 
