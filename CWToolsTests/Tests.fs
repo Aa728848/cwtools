@@ -1178,7 +1178,7 @@ let inlineScriptCompletionRegressionTests =
 
               Expect.isFalse (inlineDefaultLabels |> List.contains "expected_leaf") "Inline script callers should not match path defaults with pipe syntax"
 
-          testWithCapturedLogs "parameterized inline CW101 keeps call-site provenance" <| fun () ->
+          testWithCapturedLogs "parameterized inline CW101 expressions keep call-site provenance" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/inlinescripts"
               let configtext = configFilesFromDir folder
 
@@ -1201,7 +1201,14 @@ let inlineScriptCompletionRegressionTests =
                       Path.Combine(folder, "common", "script_consume", "parameter_variable_regression.txt")
                   )
 
-              stl.UpdateFile false inlineFilename (Some "country_event = { not_event = @$VARIABLE$ }")
+              let inlineText =
+                  "country_event = {
+                       not_event = @$VARIABLE$
+                       not_event = @[ expression_$VARIABLE$ + 1 ]
+                   }
+                   inline_script = root_inline"
+
+              stl.UpdateFile false inlineFilename (Some inlineText)
               |> ignore
               stl.UpdateFile
                   false
@@ -1210,29 +1217,47 @@ let inlineScriptCompletionRegressionTests =
                       "parameter_variable_regression = { inline_script = { script = parameter_variable_regression VARIABLE = missing_variable } }")
               |> ignore
 
-              let parameterError =
-                  stl.ValidationErrors()
-                  |> List.tryFind (fun error ->
-                      error.code = "CW101"
-                      && error.message = "@missing_variable is not defined"
-                      && String.Equals(
-                          Path.GetFullPath(error.range.FileName),
-                          inlineFilename,
-                          StringComparison.OrdinalIgnoreCase
-                      ))
+              let assertParameterErrors phase =
+                  let diagnostics = stl.ValidationErrors()
 
-              Expect.isSome parameterError "Expanded inline parameters should produce the concrete CW101"
-              let related = parameterError.Value.relatedErrors |> Option.defaultValue []
-              Expect.exists
-                  related
-                  (fun item ->
-                      item.message = "Related source"
-                      && String.Equals(
-                          Path.GetFullPath(item.location.FileName),
-                          callerFilename,
-                          StringComparison.OrdinalIgnoreCase
-                      ))
-                  "Parameterized CW101 should be owned by dynamic call-site validation" ]
+                  for expectedVariable in [ "@missing_variable"; "@expression_missing_variable" ] do
+                      let parameterError =
+                          diagnostics
+                          |> List.tryFind (fun error ->
+                              error.code = "CW101"
+                              && error.message = $"{expectedVariable} is not defined"
+                              && String.Equals(
+                                  Path.GetFullPath(error.range.FileName),
+                                  inlineFilename,
+                                  StringComparison.OrdinalIgnoreCase
+                              ))
+
+                      Expect.isSome
+                          parameterError
+                          $"{phase}: expanded inline parameters should produce the concrete CW101 for {expectedVariable}"
+                      let related = parameterError.Value.relatedErrors |> Option.defaultValue []
+                      Expect.exists
+                          related
+                          (fun item ->
+                              item.message = "Related source"
+                              && String.Equals(
+                                  Path.GetFullPath(item.location.FileName),
+                                  callerFilename,
+                                  StringComparison.OrdinalIgnoreCase
+                              ))
+                          $"{phase}: parameterized CW101 for {expectedVariable} should be owned by dynamic call-site validation"
+
+              assertParameterErrors "initial validation"
+
+              // Mirror the server's Ctrl+S path: update the definition, rebuild
+              // all indexed callers, refresh rules, warm dynamic data, then run
+              // the deferred full validation pass.
+              stl.UpdateFile false inlineFilename (Some inlineText) |> ignore
+              let refreshedCallers = stl.RefreshInlineScriptCallers [ "parameter_variable_regression.txt" ]
+              Expect.contains refreshedCallers callerFilename "Save refresh should find the inline caller"
+              stl.RefreshCaches()
+              stl.ForceDynamicParameterData(2000, 2000) |> ignore
+              assertParameterErrors "post-save deferred validation" ]
 
 [<Tests>]
 let scriptedBracketParameterRegressionTests =

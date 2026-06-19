@@ -357,18 +357,27 @@ module STLProcess =
             function
             | NodeC n ->
                 let newNode = Node(n.Key, n.Position)
+                newNode.Trivia <- n.Trivia
                 newNode.AllArray <- n.AllArray |> Array.map mapChild
                 NodeC newNode
-            | LeafC l -> LeafC(Leaf(l.Key, l.Value, l.Position, l.Operator))
-            | LeafValueC lv -> LeafValueC(LeafValue(lv.Value, lv.Position))
+            | LeafC l ->
+                let newLeaf = Leaf(l.Key, l.Value, l.Position, l.Operator)
+                newLeaf.Trivia <- l.Trivia
+                LeafC newLeaf
+            | LeafValueC lv ->
+                let newLeafValue = LeafValue(lv.Value, lv.Position)
+                newLeafValue.Trivia <- lv.Trivia
+                LeafValueC newLeafValue
             | ValueClauseC vc ->
                 let newVC = ValueClause([||], vc.Position)
+                newVC.Trivia <- vc.Trivia
                 newVC.AllArray <- vc.AllArray |> Array.map mapChild
                 newVC.Keys <- vc.Keys
                 ValueClauseC newVC
             | CommentC c -> CommentC c
 
         let newNode = Node(source.Key, source.Position)
+        newNode.Trivia <- source.Trivia
         newNode.AllArray <- source.AllArray |> Array.map mapChild
         newNode
 
