@@ -1176,7 +1176,63 @@ let inlineScriptCompletionRegressionTests =
                       | Detailed(label, _, _, _)
                       | Snippet(label, _, _, _, _) -> label)
 
-              Expect.isFalse (inlineDefaultLabels |> List.contains "expected_leaf") "Inline script callers should not match path defaults with pipe syntax" ]
+              Expect.isFalse (inlineDefaultLabels |> List.contains "expected_leaf") "Inline script callers should not match path defaults with pipe syntax"
+
+          testWithCapturedLogs "parameterized inline CW101 keeps call-site provenance" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/inlinescripts"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let inlineFilename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "inline_scripts", "parameter_variable_regression.txt")
+                  )
+              let callerFilename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "script_consume", "parameter_variable_regression.txt")
+                  )
+
+              stl.UpdateFile false inlineFilename (Some "country_event = { not_event = @$VARIABLE$ }")
+              |> ignore
+              stl.UpdateFile
+                  false
+                  callerFilename
+                  (Some
+                      "parameter_variable_regression = { inline_script = { script = parameter_variable_regression VARIABLE = missing_variable } }")
+              |> ignore
+
+              let parameterError =
+                  stl.ValidationErrors()
+                  |> List.tryFind (fun error ->
+                      error.code = "CW101"
+                      && error.message = "@missing_variable is not defined"
+                      && String.Equals(
+                          Path.GetFullPath(error.range.FileName),
+                          inlineFilename,
+                          StringComparison.OrdinalIgnoreCase
+                      ))
+
+              Expect.isSome parameterError "Expanded inline parameters should produce the concrete CW101"
+              let related = parameterError.Value.relatedErrors |> Option.defaultValue []
+              Expect.exists
+                  related
+                  (fun item ->
+                      item.message = "Related source"
+                      && String.Equals(
+                          Path.GetFullPath(item.location.FileName),
+                          callerFilename,
+                          StringComparison.OrdinalIgnoreCase
+                      ))
+                  "Parameterized CW101 should be owned by dynamic call-site validation" ]
 
 [<Tests>]
 let scriptedBracketParameterRegressionTests =

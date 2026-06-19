@@ -61,6 +61,18 @@ module STLValidation =
         else
             false
 
+    let private undefinedVariableError (variable: string) (leaf: Leaf) =
+        let error = inv (ErrorCodes.UndefinedVariable variable) leaf
+
+        match leaf.Trivia |> Option.bind (_.originalSource) with
+        | Some source ->
+            { error with
+                relatedErrors =
+                    Some
+                        [ { location = source
+                            message = "Related source" } ] }
+        | None -> error
+
     let checkUsedVariables (node: Node) (variables: string list) =
         let fNode =
             (fun (x: Node) children ->
@@ -104,7 +116,7 @@ module STLValidation =
                                         else
                                             not (variables |> List.contains varName))
                                     |> Seq.map (fun varName ->
-                                        Invalid(Guid.NewGuid(), [ inv (ErrorCodes.UndefinedVariable varName) l ]))
+                                        Invalid(Guid.NewGuid(), [ undefinedVariableError varName l ]))
                                     |> Seq.fold (<&&>) OK
 
                                 errors <&&> children
@@ -115,7 +127,7 @@ module STLValidation =
                             elif variables |> List.contains v then
                                 OK
                             else
-                                Invalid(Guid.NewGuid(), [ inv (ErrorCodes.UndefinedVariable v) l ]))
+                                Invalid(Guid.NewGuid(), [ undefinedVariableError v l ]))
                     )
                     |> List.fold (<&&>) children)
 

@@ -915,12 +915,27 @@ type ResourceManager<'T when 'T :> ComputedData>
 
             let rec replaceCataFun (node: Node) =
                 let childFun (child: Child) =
+                    let triviaFor originalPosition =
+                        Some { originalSource = Some originalPosition }
+
+                    let rec addDescendantLeafTrivia originalPosition =
+                        function
+                        | NodeC n -> n.AllArray |> Array.iter (addDescendantLeafTrivia originalPosition)
+                        | ValueClauseC vc -> vc.AllArray |> Array.iter (addDescendantLeafTrivia originalPosition)
+                        | LeafC l -> l.Trivia <- triviaFor originalPosition
+                        | LeafValueC lv -> lv.Trivia <- triviaFor originalPosition
+                        | CommentC _ -> ()
+
                     let addTrivia originalPosition =
                         function
-                        | NodeC n -> n.Trivia <- Some { originalSource = Some originalPosition }
-                        | LeafC l -> l.Trivia <- Some { originalSource = Some originalPosition }
-                        | LeafValueC lv -> lv.Trivia <- Some { originalSource = Some originalPosition }
-                        | ValueClauseC vc -> vc.Trivia <- Some { originalSource = Some originalPosition }
+                        | NodeC n ->
+                            n.Trivia <- triviaFor originalPosition
+                            n.AllArray |> Array.iter (addDescendantLeafTrivia originalPosition)
+                        | LeafC l -> l.Trivia <- triviaFor originalPosition
+                        | LeafValueC lv -> lv.Trivia <- triviaFor originalPosition
+                        | ValueClauseC vc ->
+                            vc.Trivia <- triviaFor originalPosition
+                            vc.AllArray |> Array.iter (addDescendantLeafTrivia originalPosition)
                         | CommentC _ -> ()
 
                     match child with
