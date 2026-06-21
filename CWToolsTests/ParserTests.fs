@@ -121,3 +121,23 @@ let tests =
               match res with
               | Success(_) -> ()
               | Failure(e, _, _) -> failwithf "Parsing failed %A" e ]
+
+[<Tests>]
+let unicodeParserRegressionTests =
+    testList
+        "unicode parser regression"
+        [ testCase "unicode identifiers and path punctuation"
+          <| fun () ->
+              let scriptPath = "districts/精灵服务区划岗位添加（无海军）"
+              let file = $"中文键 = 中文值\ninline_script = {{ script = {scriptPath} }}"
+
+              match CKParser.parseString file "common/中文目录/中文文件.txt" with
+              | Success(r, _, _) ->
+                  let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+
+                  Expect.equal (node.TagText "中文键") "中文值" "Unicode keys and values should be preserved"
+                  Expect.equal
+                      (node.Child "inline_script" |> Option.map (fun child -> child.TagText "script"))
+                      (Some scriptPath)
+                      "Unicode path punctuation should be preserved"
+              | Failure(error, _, _) -> failtestf "Parsing Unicode script failed: %s" error ]

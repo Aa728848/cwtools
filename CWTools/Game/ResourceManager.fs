@@ -417,24 +417,12 @@ type ResourceManager<'T when 'T :> ComputedData>
                   overwrite = Overwrite.No }
         | _ -> None
 
-    let changeEncoding (filestring: string) (source: System.Text.Encoding) (target: System.Text.Encoding) =
-        let conv = System.Text.Encoding.Convert(source, target, source.GetBytes(filestring))
-        target.GetString(conv)
-
     let parseFileInner (filetext: string) (filename: string) =
-        let res = CKParser.parseString filetext (System.String.Intern(filename))
-
-        match res with
-        | Success _ -> res
-        | Failure _ ->
-            let res2 =
-                CKParser.parseString
-                    (changeEncoding filetext encoding fallbackencoding)
-                    (System.String.Intern(filename))
-
-            match res2 with
-            | Success _ -> res2
-            | Failure _ -> res
+        // `filetext` is already a decoded .NET string. Re-encoding it after a parse
+        // failure cannot recover the original bytes and replaces characters that
+        // are not representable in the fallback code page (for example CJK text)
+        // with `?`, which can turn a genuine parse failure into corrupt AST data.
+        CKParser.parseString filetext (System.String.Intern(filename))
 
     let parseFileThenEntity (file: ResourceInput) =
         match file with

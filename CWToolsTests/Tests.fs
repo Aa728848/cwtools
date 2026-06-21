@@ -1113,9 +1113,45 @@ let economicCategoryAIBudgetRegressionTests =
 
 [<Tests>]
 let inlineScriptCompletionRegressionTests =
-    testList
+    testSequenced
+    <| testList
         "inline script completion regression"
-        [ testWithCapturedLogs "nested inline keeps concrete parent path" <| fun () ->
+        [ testWithCapturedLogs "unicode inline script paths survive loading and indexing" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/inlinescripts"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let scriptName = "districts/精灵服务区划岗位添加（无海军）"
+
+              let inlineFilename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "inline_scripts", "districts", "精灵服务区划岗位添加（无海军）.txt")
+                  )
+
+              let callerFilename =
+                  Path.GetFullPath(Path.Combine(folder, "common", "script_consume", "中文调用者.txt"))
+
+              stl.UpdateFile false inlineFilename (Some "expected_leaf = yes") |> ignore
+              let callerErrors =
+                  stl.UpdateFile false callerFilename (Some $"inline_script = {{ script = {scriptName} }}")
+
+              Expect.isFalse
+                  (callerErrors |> List.exists (fun error -> error.message.Contains("Missing inline_script")))
+                  "Unicode inline_script paths should expand without a missing-script diagnostic"
+
+              let callers = stl.RefreshInlineScriptCallers [ scriptName + ".txt" ]
+              Expect.contains callers callerFilename "Unicode inline_script references should remain indexable"
+
+          testWithCapturedLogs "nested inline keeps concrete parent path" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/inlinescripts"
               let configtext = configFilesFromDir folder
 
