@@ -1358,7 +1358,83 @@ country_event = {
 
               Expect.contains labels "bracket_condition" "Positive bracket condition should complete as a scripted parameter"
               Expect.contains labels "negated_condition" "Negated bracket condition should complete as a scripted parameter"
-              Expect.contains labels "kamikakushi_bonus" "Prefixed bracket condition should complete as a scripted parameter"
+
+              let prefixedFiletext, prefixedPos =
+                  cursorAtMarker
+                      """
+namespace = test
+
+country_event = {
+    is_triggered_only = yes
+    option = {
+        scripted_effect_bracket_prefixed_param_validation = {
+            |
+        }
+    }
+}
+"""
+
+              let prefixedLabels = stl.Complete prefixedPos filename prefixedFiletext |> List.map label
+
+              Expect.contains prefixedLabels "kamikakushi_bonus" "Prefixed bracket condition should complete as a scripted parameter"
+
+          testWithCapturedLogs "scripted effect definition body does not complete own call-site params" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let filename = Path.GetFullPath(Path.Combine(folder, "common", "scripted_effects", "test.txt"))
+              let filetext, pos =
+                  cursorAtMarker
+                      """
+test_scripted_effect_params = {
+    |
+}
+"""
+
+              let labels = stl.Complete pos filename filetext |> List.map label
+
+              Expect.isFalse (labels |> List.contains "test_lhs") "A scripted effect definition body should not be treated as a call-site parameter block"
+              Expect.isFalse (labels |> List.contains "test_rhs") "A scripted effect definition body should keep normal effect completion"
+
+          testWithCapturedLogs "nested scripted effect calls inside definitions still complete params" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let filename = Path.GetFullPath(Path.Combine(folder, "common", "scripted_effects", "test.txt"))
+              let filetext, pos =
+                  cursorAtMarker
+                      """
+test_scripted_effect_none = {
+    test_scripted_effect_params = {
+        |
+    }
+}
+"""
+
+              let labels = stl.Complete pos filename filetext |> List.map label
+
+              Expect.contains labels "test_lhs" "Nested scripted effect calls inside definition files should still complete call-site params"
+              Expect.contains labels "test_rhs" "Nested scripted effect calls inside definition files should still complete all declared params"
 
           testWithCapturedLogs "script value bracket params feed value completion" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"

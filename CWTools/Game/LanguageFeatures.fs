@@ -795,11 +795,12 @@ module LanguageFeatures =
                     | None -> None
                     | Some entity ->
                         // 光标所在的最内层块节点，其 key 即被调用的 scripted_effect/trigger 名。
-                        let rec deepest (node: Node) =
+                        let rec deepestPath path (node: Node) =
                             match node.Nodes |> Seq.tryFind (fun c -> rangeContainsPos c.Position pos) with
-                            | Some child -> deepest child
-                            | None -> node
-                        let enclosingKey = (deepest entity.entity).Key
+                            | Some child -> deepestPath (node :: path) child
+                            | None -> List.rev (node :: path)
+                        let nodePath = deepestPath [] entity.entity
+                        let enclosingKey = (nodePath |> List.last).Key
                         if String.IsNullOrWhiteSpace enclosingKey || enclosingKey = "root" then None
                         else
                             let isScriptedDefPath (lp: string) =
@@ -807,17 +808,25 @@ module LanguageFeatures =
                                 || lp.StartsWith("common/scripted_triggers", StringComparison.OrdinalIgnoreCase)
                                 || lp.StartsWith("common\\scripted_effects", StringComparison.OrdinalIgnoreCase)
                                 || lp.StartsWith("common\\scripted_triggers", StringComparison.OrdinalIgnoreCase)
+                            let isTopLevelScriptedDefinition =
+                                isScriptedDefPath entity.logicalpath
+                                && (match nodePath with
+                                    | [ _root; _definition ] -> true
+                                    | _ -> false)
                             // 找名为 enclosingKey 的那个定义声明的参数。每个定义文件的「名->参数」表按
                             // 其 Lazy 身份缓存，所以在调用方文件里打字时不会重复折叠 AST（tryPick 命中即停）。
                             let lookupKey = enclosingKey.ToLowerInvariant()
                             let scriptParams =
-                                resourceManager.Api.AllEntities()
-                                |> Seq.filter (fun struct (e, _) -> isScriptedDefPath e.logicalpath)
-                                |> Seq.tryPick (fun struct (e, l) ->
-                                    match Map.tryFind lookupKey (entityScriptedParamMap e (box l)) with
-                                    | Some ps when not (List.isEmpty ps) -> Some ps
-                                    | _ -> None)
-                                |> Option.defaultValue []
+                                if isTopLevelScriptedDefinition then
+                                    []
+                                else
+                                    resourceManager.Api.AllEntities()
+                                    |> Seq.filter (fun struct (e, _) -> isScriptedDefPath e.logicalpath)
+                                    |> Seq.tryPick (fun struct (e, l) ->
+                                        match Map.tryFind lookupKey (entityScriptedParamMap e (box l)) with
+                                        | Some ps when not (List.isEmpty ps) -> Some ps
+                                        | _ -> None)
+                                    |> Option.defaultValue []
                             if List.isEmpty scriptParams then None
                             else
                                 let col = pos.Column
