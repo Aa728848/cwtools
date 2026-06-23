@@ -91,6 +91,40 @@ let validateLocalisationLazy =
             (STLLookup()))
          |> snd)
 
+[<Tests>]
+let legacyLocalisationCommandTests =
+    let validate command =
+        let staticSettings: CWTools.Process.Localisation.LegacyLocStaticSettings =
+            { questionMarkVariable = true
+              usesVariableCommands = false
+              parameterVariables = true
+              locPrimaryScopes = [ "From", id ]
+              scopedLocEffectsMap = EffectMap()
+              commands = []
+              variableCommands = [] }
+
+        CWTools.Process.Localisation.ChangeLocScope.createLegacyLocalisationCommandValidator
+            staticSettings
+            (dynamicSettings ())
+            defaultContext
+            command
+
+    testList
+        "legacy localisation commands"
+        [ testCase "empty command segments do not throw"
+          <| fun () ->
+              [ "From..From.GetName"; ".From"; "From."; "?" ]
+              |> List.iter (fun command ->
+                  match validate command with
+                  | CWTools.Process.Localisation.LocNotFound "" -> ()
+                  | result -> failtestf "Expected an empty segment in %A to be invalid, got %A" command result)
+
+          testCase "lowercase variable fallback is preserved"
+          <| fun () ->
+              match validate "myVariable" with
+              | CWTools.Process.Localisation.Found "variable_fallback" -> ()
+              | result -> failtestf "Expected lowercase variable fallback, got %A" result ]
+
 let createStarbaseLazy =
     lazy
         (let owner =

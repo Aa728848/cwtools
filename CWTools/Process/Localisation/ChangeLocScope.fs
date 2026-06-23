@@ -173,7 +173,10 @@ module ChangeLocScope =
                     | None ->
                         match commandMatch () with
                         | LocNotFound _ when nextKey.StartsWith "'" -> LocContextResult.Found "concept"
-                        | LocNotFound _ when nextKey.Contains "_" || System.Char.IsLower(nextKey.[0]) -> LocContextResult.Found "variable_fallback"
+                        | LocNotFound _ when
+                            nextKey.Length > 0
+                            && (nextKey.Contains "_" || System.Char.IsLower(nextKey.[0]))
+                            -> LocContextResult.Found "variable_fallback"
                         | res -> res
 
             let locKeyFolder (result: LocContextResult) (nextKey: string) =
