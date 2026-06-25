@@ -1161,6 +1161,18 @@ let scriptedActionValidationRegressionTests =
               let result = validate "good_action = { user_scope = fleet scope = planet }"
               Expect.equal result OK "same-line user_scope before scope should be valid"
 
+          testCase "allows comments before required first entries"
+          <| fun _ ->
+              let result =
+                  validate
+                      "good_action = {\n\
+                       \t# Action scope setup\n\
+                       \tuser_scope = fleet\n\
+                       \tscope = planet\n\
+                       }"
+
+              Expect.equal result OK "comments should not count as scripted_action entries"
+
           testCase "reports scope before user_scope"
           <| fun _ ->
               let result =
@@ -1175,9 +1187,29 @@ let scriptedActionValidationRegressionTests =
                   Expect.equal errors.Length 1 "Only the ordering diagnostic should be reported"
                   Expect.equal
                       errors.Head.message
-                      "In scripted_action, user_scope must be declared before scope, either on an earlier line or earlier on the same line"
+                      "In scripted_action, user_scope must be the first entry and scope must be the second entry"
                       "Diagnostic message should explain the required order"
                   Expect.equal errors.Head.range.StartLine 2 "Diagnostic should be placed on the early scope line"
+              | OK -> failtest "Expected scripted_action scope ordering diagnostic"
+
+          testCase "reports scope not being the second entry"
+          <| fun _ ->
+              let result =
+                  validate
+                      "bad_action = {\n\
+                       \tuser_scope = fleet\n\
+                       \ttooltip = BAD_ACTION_TOOLTIP\n\
+                       \tscope = planet\n\
+                       }"
+
+              match result with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 1 "Only the ordering diagnostic should be reported"
+                  Expect.equal
+                      errors.Head.message
+                      "In scripted_action, user_scope must be the first entry and scope must be the second entry"
+                      "Diagnostic message should explain the required order"
+                  Expect.equal errors.Head.range.StartLine 3 "Diagnostic should be placed on the second entry"
               | OK -> failtest "Expected scripted_action scope ordering diagnostic" ]
 
 [<Tests>]

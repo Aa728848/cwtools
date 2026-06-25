@@ -342,27 +342,33 @@ module STLValidation =
 
     let private scriptedActionScopeOrderError =
         ErrorCodes.CustomError
-            "In scripted_action, user_scope must be declared before scope, either on an earlier line or earlier on the same line"
+            "In scripted_action, user_scope must be the first entry and scope must be the second entry"
             Severity.Error
 
     let validateScriptedActionScopeOrder: STLStructureValidator =
         fun _ es ->
+            let entryOfChild child =
+                match child with
+                | LeafC leaf -> Some(leaf.Key, leaf.Position)
+                | NodeC node -> Some(node.Key, node.Position)
+                | LeafValueC leafValue -> Some(leafValue.Key, leafValue.Position)
+                | ValueClauseC valueClause -> Some((valueClause :> IKeyPos).Key, valueClause.Position)
+                | CommentC _ -> None
+
             let validateAction (action: Node) =
-                let mutable seenUserScope = false
-                let mutable hasUserScope = false
-                let mutable firstScopeBeforeUserScope: Leaf option = None
+                let entries = action.AllArray |> Array.choose entryOfChild
 
-                for child in action.AllArray do
-                    match child with
-                    | LeafC leaf when leaf.Key == "user_scope" ->
-                        seenUserScope <- true
-                        hasUserScope <- true
-                    | LeafC leaf when leaf.Key == "scope" && not seenUserScope && firstScopeBeforeUserScope.IsNone ->
-                        firstScopeBeforeUserScope <- Some leaf
-                    | _ -> ()
+                let firstOrderingError =
+                    if entries.Length > 0 && not (fst entries.[0] == "user_scope") then
+                        Some entries.[0]
+                    elif entries.Length > 1 && not (fst entries.[1] == "scope") then
+                        Some entries.[1]
+                    else
+                        None
 
-                match firstScopeBeforeUserScope, hasUserScope with
-                | Some scopeLeaf, true -> Invalid(Guid.NewGuid(), [ inv scriptedActionScopeOrderError scopeLeaf ])
+                match firstOrderingError with
+                | Some(key, position) ->
+                    Invalid(Guid.NewGuid(), [ invManual scriptedActionScopeOrderError position key None ])
                 | _ -> OK
 
             es.GlobMatchChildren("**/common/scripted_actions/*.txt") <&!&> validateAction
