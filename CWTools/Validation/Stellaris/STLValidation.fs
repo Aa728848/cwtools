@@ -340,6 +340,33 @@ module STLValidation =
 
             ships <&!&> (fun s -> validateEventValsInternal s)
 
+    let private scriptedActionScopeOrderError =
+        ErrorCodes.CustomError
+            "In scripted_action, user_scope must be declared before scope, either on an earlier line or earlier on the same line"
+            Severity.Error
+
+    let validateScriptedActionScopeOrder: STLStructureValidator =
+        fun _ es ->
+            let validateAction (action: Node) =
+                let mutable seenUserScope = false
+                let mutable hasUserScope = false
+                let mutable firstScopeBeforeUserScope: Leaf option = None
+
+                for child in action.AllArray do
+                    match child with
+                    | LeafC leaf when leaf.Key == "user_scope" ->
+                        seenUserScope <- true
+                        hasUserScope <- true
+                    | LeafC leaf when leaf.Key == "scope" && not seenUserScope && firstScopeBeforeUserScope.IsNone ->
+                        firstScopeBeforeUserScope <- Some leaf
+                    | _ -> ()
+
+                match firstScopeBeforeUserScope, hasUserScope with
+                | Some scopeLeaf, true -> Invalid(Guid.NewGuid(), [ inv scriptedActionScopeOrderError scopeLeaf ])
+                | _ -> OK
+
+            es.GlobMatchChildren("**/common/scripted_actions/*.txt") <&!&> validateAction
+
     let stellarisEventPreTriggers =
         [| "has_owner"
            "is_homeworld"

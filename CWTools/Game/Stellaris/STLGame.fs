@@ -583,6 +583,7 @@ type STLGame(setupSettings: StellarisSettings) =
               valMegastructureGraphics, "megastructure"
               valPlanetClassGraphics, "pcg"
               validateDeprecatedSetName, "setname"
+              validateScriptedActionScopeOrder, "scriptedactionscopeorder"
               validateEvents, "eventsSimple"
               validatePreTriggers, "pre"
               validateIfWithNoEffect, "ifnoeffect" ]

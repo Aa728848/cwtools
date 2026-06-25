@@ -1112,6 +1112,75 @@ let economicCategoryAIBudgetRegressionTests =
               Expect.equal result OK "Parent chains from existing entities should satisfy AI budget lookup" ]
 
 [<Tests>]
+let scriptedActionValidationRegressionTests =
+    let makeEntity logicalpath text =
+        match CKParser.parseString text logicalpath with
+        | Success(statements, _, _) ->
+            let node = STLProcess.shipProcess.ProcessNode () "root" (mkZeroFile logicalpath) statements
+
+            { filepath = logicalpath
+              logicalpath = logicalpath
+              rawEntity = node
+              entity = node
+              validate = true
+              entityType = EntityType.Other
+              overwrite = Overwrite.No }
+        | Failure(error, _, _) -> failwith error
+
+    let makeSet entities =
+        entities
+        |> List.map (fun entity ->
+            struct (
+                entity,
+                lazy (STLComputedData(None, None, None, false, None, None, None))
+            ))
+        |> EntitySet
+
+    let validate text =
+        let file = makeEntity "mod/common/scripted_actions/test_actions.txt" text
+
+        CWTools.Validation.Stellaris.STLValidation.validateScriptedActionScopeOrder
+            (makeSet [])
+            (makeSet [ file ])
+
+    testList
+        "scripted action validation regression"
+        [ testCase "allows user_scope before scope on previous line"
+          <| fun _ ->
+              let result =
+                  validate
+                      "good_action = {\n\
+                       \tuser_scope = fleet\n\
+                       \tscope = planet\n\
+                       }"
+
+              Expect.equal result OK "user_scope before scope should be valid"
+
+          testCase "allows user_scope before scope on the same line"
+          <| fun _ ->
+              let result = validate "good_action = { user_scope = fleet scope = planet }"
+              Expect.equal result OK "same-line user_scope before scope should be valid"
+
+          testCase "reports scope before user_scope"
+          <| fun _ ->
+              let result =
+                  validate
+                      "bad_action = {\n\
+                       \tscope = planet\n\
+                       \tuser_scope = fleet\n\
+                       }"
+
+              match result with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 1 "Only the ordering diagnostic should be reported"
+                  Expect.equal
+                      errors.Head.message
+                      "In scripted_action, user_scope must be declared before scope, either on an earlier line or earlier on the same line"
+                      "Diagnostic message should explain the required order"
+                  Expect.equal errors.Head.range.StartLine 2 "Diagnostic should be placed on the early scope line"
+              | OK -> failtest "Expected scripted_action scope ordering diagnostic" ]
+
+[<Tests>]
 let inlineScriptCompletionRegressionTests =
     testSequenced
     <| testList
