@@ -1397,12 +1397,67 @@ module LanguageFeatures =
                                         if tdi.id = word then Some tdi.range else None))
                     with _ -> None
 
+            let scriptValueFallback () =
+                try
+                    let split = filetext.Split('\n')
+                    let lineIdx = pos.Line - 1
+                    if lineIdx < 0 || lineIdx >= split.Length then None
+                    else
+                        let line = split.[lineIdx].TrimEnd('\r')
+                        if line.TrimStart().StartsWith("#") then None
+                        else
+                            let col = Math.Max(0, Math.Min(pos.Column, line.Length))
+                            let isTokenBoundary c =
+                                Char.IsWhiteSpace c
+                                || c = '='
+                                || c = '{'
+                                || c = '('
+                                || c = '['
+                                || c = '<'
+                                || c = '>'
+                                || c = ','
+                                || c = '"'
+                                || c = '\''
+
+                            let scriptValueDefinitions =
+                                lookup.typeDefInfo
+                                |> Map.tryFind "script_value"
+                                |> Option.defaultValue [||]
+
+                            if scriptValueDefinitions.Length = 0 then None
+                            else
+                                let pattern =
+                                    System.Text.RegularExpressions.Regex(
+                                        @"value:([-A-Za-z0-9_.@/]+)",
+                                        System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                                    )
+
+                                pattern.Matches(line)
+                                |> Seq.cast<System.Text.RegularExpressions.Match>
+                                |> Seq.tryPick (fun m ->
+                                    let startIdx = m.Index
+                                    let endIdx = m.Index + m.Length
+                                    let startsAtTokenBoundary = startIdx = 0 || isTokenBoundary line.[startIdx - 1]
+
+                                    if startsAtTokenBoundary && col >= startIdx && col <= endIdx then
+                                        let scriptValueName = m.Groups.[1].Value
+                                        scriptValueDefinitions
+                                        |> Array.tryFind (fun tdi ->
+                                            String.Equals(tdi.id, scriptValueName, StringComparison.OrdinalIgnoreCase))
+                                        |> Option.map (fun tdi -> tdi.range)
+                                    else
+                                        None)
+                with _ -> None
+
             match primaryResult with
             | Some _ -> primaryResult
             | None ->
                 match inlineScriptFallback () with
                 | Some _ as r -> r
-                | None -> wordLookupFallback ()
+                | None ->
+                    match scriptValueFallback () with
+                    | Some _ as r -> r
+                    | None -> wordLookupFallback ()
 
     let findAllRefsByType
         (resourceManager: ResourceManager<_>)

@@ -1670,6 +1670,44 @@ country_event = {
                   "common/script_values/test.txt"
                   "Go to definition should target the script_values file"
 
+          testWithCapturedLogs "script value in effect count goes to definition" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let filename = Path.GetFullPath(Path.Combine(folder, "events", "test.txt"))
+              let filetext, pos =
+                  cursorAtTildeMarker
+                      """
+namespace = test
+
+country_event = {
+    is_triggered_only = yes
+    option = {
+        while = {
+            count = value:scri~pted_param|PARAM|abs|
+        }
+    }
+}
+"""
+
+              let target = stl.GoToType pos filename filetext
+
+              Expect.isSome target "Script value count in an effect block should go to its definition"
+              Expect.stringContains
+                  (target.Value.FileName.Replace("\\", "/"))
+                  "common/script_values/test.txt"
+                  "Go to definition should target the script_values file"
+
           testWithCapturedLogs "scripted count wrapper completes as trigger" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
               let configtext = configFilesFromDir folder

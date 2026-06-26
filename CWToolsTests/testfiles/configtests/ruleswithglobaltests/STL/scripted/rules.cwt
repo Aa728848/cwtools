@@ -96,6 +96,12 @@ alias[trigger:count_test_value] = {
     alias_name[trigger] = alias_match_left[trigger]
 }
 
+alias[effect:while] = {
+    count = value_set[variable]
+    count = int_value_field
+    alias_name[effect] = alias_match_left[effect]
+}
+
 script_value = {
 	## cardinality = 0..1
 	enum[simple_maths_enum] = yes
