@@ -653,7 +653,118 @@ let logEffectLazy =
 let testsv =
     testList
         "config validate"
-        [ testWithCapturedLogs "create_starbase"
+        [ testCase "stellaris default scopes include colony fallback"
+          <| fun () ->
+              UtilityParser.initializeScopes None (Some(defaultScopeInputs ()))
+
+              Expect.equal
+                  ((scopeManager.ParseScope () "colony").ToString())
+                  "Colony"
+                  "colony should not fall back to Any when scopes.cwt is unavailable"
+
+          testCase "scope context uses nested replace_scope from type rules"
+          <| fun () ->
+              let scopesConfig =
+                  "scopes = {\n\
+                       Planet = { aliases = { planet } }\n\
+                       Colony = { aliases = { colony } }\n\
+                   }\n"
+
+              let config =
+                  "types = {\n\
+                       type[colony_automation] = {\n\
+                           path = \"game/common/colony_automation\"\n\
+                       }\n\
+                   }\n\
+                   ## push_scope = planet\n\
+                   colony_automation = {\n\
+                       ## replace_scope = { this = colony root = colony }\n\
+                       available = {\n\
+                           alias_name[trigger] = alias_match_left[trigger]\n\
+                       }\n\
+                   }\n"
+
+              UtilityParser.initializeScopes (Some("scopes.cwt", scopesConfig)) None
+
+              let rules, types, _, _, _ =
+                  parseConfig
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      "colony.cwt"
+                      config
+
+              let input =
+                  "auto_colony = {\n\
+                       available = {\n\
+                           has_designation = col_adf_ring_city\n\
+                       }\n\
+                   }\n"
+
+              match CKParser.parseString input "common/colony_automation/test.txt" with
+              | Success(r, _, _) ->
+                  let node =
+                      STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+
+                  let entity =
+                      { filepath = "common/colony_automation/test.txt"
+                        logicalpath = "common/colony_automation/test.txt"
+                        rawEntity = node
+                        entity = node
+                        validate = true
+                        entityType = EntityType.Other
+                        overwrite = Overwrite.No }
+
+                  let rulesWrapper = RulesWrapper(rules |> List.toArray)
+
+                  let validationService =
+                      RuleValidationService(
+                          rulesWrapper,
+                          types,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          [||],
+                          FrozenSet.Empty,
+                          effectMap,
+                          effectMap,
+                          (scopeManager.ParseScope () "Any"),
+                          changeScope,
+                          defaultContext,
+                          STL STLLang.Default,
+                          processLocalisationLazy.Value,
+                          validateLocalisationLazy.Value
+                      )
+
+                  let infoService =
+                      InfoService(
+                          rulesWrapper,
+                          types,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          [||],
+                          FrozenSet.Empty,
+                          effectMap,
+                          effectMap,
+                          validationService,
+                          changeScope,
+                          defaultContext,
+                          (scopeManager.ParseScope () "Any"),
+                          STL STLLang.Default,
+                          processLocalisationLazy.Value,
+                          validateLocalisationLazy.Value
+                      )
+
+                  match infoService.GetInfo(mkPos 3 13, entity) with
+                  | Some(context, _) ->
+                      Expect.equal context.Root (scopeManager.ParseScope () "Colony") "ROOT should use replace_scope"
+                      Expect.sequenceEqual context.Scopes [ scopeManager.ParseScope () "Colony" ] "THIS should use replace_scope"
+                  | None -> failtest "info failed"
+              | Failure(e, _, _) -> failtest e
+
+          testWithCapturedLogs "create_starbase"
           <| fun () ->
               let input =
                   "create_starbase = {\n\

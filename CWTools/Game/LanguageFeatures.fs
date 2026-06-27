@@ -1293,6 +1293,23 @@ module LanguageFeatures =
         if PdxShaderFeatures.isShaderFile filepath then
             PdxShaderFeatures.goToDefinition resourceManager.Api pos filepath filetext
         else
+            let tryFindTypeDefinition typeName typeValue =
+                lookup.typeDefInfo
+                |> Map.tryFind typeName
+                |> Option.defaultValue [||]
+                |> Array.tryPick (fun tdi -> if tdi.id = typeValue then Some tdi.range else None)
+
+            let isEventTypeName (typeName: string) =
+                typeName.Equals("event", StringComparison.OrdinalIgnoreCase)
+                || typeName.StartsWith("event.", StringComparison.OrdinalIgnoreCase)
+
+            let tryFindAnyEventTypeDefinition typeValue =
+                lookup.typeDefInfo
+                |> Map.toSeq
+                |> Seq.filter (fun (typeName, _) -> isEventTypeName typeName)
+                |> Seq.tryPick (fun (_, infos) ->
+                    infos |> Array.tryPick (fun tdi -> if tdi.id = typeValue then Some tdi.range else None))
+
             let primaryResult =
                 match processResourceCachedInfo resourceManager fileManager filepath filetext, infoService with
                 | Some e, Some info ->
@@ -1310,10 +1327,10 @@ module LanguageFeatures =
                             | _ -> None
                         | None -> None
                     | Some(_, (_, Some(TypeRef(t, tv)), _)) ->
-                        lookup.typeDefInfo
-                        |> Map.tryFind t
-                        |> Option.defaultValue [||]
-                        |> Array.tryPick (fun tdi -> if tdi.id = tv then Some tdi.range else None)
+                        match tryFindTypeDefinition t tv with
+                        | Some _ as range -> range
+                        | None when isEventTypeName t -> tryFindAnyEventTypeDefinition tv
+                        | None -> None
                     | Some(_, (_, Some(EnumRef(enumName, enumValue)), _)) ->
                         let enumValues = lookup.enumDefs[enumName] |> snd
                         enumValues |> Array.tryPick (fun (ev, r) -> if ev == enumValue then r else None)

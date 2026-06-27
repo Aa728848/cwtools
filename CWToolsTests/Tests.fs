@@ -1744,6 +1744,77 @@ country_event = {
                   "Scripted triggers wrapping count_* without count should complete as trigger conditions" ]
 
 [<Tests>]
+let goToDefinitionRegressionTests =
+    let cursorAtTildeMarker (text: string) =
+        let marker = text.IndexOf('~')
+        Expect.isGreaterThan marker -1 "test cursor marker was not found"
+        let before = text.Substring(0, marker)
+        let line = (before |> Seq.filter ((=) '\n') |> Seq.length) + 1
+        let lastLineBreak = before.LastIndexOf('\n')
+        let column = if lastLineBreak < 0 then marker else marker - lastLineBreak - 1
+        text.Remove(marker, 1), mkPos line column
+
+    let writeFile (path: string) (text: string) =
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllText(path, text.TrimStart().Replace("\r\n", "\n"))
+
+    testSequenced
+    <| testList
+        "go to definition regressions"
+        [ testWithCapturedLogs "carrier_event id resolves event.carrier definitions" <| fun () ->
+              let folder =
+                  Path.Combine(Path.GetTempPath(), "cwtools-carrier-event-goto-" + Guid.NewGuid().ToString("N"))
+
+              try
+                  let eventPath = Path.Combine(folder, "events", "carrier_events.txt")
+
+                  let filetext, pos =
+                      cursorAtTildeMarker
+                          """
+namespace = carrier_goto
+
+carrier_event = {
+    id = carrier_goto.1
+    hide_window = yes
+    is_triggered_only = yes
+}
+
+country_event = {
+    id = carrier_goto.2
+    hide_window = yes
+    is_triggered_only = yes
+    immediate = {
+        carrier_event = { id = carrier_goto.~1 }
+    }
+}
+"""
+
+                  writeFile eventPath filetext
+
+                  let configtext = configFilesFromDir "./testfiles/stellarisconfig"
+
+                  let settings =
+                      { emptyStellarisSettings folder with
+                          rules =
+                              Some
+                                  { ruleFiles = configtext
+                                    validateRules = true
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+
+                  let stl = STLGame(settings) :> IGame<STLComputedData>
+                  let target = stl.GoToType pos eventPath filetext
+
+                  Expect.isSome target "carrier_event should go to the carrier event definition"
+                  Expect.equal
+                      (Path.GetFullPath(target.Value.FileName))
+                      (Path.GetFullPath(eventPath))
+                      "Go to definition should target the defining event file"
+              finally
+                  if Directory.Exists folder then
+                      Directory.Delete(folder, true) ]
+
+[<Tests>]
 let scriptedTriggerOrValidationSeverityTests =
     let writeFile (path: string) (text: string) =
         Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
