@@ -784,17 +784,19 @@ type CompletionService
                 | SubtypeRule _ -> [||]
                 | _ -> [||]
         //TODO: Add leafvalue
-        let typeCompletionItems (typeName: string) =
-            types.TryFind(typeName)
-            |> Option.defaultValue []
+        let typeCompletionItems (typeName: string) (suffixPatterns: string list) =
+            let values = types.TryFind(typeName) |> Option.defaultValue []
+
+            Seq.append values (FieldValidators.typeSuffixPatternBaseValues values suffixPatterns)
+            |> Seq.distinctBy (fun value -> value.ToLowerInvariant())
             |> Seq.map CompletionResponse.CreateSimple
             |> Seq.toArray
 
-        let fieldToRules (field: NewField) (value: string) (scopeContext: ScopeContext) (completionType: string option) =
+        let fieldToRules (field: NewField) (value: string) (scopeContext: ScopeContext) (options: Options) =
             //            log (sprintf "%A %A" field value)
             //            eprintfn "%A" value
-            match completionType with
-            | Some typeName -> typeCompletionItems typeName
+            match options.completionType with
+            | Some typeName -> typeCompletionItems typeName options.typeSuffixPatterns
             | None ->
                 match field with
                 | NewField.ValueField(Enum e) ->
@@ -808,10 +810,7 @@ type CompletionService
                     |> Seq.map CompletionResponse.CreateSimple
                     |> Seq.toArray
                 | NewField.TypeField(TypeType.Simple t) ->
-                    types.TryFind(t)
-                    |> Option.defaultValue []
-                    |> Seq.map CompletionResponse.CreateSimple
-                    |> Seq.toArray
+                    typeCompletionItems t options.typeSuffixPatterns
                 | NewField.TypeField(TypeType.Complex(p, t, s)) ->
                     types.TryFind(t)
                     |> Option.map (fun ns -> List.map (fun n -> p + n + s) ns)
@@ -958,7 +957,7 @@ type CompletionService
                 | [||] -> expandedRules |> Array.collect (convRuleToCompletion key count scopeContext)
                 | fs ->
                     //log "%s %A" key fs
-                    let res = fs |> Array.collect (fun (_, f, o) -> fieldToRules f value scopeContext o.completionType)
+                    let res = fs |> Array.collect (fun (_, f, o) -> fieldToRules f value scopeContext o)
                     //log "res %A" res
                     res
             | (key, count, _, NodeRHS) :: rest ->

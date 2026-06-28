@@ -945,6 +945,96 @@ let testsv =
                   | Invalid(_, es) ->
                       Expect.equal es.Length 1 $"Following lines are not expected to have an error %A{es}"
               | Failure(e, _, _) -> Expect.isTrue false e
+          testWithCapturedLogs "type suffix pattern validation"
+          <| fun () ->
+              let config =
+                  "planet_class = {\n\
+                          ## cardinality = 0..1\n\
+                          entity = \"\"\n\
+                          ## cardinality = 0..1\n\
+                          ## type_suffix_pattern = _$_entity\n\
+                          entity = <model_entity>\n\
+                          }"
+
+              let rules, _, _, _, _ =
+                  parseConfig
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      ""
+                      config
+
+              let typeRules =
+                  rules
+                  |> List.choose (function
+                      | TypeRule(_, rs) -> Some rs
+                      | _ -> None)
+                  |> Array.ofList
+
+              let typesMap =
+                  [ "model_entity", createStringSet [ "desert_planet_01_entity"; "continental_planet_02_entity" ] ]
+                  |> Map.ofList
+                  |> fun m -> m.ToFrozenDictionary()
+
+              let apply =
+                  RuleValidationService(
+                      RulesWrapper(rules |> List.toArray),
+                      [],
+                      typesMap,
+                      FrozenDictionary.Empty,
+                      FrozenDictionary.Empty,
+                      [||],
+                      FrozenSet.Empty,
+                      effectMap,
+                      effectMap,
+                      (scopeManager.ParseScope () "Any"),
+                      changeScope,
+                      defaultContext,
+                      STL STLLang.Default,
+                      processLocalisationLazy.Value,
+                      validateLocalisationLazy.Value
+                  )
+
+              let validate input =
+                  match CKParser.parseString input "test" with
+                  | Success(r, _, _) ->
+                      let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+                      apply.ApplyNodeRule(typeRules, node)
+                  | Failure(e, _, _) -> failtest e
+
+              Expect.equal
+                  (validate
+                      "planet_class = {\n\
+                          entity = desert_planet\n\
+                      }")
+                  OK
+                  "desert_planet should resolve through desert_planet_01_entity"
+
+              Expect.equal
+                  (validate
+                      "planet_class = {\n\
+                          entity = desert_planet_01_entity\n\
+                      }")
+                  OK
+                  "exact model_entity values should remain legal"
+
+              Expect.equal
+                  (validate
+                      "planet_class = {\n\
+                          entity = \"\"\n\
+                      }")
+                  OK
+                  "empty entity should remain legal"
+
+              match
+                  validate
+                      "planet_class = {\n\
+                          entity = desert\n\
+                      }"
+              with
+              | OK -> failtest "desert should not match desert_planet_01_entity by prefix only"
+              | Invalid _ -> ()
           testWithCapturedLogs "create_starbase effect in effect"
           <| fun () ->
               let input =

@@ -356,6 +356,22 @@ module private RulesParserImpl =
             | Some s when s.Contains '=' -> s.Substring(s.IndexOf '=' + 1).Trim() |> Some
             | _ -> None
 
+        let typeSuffixPatterns =
+            match
+                comments
+                |> List.tryFind (fun s ->
+                    s.Contains("type_suffix_pattern")
+                    || s.Contains("type_suffix_patterns"))
+            with
+            | Some s when s.Contains '=' ->
+                s.Substring(s.IndexOf '=' + 1).Trim().Trim('{', '}')
+                    .Split([| ' '; '\t'; ',' |], StringSplitOptions.RemoveEmptyEntries)
+                |> Array.map (fun value -> value.Trim().Trim('"'))
+                |> Array.filter (String.IsNullOrWhiteSpace >> not)
+                |> Array.distinct
+                |> Array.toList
+            | _ -> []
+
         { min = min
           max = max
           strictMin = strictmin
@@ -372,7 +388,8 @@ module private RulesParserImpl =
           typeHint = None
           completionType = completionType
           errorIfOnlyMatch = errorIfMatched
-          typePrefixFrom = typePrefixFrom }
+          typePrefixFrom = typePrefixFrom
+          typeSuffixPatterns = typeSuffixPatterns }
 
     let fastStartsWith (x: string) y =
         x.StartsWith(y, StringComparison.OrdinalIgnoreCase)
@@ -661,7 +678,8 @@ module private RulesParserImpl =
           typeHint = None
           completionType = None
           errorIfOnlyMatch = None
-          typePrefixFrom = None }
+          typePrefixFrom = None
+          typeSuffixPatterns = [] }
 
     let private hsvRule =
         LeafValueRule(ValueField(ValueType.Float(0.0M, 2.0M))),
@@ -681,7 +699,8 @@ module private RulesParserImpl =
           typeHint = None
           completionType = None
           errorIfOnlyMatch = None
-          typePrefixFrom = None }
+          typePrefixFrom = None
+          typeSuffixPatterns = [] }
 
     let private configLeaf parseScope allScopes anyScope scopeGroup (leaf: Leaf) (comments: string list) (key: string) =
         let leftfield = processKey parseScope anyScope scopeGroup (key.Trim('"'))

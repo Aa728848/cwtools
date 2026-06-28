@@ -30,7 +30,8 @@ type Options =
       typeHint: (string * bool) option
       completionType: string option
       errorIfOnlyMatch: string option
-      typePrefixFrom: string option }
+      typePrefixFrom: string option
+      typeSuffixPatterns: string list }
 
     static member DefaultOptions =
         { min = 0
@@ -49,7 +50,8 @@ type Options =
           typeHint = None
           completionType = None
           errorIfOnlyMatch = None
-          typePrefixFrom = None }
+          typePrefixFrom = None
+          typeSuffixPatterns = [] }
 
 type ValueType =
     | Enum of enumc: string

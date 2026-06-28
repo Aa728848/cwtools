@@ -485,6 +485,89 @@ module internal FieldValidators =
             inv (ErrorCodes.CustomError $"Unknown type referenced %s{fieldType}" Severity.Error) leafornode
             <&&&> errors
 
+    let private stripTypeFieldDecorators (value: string) =
+        let value = trimQuote value
+
+        if value.StartsWith("text:", StringComparison.OrdinalIgnoreCase) then value.Substring(5)
+        elif value.StartsWith("desc:", StringComparison.OrdinalIgnoreCase) then value.Substring(5)
+        elif value.StartsWith("background:", StringComparison.OrdinalIgnoreCase) then value.Substring(11)
+        elif value.StartsWith("icon:", StringComparison.OrdinalIgnoreCase) then value.Substring(5)
+        else value
+
+    let private cleanTypeSuffixPattern (pattern: string) = pattern.Trim().Trim('"')
+
+    let tryGetTypeSuffixPatternBaseValue (candidate: string) (pattern: string) =
+        let pattern = cleanTypeSuffixPattern pattern
+
+        if String.IsNullOrWhiteSpace pattern then
+            None
+        else
+            let wildcardIndex = pattern.IndexOf('$')
+
+            if wildcardIndex < 0 then
+                if candidate.EndsWith(pattern, StringComparison.OrdinalIgnoreCase)
+                   && candidate.Length > pattern.Length then
+                    Some(candidate.Substring(0, candidate.Length - pattern.Length))
+                else
+                    None
+            else
+                let beforeWildcard = pattern.Substring(0, wildcardIndex)
+                let afterWildcard = pattern.Substring(wildcardIndex + 1)
+
+                if not (candidate.EndsWith(afterWildcard, StringComparison.OrdinalIgnoreCase)) then
+                    None
+                else
+                    let body = candidate.Substring(0, candidate.Length - afterWildcard.Length)
+
+                    let boundaryIndex =
+                        if String.IsNullOrEmpty beforeWildcard then
+                            body.Length
+                        else
+                            body.LastIndexOf(beforeWildcard, StringComparison.OrdinalIgnoreCase)
+
+                    if boundaryIndex <= 0 then
+                        None
+                    else
+                        let wildcardStart = boundaryIndex + beforeWildcard.Length
+
+                        if wildcardStart >= body.Length then
+                            None
+                        else
+                            Some(candidate.Substring(0, boundaryIndex))
+
+    let typeSuffixPatternMatchesValue (value: string) (candidate: string) (pattern: string) =
+        match tryGetTypeSuffixPatternBaseValue candidate pattern with
+        | Some baseValue -> String.Equals(baseValue, value, StringComparison.OrdinalIgnoreCase)
+        | None -> false
+
+    let typeSuffixPatternBaseValues (values: seq<string>) (suffixPatterns: string list) =
+        values
+        |> Seq.collect (fun candidate ->
+            suffixPatterns |> Seq.choose (tryGetTypeSuffixPatternBaseValue candidate))
+        |> Seq.distinctBy (fun value -> value.ToLowerInvariant())
+
+    let checkTypeFieldSuffixPatternNE
+        (typesMap: FrozenDictionary<_, PrefixOptimisedStringSet>)
+        (typetype: TypeType)
+        (ids: StringTokens)
+        (suffixPatterns: string list)
+        =
+        match typetype, suffixPatterns with
+        | TypeType.Simple fieldType, _ :: _ ->
+            match typesMap.TryFindV fieldType with
+            | ValueSome values ->
+                if firstCharEqualsAmp ids.lower then
+                    true
+                else
+                    let value = getLowerKey ids |> stripTypeFieldDecorators
+
+                    values.StringValues
+                    |> Seq.exists (fun candidate ->
+                        suffixPatterns
+                        |> List.exists (typeSuffixPatternMatchesValue value candidate))
+            | ValueNone -> false
+        | _ -> false
+
     let checkTypeFieldNE
         (typesMap: FrozenDictionary<_, PrefixOptimisedStringSet>)
         (typetype: TypeType)

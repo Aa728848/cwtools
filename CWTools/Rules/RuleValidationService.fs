@@ -289,7 +289,7 @@ type RuleValidationService
             | Some values -> values.StringValues |> Seq.choose cleanPrefixValue
             | None -> Seq.empty
 
-    let checkFieldWithDynamicTypePrefix
+    let checkFieldWithDynamicTypeOptions
         (ctx: RuleContext)
         (options: Options)
         (field: NewField)
@@ -300,18 +300,23 @@ type RuleValidationService
         =
         let direct = FieldValidators.checkField p severity ctx field keyIDs leafornode OK
 
-        match direct, options.typePrefixFrom, field with
-        | OK, _, _ -> OK
-        | Invalid _, Some prefixField, TypeField typeType ->
+        match direct, field with
+        | OK, _ -> OK
+        | Invalid _, TypeField typeType ->
             let value = stringManager.GetStringForIDs(keyIDs).Trim('"')
 
             let prefixedValueExists =
-                dynamicTypePrefixValues prefixField parent
-                |> Seq.exists (fun prefix ->
-                    let candidate = stringManager.InternIdentifierToken($"%s{prefix}_%s{value}")
-                    FieldValidators.checkTypeFieldNE p.typesMap typeType candidate)
+                options.typePrefixFrom
+                |> Option.exists (fun prefixField ->
+                    dynamicTypePrefixValues prefixField parent
+                    |> Seq.exists (fun prefix ->
+                        let candidate = stringManager.InternIdentifierToken($"%s{prefix}_%s{value}")
+                        FieldValidators.checkTypeFieldNE p.typesMap typeType candidate))
 
-            if prefixedValueExists then OK else direct
+            let suffixPatternValueExists =
+                FieldValidators.checkTypeFieldSuffixPatternNE p.typesMap typeType keyIDs options.typeSuffixPatterns
+
+            if prefixedValueExists || suffixPatternValueExists then OK else direct
         | _ -> direct
 
 
@@ -812,7 +817,7 @@ type RuleValidationService
                           ))
                 <&&> (if options.errorIfOnlyMatch.IsSome then
                           let res =
-                              checkFieldWithDynamicTypePrefix ctx options rightRule leaf.ValueId leaf parent severity
+                              checkFieldWithDynamicTypeOptions ctx options rightRule leaf.ValueId leaf parent severity
 
                           if res = OK then
                               inv (ErrorCodes.FromRulesCustomError options.errorIfOnlyMatch.Value severity) leaf
@@ -820,7 +825,7 @@ type RuleValidationService
                           else
                               res
                       else
-                          checkFieldWithDynamicTypePrefix ctx options rightRule leaf.ValueId leaf parent severity)))
+                          checkFieldWithDynamicTypeOptions ctx options rightRule leaf.ValueId leaf parent severity)))
         <&&> errors
 
     and applyNodeRule
