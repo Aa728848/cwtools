@@ -253,6 +253,25 @@ type RuleValidationService
             else
                 Some value
 
+        let knownPrefixValues =
+            match p.typesMap.TryFind prefixField with
+            | Some values -> values.StringValues |> Seq.choose cleanPrefixValue |> Seq.toArray
+            | None -> [||]
+
+        let isKnownPrefixValue (value: string) =
+            match p.typesMap.TryFind prefixField with
+            | Some values -> values.Contains(value)
+            | None -> false
+
+        let selectPrefixValues (explicitPrefixValues: string array) =
+            if explicitPrefixValues.Length = 0 then
+                knownPrefixValues |> Seq.ofArray
+            elif knownPrefixValues.Length > 0
+                 && (explicitPrefixValues |> Array.exists (isKnownPrefixValue >> not)) then
+                knownPrefixValues |> Seq.ofArray
+            else
+                explicitPrefixValues |> Seq.ofArray
+
         let nodeValues =
             clause.Nodes
             |> Seq.filter (fun node -> String.Equals(node.Key, prefixField, StringComparison.OrdinalIgnoreCase))
@@ -281,13 +300,11 @@ type RuleValidationService
         if explicitNo then
             Seq.empty
         elif nodeValues.Length > 0 then
-            nodeValues |> Seq.ofArray
+            selectPrefixValues nodeValues
         elif explicitLeafPrefixes.Length > 0 then
-            explicitLeafPrefixes |> Seq.ofArray
+            selectPrefixValues explicitLeafPrefixes
         else
-            match p.typesMap.TryFind prefixField with
-            | Some values -> values.StringValues |> Seq.choose cleanPrefixValue
-            | None -> Seq.empty
+            knownPrefixValues |> Seq.ofArray
 
     let checkFieldWithDynamicTypeOptions
         (ctx: RuleContext)

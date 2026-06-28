@@ -1035,6 +1035,102 @@ let testsv =
               with
               | OK -> failtest "desert should not match desert_planet_01_entity by prefix only"
               | Invalid _ -> ()
+          testWithCapturedLogs "type prefix from dynamic scope values"
+          <| fun () ->
+              let config =
+                  "planet_entity = {\n\
+                          ## cardinality = 0..1\n\
+                          ## type_prefix_from = graphical_culture\n\
+                          entity = <model_entity>\n\
+                          ## cardinality = 0..1\n\
+                          graphical_culture = scalar\n\
+                          }"
+
+              let rules, _, _, _, _ =
+                  parseConfig
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      ""
+                      config
+
+              let typeRules =
+                  rules
+                  |> List.choose (function
+                      | TypeRule(_, rs) -> Some rs
+                      | _ -> None)
+                  |> Array.ofList
+
+              let typesMap =
+                  [ "graphical_culture", createStringSet [ "mammalian_01"; "reptilian_01" ]
+                    "model_entity", createStringSet [ "mammalian_01_habitat_phase_03_entity" ] ]
+                  |> Map.ofList
+                  |> fun m -> m.ToFrozenDictionary()
+
+              let apply =
+                  RuleValidationService(
+                      RulesWrapper(rules |> List.toArray),
+                      [],
+                      typesMap,
+                      FrozenDictionary.Empty,
+                      FrozenDictionary.Empty,
+                      [||],
+                      FrozenSet.Empty,
+                      effectMap,
+                      effectMap,
+                      (scopeManager.ParseScope () "Any"),
+                      changeScope,
+                      defaultContext,
+                      STL STLLang.Default,
+                      processLocalisationLazy.Value,
+                      validateLocalisationLazy.Value
+                  )
+
+              let validate input =
+                  match CKParser.parseString input "test" with
+                  | Success(r, _, _) ->
+                      let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+                      apply.ApplyNodeRule(typeRules, node)
+                  | Failure(e, _, _) -> failtest e
+
+              Expect.equal
+                  (validate
+                      "planet_entity = {\n\
+                          entity = habitat_phase_03_entity\n\
+                          graphical_culture = root\n\
+                      }")
+                  OK
+                  "scope graphical culture should try known graphical culture prefixes"
+
+              Expect.equal
+                  (validate
+                      "planet_entity = {\n\
+                          entity = habitat_phase_03_entity\n\
+                          graphical_culture = mammalian_01\n\
+                      }")
+                  OK
+                  "explicit matching graphical culture should resolve the prefixed entity"
+
+              match
+                  validate
+                      "planet_entity = {\n\
+                          entity = habitat_phase_03_entity\n\
+                          graphical_culture = reptilian_01\n\
+                      }"
+              with
+              | OK -> failtest "explicit known graphical culture should not try unrelated prefixes"
+              | Invalid _ -> ()
+
+              match
+                  validate
+                      "planet_entity = {\n\
+                          entity = habitat_phase_03_entity\n\
+                          graphical_culture = no\n\
+                      }"
+              with
+              | OK -> failtest "explicit no should disable type prefix fallback"
+              | Invalid _ -> ()
           testWithCapturedLogs "create_starbase effect in effect"
           <| fun () ->
               let input =
