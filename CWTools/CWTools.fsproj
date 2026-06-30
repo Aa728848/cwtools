@@ -2,7 +2,7 @@
     <PropertyGroup>
         <OutputType>Library</OutputType>
         <Tailcalls>true</Tailcalls>
-        <TargetFramework>net9.0</TargetFramework>
+        <TargetFramework>net10.0</TargetFramework>
     </PropertyGroup>
     <ItemGroup>
         <Compile Include="AssemblyInfo.fs"/>
@@ -107,7 +107,7 @@
     </ItemGroup>
     <ItemGroup>
       <PackageReference Update="FSharp.Core">
-        <Version>9.0.303</Version>
+        <Version>10.1.301</Version>
       </PackageReference>
     </ItemGroup>
     <ItemGroup>
@@ -118,7 +118,6 @@
         <PackageReference Include="FSharpx.Collections"/>
         <PackageReference Include="Sandwych.QuickGraph.Core"/>
         <PackageReference Include="VDS.Common"/>
-        <PackageReference Include="System.Text.Encoding.CodePages"/>
         <PackageReference Include="FsPickler"/>
         <PackageReference Include="SharpZipLib"/>
         <PackageReference Include="KTrie" />

@@ -2,7 +2,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <OutputType>Exe</OutputType>
-        <TargetFramework>net9.0</TargetFramework>
+        <TargetFramework>net10.0</TargetFramework>
         <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
         <PublishReadyToRunComposite>true</PublishReadyToRunComposite>
         <ValidateExecutableReferencesMatchSelfContained>false</ValidateExecutableReferencesMatchSelfContained>
@@ -36,7 +36,6 @@
     <ItemGroup>
         <PackageReference Include="Expecto"/>
         <PackageReference Include="FParsec"/>
-        <PackageReference Include="System.Text.Encoding.CodePages"/>
         <PackageReference Include="FsPickler"/>
         <PackageReference Include="FSharpx.Collections"/>
         <PackageReference Include="Argu"/>

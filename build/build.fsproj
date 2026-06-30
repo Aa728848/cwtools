@@ -3,7 +3,7 @@
     <PropertyGroup>
         <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
         <OutputType>Exe</OutputType>
-        <TargetFramework>net9.0</TargetFramework>
+        <TargetFramework>net10.0</TargetFramework>
         <FakeVersion>6.1.4</FakeVersion>
     </PropertyGroup>
     <ItemGroup>
