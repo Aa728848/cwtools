@@ -16,22 +16,24 @@ module STLValidation =
     type S = Severity
 
     /// Check if a string is an arithmetic expression (@[ or @\[ syntax)
-    let isArithmeticExpr (s: string) =
-        s.StartsWith("@[") || s.StartsWith(@"@\[")
+    let isArithmeticExpr = ScriptedVariableResolution.isArithmeticExpr
 
-    let getDefinedVariables (node: Node) =
+    let getDefinedVariableValues (node: Node) =
         let fNode =
             (fun (x: Node) acc ->
                 x.Leaves
                 |> Seq.fold
                     (fun a n ->
                         if n.Key.StartsWith('@') && not (isArithmeticExpr n.Key) then
-                            n.Key :: a
+                            (n.Key, n.Value.ToRawString()) :: a
                         else
                             a)
                     acc)
 
         node |> (foldNode7 fNode)
+
+    let getDefinedVariables (node: Node) =
+        node |> getDefinedVariableValues |> List.map fst
 
     /// Convert a parameterized variable name pattern to a regex pattern
     /// e.g., "@ra_fleet_base_$RESOURCE$_cost_$COUNTRY_TYPE$_country" -> "^@ra_fleet_base_[^_$@ ]+_cost_[^_$@ ]+_country$"
@@ -73,7 +75,14 @@ module STLValidation =
                             message = "Related source" } ] }
         | None -> error
 
-    let checkUsedVariables (node: Node) (variables: string list) =
+    let checkUsedVariables (node: Node) (variables: string list) (variableValues: (string * string) list) =
+        let variables = variables |> Set.ofList
+
+        let variableValues =
+            variableValues
+            |> Seq.distinctBy fst
+            |> Map.ofSeq
+
         let fNode =
             (fun (x: Node) children ->
                 let values =
@@ -114,7 +123,7 @@ module STLValidation =
                                         if varName.Contains("$") then
                                             false
                                         else
-                                            not (variables |> List.contains varName))
+                                            not (ScriptedVariableResolution.isKnownVariable variables variableValues varName))
                                     |> Seq.map (fun varName ->
                                         Invalid(Guid.NewGuid(), [ undefinedVariableError varName l ]))
                                     |> Seq.fold (<&&>) OK
@@ -124,7 +133,7 @@ module STLValidation =
                             // Parameters will be substituted when the scripted effect is called
                             elif v.Contains("$") then
                                 OK
-                            elif variables |> List.contains v then
+                            elif ScriptedVariableResolution.isKnownVariable variables variableValues v then
                                 OK
                             else
                                 Invalid(Guid.NewGuid(), [ undefinedVariableError v l ]))
@@ -228,13 +237,13 @@ module STLValidation =
 
     let validateVariables: STLStructureValidator =
         fun os es ->
-            let globalVarsFromEntities =
+            let globalVarPairsFromEntities =
                 os.GlobMatch("**/common/scripted_variables/*.txt")
                 @ es.GlobMatch("**/common/scripted_variables/*.txt")
-                |> List.map getDefinedVariables
+                |> List.map getDefinedVariableValues
                 |> List.collect id
 
-            let globalVars = globalVarsFromEntities |> List.distinct
+            let globalVars = globalVarPairsFromEntities |> List.map fst |> List.distinct
             let nodes = es.All
 
             let inlineScriptsToValidate =
@@ -299,9 +308,14 @@ module STLValidation =
             nodes
             <&!!&>
             (fun node ->
-                let defined = getDefinedVariables node
+                let definedPairs = getDefinedVariableValues node
+                let defined = definedPairs |> List.map fst
                 let callerVariables = callerVariablesFor node
-                let errors = checkUsedVariables node (defined @ callerVariables @ globalVars)
+                let errors =
+                    checkUsedVariables
+                        node
+                        (defined @ callerVariables @ globalVars)
+                        (definedPairs @ globalVarPairsFromEntities)
                 errors)
     //x |> List.fold (<&&>) OK
 

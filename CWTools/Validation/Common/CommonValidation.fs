@@ -380,8 +380,20 @@ module CommonValidation =
 
     // Common function to validate @variables after parameter substitution
     // Used by both valScriptedEffectParams and valScriptValueParams
-    let validateVariablesInExpandedNode (currentFilePath: string) (n: Node) callSite (globalVars: string list) =
+    let validateVariablesInExpandedNode
+        (currentFilePath: string)
+        (n: Node)
+        callSite
+        (globalVars: (string * string) list)
+        =
         try
+            let globalVarNames = globalVars |> List.map fst |> Set.ofList
+
+            let globalVarValues =
+                globalVars
+                |> Seq.distinctBy fst
+                |> Map.ofSeq
+
             let rec collectVars (node: Node) acc =
                 let acc =
                     if node.Key.StartsWith("@") && not (node.Key.StartsWith("@[")) && not (node.Key.StartsWith(@"@\[")) && not (node.Key.Contains("$")) then
@@ -407,7 +419,7 @@ module CommonValidation =
                 // Skip @[ array access syntax - this is not a scripted variable
                 if v.StartsWith("@[") || v.StartsWith(@"@\[") then
                     None
-                elif globalVars |> List.contains v then
+                elif ScriptedVariableResolution.isKnownVariable globalVarNames globalVarValues v then
                     None
                 else
                     Some(invManual (ErrorCodes.UndefinedVariable v) pos v None))
@@ -584,7 +596,7 @@ module CommonValidation =
                     foldOverNode seParams (stringReplace seParams) newNode
                     // eprintfn "%A %A" (CKPrinter.api.prettyPrintStatements newNode.ToRaw) (seParams)
                     // Validate variables after parameter substitution
-                    let varValidation = validateVariablesInExpandedNode logicalpath newNode callSite (lu.scriptedVariables |> List.map fst)
+                    let varValidation = validateVariablesInExpandedNode logicalpath newNode callSite lu.scriptedVariables
                     let ruleRes = rv.ManualRuleValidate(logicalpath, rootNode)
                     // eprintfn "%A %A" logicalpath res
                     let scriptedKind =
@@ -797,7 +809,7 @@ module CommonValidation =
                     foldOverNode seParams (stringReplace seParams) newNode
 
                     // Validate variables after parameter substitution
-                    let varValidation = validateVariablesInExpandedNode logicalpath newNode callSite (lu.scriptedVariables |> List.map fst)
+                    let varValidation = validateVariablesInExpandedNode logicalpath newNode callSite lu.scriptedVariables
                     //                    logInfo (sprintf "vsvp d %A %A" (CKPrinter.api.prettyPrintStatement newNode.ToRaw) (seParams))
                     let ruleRes = rv.ManualRuleValidate(logicalpath, rootNode)
                     // eprintfn "%A %A" logicalpath res

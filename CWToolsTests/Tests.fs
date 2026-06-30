@@ -1315,6 +1315,85 @@ let inlineScriptCompletionRegressionTests =
 
               Expect.isFalse (inlineDefaultLabels |> List.contains "expected_leaf") "Inline script callers should not match path defaults with pipe syntax"
 
+          testWithCapturedLogs "nested inline resolves string scripted variable suffixes" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/inlinescripts"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let varsFilename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "scripted_variables", "suffix_variable_regression.txt")
+                  )
+              let parentInlineFilename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "inline_scripts", "suffix_variable_parent.txt")
+                  )
+              let childInlineFilename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "inline_scripts", "suffix_variable_child.txt")
+                  )
+              let callerFilename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "script_consume", "suffix_variable_regression.txt")
+                  )
+
+              stl.UpdateFile
+                  false
+                  varsFilename
+                  (Some
+                      "@target_base = 0
+                       @target_base_suffix = 1
+                       @suffix_var = \"_suffix\"")
+              |> ignore
+              stl.UpdateFile
+                  false
+                  parentInlineFilename
+                  (Some
+                      "inline_script = {
+                           script = suffix_variable_child
+                           TARGET_SUFFIX = $TARGET_SUFFIX$
+                       }")
+              |> ignore
+              stl.UpdateFile
+                  false
+                  childInlineFilename
+                  (Some
+                      "country_event = {
+                           not_event = @target_base$TARGET_SUFFIX|\"\"$
+                       }")
+              |> ignore
+              stl.UpdateFile
+                  false
+                  callerFilename
+                  (Some
+                      "suffix_variable_regression = {
+                           inline_script = {
+                               script = suffix_variable_parent
+                               TARGET_SUFFIX = @suffix_var
+                           }
+                       }")
+              |> ignore
+
+              let diagnostics = stl.ValidationErrors()
+              let unresolvedSuffixErrors =
+                  diagnostics
+                  |> List.filter (fun error ->
+                      error.code = "CW101"
+                      && error.message.Contains("@target_base@suffix_var"))
+
+              Expect.isEmpty
+                  unresolvedSuffixErrors
+                  "Nested inline parameters should resolve string scripted variables before CW101 lookup"
+
           testWithCapturedLogs "parameterized inline CW101 expressions keep call-site provenance" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/inlinescripts"
               let configtext = configFilesFromDir folder

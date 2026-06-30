@@ -10,6 +10,59 @@ open CWTools.Games
 open CWTools.Common.STLConstants
 open System
 
+module ScriptedVariableResolution =
+    open System.Text.RegularExpressions
+
+    let isArithmeticExpr (s: string) =
+        s.StartsWith("@[") || s.StartsWith(@"@\[")
+
+    let private embeddedScriptedVariablePattern =
+        Regex(@"@[A-Za-z0-9_.:-]+", RegexOptions.Compiled)
+
+    let private isInlineableScriptedVariableValue (value: string) =
+        value.IndexOfAny([| ' '; '\t'; '\r'; '\n'; '{'; '}'; '=' |]) < 0
+
+    let resolveEmbeddedScriptedVariables (variableValues: Map<string, string>) (variable: string) =
+        if not (variable.StartsWith("@")) || isArithmeticExpr variable || variable.Length <= 1 then
+            variable
+        else
+            let replaceOnce (text: string) =
+                let suffix = text.Substring(1)
+                let mutable changed = false
+
+                let replacedSuffix =
+                    embeddedScriptedVariablePattern.Replace(
+                        suffix,
+                        MatchEvaluator(fun m ->
+                            match variableValues |> Map.tryFind m.Value with
+                            | Some value when isInlineableScriptedVariableValue value ->
+                                changed <- true
+                                value
+                            | _ -> m.Value)
+                    )
+
+                "@" + replacedSuffix, changed
+
+            let rec loop remaining text =
+                if remaining <= 0 then
+                    text
+                else
+                    let next, changed = replaceOnce text
+
+                    if changed && next <> text then
+                        loop (remaining - 1) next
+                    else
+                        next
+
+            loop 8 variable
+
+    let isKnownVariable (variables: Set<string>) (variableValues: Map<string, string>) (variable: string) =
+        if variables.Contains variable then
+            true
+        else
+            let resolved = resolveEmbeddedScriptedVariables variableValues variable
+            resolved <> variable && variables.Contains resolved
+
 
 type ErrorCode =
     { ID: string
