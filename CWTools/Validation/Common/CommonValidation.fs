@@ -1215,5 +1215,155 @@ module CommonValidation =
 
             res
 
+    let validateConfiguredOnActionEventTypes: LookupValidator<_> =
+        fun l os _ ->
+            let onActionConfigs = l.extendedConfigMetadata.onActions
+
+            if Map.isEmpty onActionConfigs then
+                OK
+            else
+                let typeExists typeName = l.typeDefInfo |> Map.containsKey typeName
+
+                let expectedTypeNames eventType =
+                    [ "event." + eventType
+                      eventType + "_event"
+                      eventType ]
+                    |> List.filter typeExists
+
+                let eventTypesById =
+                    l.typeDefInfo
+                    |> Map.toSeq
+                    |> Seq.filter (fun (typeName, _) ->
+                        typeName.Equals("event", StringComparison.OrdinalIgnoreCase)
+                        || typeName.StartsWith("event.", StringComparison.OrdinalIgnoreCase)
+                        || typeName.EndsWith("_event", StringComparison.OrdinalIgnoreCase))
+                    |> Seq.collect (fun (typeName, infos) -> infos |> Seq.map (fun info -> info.id, typeName))
+                    |> Seq.groupBy fst
+                    |> Seq.map (fun (id, values) -> id, values |> Seq.map snd |> Set.ofSeq)
+                    |> Map.ofSeq
+
+                let eventContainerKeys =
+                    set [ "events"; "random_events"; "first_valid"; "first_valid_on_action" ]
+
+                let collectEvents (onAction: Node) =
+                    let rec collect inEventContainer (node: Node) =
+                        let nowInEventContainer = inEventContainer || eventContainerKeys.Contains(node.Key)
+
+                        let own =
+                            if nowInEventContainer then
+                                seq {
+                                    for leafValue in node.LeafValues do
+                                        yield leafValue.ValueText, leafValue.Position
+
+                                    for leaf in node.Leaves do
+                                        yield leaf.ValueText, leaf.Position
+                                }
+                            else
+                                Seq.empty
+
+                        seq {
+                            yield! own
+
+                            for child in node.Nodes do
+                                yield! collect nowInEventContainer child
+                        }
+
+                    collect false onAction
+                    |> Seq.filter (fun (eventId, _) ->
+                        not (String.IsNullOrWhiteSpace eventId)
+                        && eventId.IndexOf('$') < 0
+                        && eventId.IndexOf('@') < 0)
+
+                let validateOnAction (onAction: Node) =
+                    match onActionConfigs |> Map.tryFind onAction.Key with
+                    | None -> Seq.empty
+                    | Some config ->
+                        let expected = expectedTypeNames config.eventType
+
+                        if List.isEmpty expected then
+                            Seq.empty
+                        else
+                            collectEvents onAction
+                            |> Seq.choose (fun (eventId, pos) ->
+                                let actualTypes =
+                                    eventTypesById |> Map.tryFind eventId |> Option.defaultValue Set.empty
+
+                                if expected |> List.exists actualTypes.Contains then
+                                    None
+                                else
+                                    Some(
+                                        invManual
+                                            (ErrorCodes.CustomError
+                                                $"On action %s{onAction.Key} expects %s{config.eventType} events, but %s{eventId} is not one."
+                                                Severity.Warning)
+                                            pos
+                                            eventId
+                                            None
+                                    ))
+
+                let errors =
+                    os.AllOfTypeChildren STLConstants.EntityType.OnActions
+                    |> Seq.collect validateOnAction
+                    |> Seq.toList
+
+                match errors with
+                | [] -> OK
+                | errors -> Invalid(Guid.NewGuid(), errors)
+
+    let validateDefinitionInjections: LookupValidator<_> =
+        fun l os _ ->
+            let tryInjectionKey (key: string) =
+                let index = key.IndexOf(':')
+
+                if index <= 0 || index >= key.Length - 1 then
+                    None
+                else
+                    let mode = key.Substring(0, index).ToUpperInvariant()
+                    let target = key.Substring(index + 1)
+
+                    match mode with
+                    | "INJECT"
+                    | "REPLACE"
+                    | "TRY_INJECT"
+                    | "TRY_REPLACE"
+                    | "INJECT_OR_CREATE"
+                    | "REPLACE_OR_CREATE" -> Some(mode, target)
+                    | _ -> None
+
+            let lenientModes =
+                set [ "TRY_INJECT"; "TRY_REPLACE"; "INJECT_OR_CREATE"; "REPLACE_OR_CREATE" ]
+
+            let knownTargets =
+                l.typeDefInfo
+                |> Map.toSeq
+                |> Seq.collect (fun (_, infos) -> infos |> Seq.map (fun info -> info.id.ToLowerInvariant()))
+                |> Set.ofSeq
+
+            let errors =
+                os.All
+                |> Seq.collect (fun root ->
+                    root.Nodes
+                    |> Seq.choose (fun node ->
+                        match tryInjectionKey node.Key with
+                        | Some(mode, target) when
+                            not (lenientModes.Contains mode)
+                            && not (knownTargets.Contains(target.ToLowerInvariant()))
+                            ->
+                            Some(
+                                invManual
+                                    (ErrorCodes.CustomError
+                                        $"Definition injection target %s{target} was not found for mode %s{mode}."
+                                        Severity.Warning)
+                                    node.Position
+                                    node.Key
+                                    None
+                            )
+                        | _ -> None))
+                |> Seq.toList
+
+            match errors with
+            | [] -> OK
+            | errors -> Invalid(Guid.NewGuid(), errors)
+
     let commonValidationRules =
         [ valUniqueTypes, "uniques"; validateUnusuedTypes, "requireds" ]

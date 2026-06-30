@@ -48,6 +48,8 @@ country_event = {
             test_lhs = OR
             test_rhs = yes
         }
+        #error
+        #error
         test_scripted_effect_params = {
             test_lhs = blah
             test_rhs = blah

@@ -61,8 +61,11 @@ type InfoService
         defaultLang,
         processLocalisation:
             Lang * Collections.Map<string, CWTools.Localisation.Entry> -> Lang * Collections.Map<string, LocEntry>,
-        validateLocalisation: LocEntry -> ScopeContext -> ValidationResult
+        validateLocalisation: LocEntry -> ScopeContext -> ValidationResult,
+        ?extendedConfigMetadata: ExtendedConfigMetadata
     ) =
+
+    let extendedConfigMetadata = defaultArg extendedConfigMetadata ExtendedConfigMetadata.empty
 
     let wildCardLinks =
         links.Values
@@ -495,6 +498,7 @@ type InfoService
         { varMap = varMap
           enumsMap = enums
           typesMap = types
+          databaseObjectTypes = extendedConfigMetadata.databaseObjectTypes
           linkMap = links
           valueTriggerMap = valueTriggers
           varSet = varSet

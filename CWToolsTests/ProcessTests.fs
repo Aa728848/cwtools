@@ -92,6 +92,389 @@ let validateLocalisationLazy =
          |> snd)
 
 [<Tests>]
+let plsConfigCompatibilityTests =
+    let anyScope = scopeManager.AnyScope
+    let parseAnyScope _ = anyScope
+
+    let parseField text =
+        RulesParser.processTagAsField parseAnyScope anyScope Map.empty text
+
+    let typeInfo id =
+        { id = id
+          validate = true
+          range = range.Zero
+          explicitLocalisation = []
+          subtypes = [] }
+
+    let emptyComputedData =
+        lazy (STLComputedData(None, None, None, false, None, None, None))
+
+    testSequenced
+    <|
+    testList
+        "PLS config compatibility"
+        [ testCase "recognises PLS extension data expressions"
+          <| fun () ->
+              match parseField "dynamic_value[event_target]" with
+              | DynamicValueField "event_target" -> ()
+              | other -> failtestf "Expected dynamic value field, got %A" other
+
+              match parseField "$define_reference", parseField "$array_define_reference", parseField "$tags[law]" with
+              | DefineReferenceField, ArrayDefineReferenceField, TagsField("law", false) -> ()
+              | other -> failtestf "Expected PLS reference fields, got %A" other
+
+              match parseField "$database_object", parseField "name_format[character]" with
+              | DatabaseObjectField, NameFormatField "character" -> ()
+              | other -> failtestf "Expected PLS database/name-format fields, got %A" other
+
+          testCase "parses open and closed value field ranges"
+          <| fun () ->
+              match parseField "value_field[0.0..inf)" with
+              | ValueScopeMarkerField(false, (min, max)) ->
+                  Expect.equal min 0.0M "Minimum should come from the range"
+                  Expect.equal
+                      max
+                      RulesParserConstants.floatFieldDefaultMaximum
+                      "inf should map to the default maximum"
+              | other -> failtestf "Expected ranged value field, got %A" other
+
+              match parseField "int_value_field(-100..100]" with
+              | ValueScopeMarkerField(true, (min, max)) ->
+                  Expect.equal min -100M "Minimum should come from the range"
+                  Expect.equal max 100M "Maximum should come from the range"
+              | other -> failtestf "Expected ranged int value field, got %A" other
+
+          testCase "parses safe assignment spellings"
+          <| fun () ->
+              let parseOne text =
+                  match CKParser.parseString text "safe_assign.txt" with
+                  | Success([ KeyValue(PosKeyValue(_, KeyValueItem(key, _, op))) ], _, _) -> key, op
+                  | Success(result, _, _) -> failtestf "Unexpected parse tree: %A" result
+                  | Failure(e, _, _) -> failtestf "Parse failed: %s" e
+
+              let key1, op1 = parseOne "owner ?= { x = y }"
+              let key2, op2 = parseOne "owner ? = { x = y }"
+              let key3, op3 = parseOne "owner? = { x = y }"
+
+              Expect.equal (key1, op1) ("owner", Operator.QuestionEqual) "owner ?= should parse as ?="
+              Expect.equal (key2, op2) ("owner", Operator.QuestionSpaceEqual) "owner ? = should preserve spaced operator"
+              Expect.equal (key3, op3) ("owner?", Operator.Equals) "owner? = remains the legacy optional scope spelling"
+
+          testCase "loads PLS link extensions"
+          <| fun () ->
+              let linksText =
+                  String.concat
+                      "\n"
+                      [ "links = {"
+                        "    active_outbreak = {"
+                        "        input_scope = country"
+                        "        output_scope = planet"
+                        "        type = both"
+                        "        from_argument = yes"
+                        "        argument_separator = pipe"
+                        "        for_definition_type = law"
+                        "        prefix = active_outbreak"
+                        "        data_source = <country>"
+                        "        data_source = dynamic_value[event_target]"
+                        "    }"
+                        "}" ]
+
+              let links =
+                  UtilityParser.loadEventTargetLinks
+                      anyScope
+                      parseAnyScope
+                      [ anyScope ]
+                      "links.cwt"
+                      linksText
+
+              Expect.hasLength links 2 "Each data_source should become a data link"
+
+              let sources =
+                  links
+                  |> List.choose (function
+                      | DataLink l ->
+                          Expect.isTrue l.fromArgument "from_argument should be preserved"
+                          Expect.equal l.argumentSeparator (Some "pipe") "argument_separator should be preserved"
+                          Expect.equal l.forDefinitionType (Some "law") "for_definition_type should be preserved"
+                          Some l.sourceRuleType
+                      | _ -> None)
+
+              Expect.contains sources "<country>" "First data source should be preserved"
+              Expect.contains sources "dynamic_value[event_target]" "Second data source should be preserved"
+
+          testCase "parses PLS extended metadata blocks"
+          <| fun () ->
+              let config =
+                  String.concat
+                      "\n"
+                      [ "priorities = {"
+                        "    type[law] = replace"
+                        "}"
+                        "system_scopes = {"
+                        "    ## Country scope"
+                        "    country = {"
+                        "        base_id = scope"
+                        "        name = Country"
+                        "    }"
+                        "}"
+                        "locales = {"
+                        "    ## Turkish"
+                        "    l_turkish = {"
+                        "        supports = yes"
+                        "        codes = { tr turkish }"
+                        "    }"
+                        "}"
+                        "database_object_types = {"
+                        "    law = {"
+                        "        type = law"
+                        "        swap_type = institution"
+                        "        localisation = law_"
+                        "    }"
+                        "}"
+                        "on_actions = {"
+                        "    on_test_action = {"
+                        "        ## event_type = country"
+                        "        ## hint = Country event only"
+                        "    }"
+                        "}" ]
+
+              let _, _, _, _, _, metadata =
+                  RulesParser.parseConfigWithMetadata
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      "pls.cwt"
+                      config
+
+              Expect.equal metadata.priorities.["type[law]"].strategy "replace" "Priority strategy should be parsed"
+              Expect.equal metadata.systemScopes.["country"].baseId (Some "scope") "System scope base_id should be parsed"
+              Expect.equal metadata.locales.["l_turkish"].supports (Some true) "Locale support flag should be parsed"
+              Expect.sequenceEqual metadata.locales.["l_turkish"].codes [| "tr"; "turkish" |] "Locale codes should be parsed"
+              Expect.equal metadata.databaseObjectTypes.["law"].objectType (Some "law") "Database object type should be parsed"
+              Expect.equal metadata.databaseObjectTypes.["law"].swapType (Some "institution") "Database object swap_type should be parsed"
+              Expect.equal metadata.onActions.["on_test_action"].eventType "country" "On action event_type should be parsed"
+              Expect.equal metadata.onActions.["on_test_action"].hint (Some "Country event only") "On action hint should be parsed"
+
+          testCase "builds combined from_argument data links"
+          <| fun () ->
+              let linksText =
+                  String.concat
+                      "\n"
+                      [ "links = {"
+                        "    active_outbreak = {"
+                        "        input_scope = country"
+                        "        output_scope = state"
+                        "        type = scope"
+                        "        from_argument = yes"
+                        "        argument_separator = pipe"
+                        "        data_source = <country>"
+                        "        data_source = <state>"
+                        "    }"
+                        "}" ]
+
+              let links =
+                  UtilityParser.loadEventTargetLinks
+                      anyScope
+                      parseAnyScope
+                      [ anyScope ]
+                      "links.cwt"
+                      linksText
+
+              let lookup = STLLookup()
+
+              lookup.typeDefInfo <-
+                  Map.ofList
+                      [ "country", [| typeInfo "c1"; typeInfo "c2" |]
+                        "state", [| typeInfo "s1" |] ]
+
+              let embedded = { emptyEmbeddedSettings with eventTargetLinks = links }
+
+              let names =
+                  CWTools.Games.Helpers.addDataEventTargetLinks lookup embedded false
+                  |> List.map (fun e -> CWTools.Utilities.StringResource.stringManager.GetStringForIDs e.Name)
+
+              Expect.contains names "active_outbreak(c1|s1)" "First combined argument link should be generated"
+              Expect.contains names "active_outbreak(c2|s1)" "Second combined argument link should be generated"
+
+          testWithCapturedLogs "validates configured database_object fields"
+          <| fun () ->
+              let config =
+                  String.concat
+                      "\n"
+                      [ "types = {"
+                        "    type[law] = { path = \"game/common/laws\" }"
+                        "    type[institution] = { path = \"game/common/institutions\" }"
+                        "}"
+                        "database_object_types = {"
+                        "    law = {"
+                        "        type = law"
+                        "        swap_type = institution"
+                        "        localisation = law_"
+                        "    }"
+                        "}"
+                        "test_object = {"
+                        "    ## cardinality = 1..1"
+                        "    object = $database_object"
+                        "}" ]
+
+              let rules, types, _, _, _, metadata =
+                  RulesParser.parseConfigWithMetadata
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      "database_object.cwt"
+                      config
+
+              let typeRules =
+                  rules
+                  |> List.choose (function
+                      | TypeRule(_, rs) -> Some rs
+                      | _ -> None)
+                  |> Array.ofList
+
+              let typeMap =
+                  [ "law", createStringSet [ "free_speech" ]
+                    "institution", createStringSet [ "schools" ] ]
+                  |> Map.ofList
+
+              let apply =
+                  RuleValidationService(
+                      RulesWrapper(rules |> List.toArray),
+                      types,
+                      typeMap.ToFrozenDictionary(),
+                      FrozenDictionary.Empty,
+                      FrozenDictionary.Empty,
+                      [||],
+                      FrozenSet.Empty,
+                      EffectMap(),
+                      EffectMap(),
+                      (scopeManager.ParseScope () "Any"),
+                      changeScope,
+                      defaultContext,
+                      STL STLLang.Default,
+                      processLocalisationLazy.Value,
+                      validateLocalisationLazy.Value,
+                      extendedConfigMetadata = metadata
+                  )
+
+              let validate value =
+                  let input = $"test_object = {{\n    object = \"%s{value}\"\n}}"
+
+                  match CKParser.parseString input "database_object.txt" with
+                  | Success(r, _, _) ->
+                      let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+                      apply.ApplyNodeRule(typeRules, node)
+                  | Failure(e, _, _) -> failtest e
+
+              match validate "law:free_speech:schools" with
+              | OK -> ()
+              | Invalid(_, errors) -> failtestf "Valid database object should pass, got %A" errors
+
+              match validate "law:missing:schools" with
+              | OK -> failtest "Unknown database object id should fail"
+              | Invalid(_, errors) -> Expect.hasLength errors 1 "Only the unknown object id should be reported"
+
+              match validate "law:free_speech:missing" with
+              | OK -> failtest "Unknown database object swap id should fail"
+              | Invalid(_, errors) -> Expect.hasLength errors 1 "Only the unknown swap id should be reported"
+
+              match validate "unknown:free_speech" with
+              | OK -> failtest "Unknown database object prefix should fail"
+              | Invalid(_, errors) -> Expect.hasLength errors 1 "Only the unknown prefix should be reported"
+
+          testWithCapturedLogs "validates configured on_action event types"
+          <| fun () ->
+              let config =
+                  String.concat
+                      "\n"
+                      [ "on_actions = {"
+                        "    on_test_action = {"
+                        "        ## event_type = country"
+                        "    }"
+                        "}" ]
+
+              let _, _, _, _, _, metadata =
+                  RulesParser.parseConfigWithMetadata
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      "on_actions.cwt"
+                      config
+
+              let input =
+                  "on_test_action = {\n\
+                       events = { country.1 character.1 }\n\
+                   }"
+
+              match CKParser.parseString input "common/on_actions/test.txt" with
+              | Success(r, _, _) ->
+                  let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+
+                  let entity =
+                      { filepath = "common/on_actions/test.txt"
+                        logicalpath = "common/on_actions/test.txt"
+                        rawEntity = node
+                        entity = node
+                        validate = true
+                        entityType = EntityType.OnActions
+                        overwrite = Overwrite.No }
+
+                  let lookup = STLLookup()
+                  lookup.extendedConfigMetadata <- metadata
+
+                  lookup.typeDefInfo <-
+                      Map.ofList
+                          [ "country_event", [| typeInfo "country.1" |]
+                            "character_event", [| typeInfo "character.1" |] ]
+
+                  let entities = EntitySet<STLComputedData>([ struct (entity, emptyComputedData) ])
+
+                  match CWTools.Validation.Common.CommonValidation.validateConfiguredOnActionEventTypes lookup entities entities with
+                  | OK -> failtest "Wrong event type should be reported"
+                  | Invalid(_, errors) ->
+                      Expect.hasLength errors 1 "Only the character event should be reported"
+                      Expect.stringContains (errors |> List.head).message "expects country events" "Message should name the expected event type"
+              | Failure(e, _, _) -> failtest e
+
+          testWithCapturedLogs "validates definition injection targets"
+          <| fun () ->
+              let input =
+                  "REPLACE:known_target = { }\n\
+                   REPLACE:missing_target = { }\n\
+                   TRY_REPLACE:missing_target = { }\n\
+                   REPLACE_OR_CREATE:new_target = { }"
+
+              match CKParser.parseString input "common/laws/test.txt" with
+              | Success(r, _, _) ->
+                  let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+
+                  let entity =
+                      { filepath = "common/laws/test.txt"
+                        logicalpath = "common/laws/test.txt"
+                        rawEntity = node
+                        entity = node
+                        validate = true
+                        entityType = EntityType.Other
+                        overwrite = Overwrite.No }
+
+                  let lookup = STLLookup()
+
+                  lookup.typeDefInfo <-
+                      Map.ofList [ "law", [| typeInfo "known_target" |] ]
+
+                  let entities = EntitySet<STLComputedData>([ struct (entity, emptyComputedData) ])
+
+                  match CWTools.Validation.Common.CommonValidation.validateDefinitionInjections lookup entities entities with
+                  | OK -> failtest "Strict injection mode should report a missing target"
+                  | Invalid(_, errors) ->
+                      Expect.hasLength errors 1 "Only strict REPLACE should report the missing target"
+                      Expect.stringContains (errors |> List.head).message "missing_target" "Message should name the missing target"
+              | Failure(e, _, _) -> failtest e ]
+
+[<Tests>]
 let legacyLocalisationCommandTests =
     let validate command =
         let staticSettings: CWTools.Process.Localisation.LegacyLocStaticSettings =

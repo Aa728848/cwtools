@@ -38,8 +38,11 @@ type RuleValidationService
         defaultLang,
         processLocalisation:
             Lang * Collections.Map<string, CWTools.Localisation.Entry> -> Lang * Collections.Map<string, LocEntry>,
-        validateLocalisation: LocEntry -> ScopeContext -> ValidationResult
+        validateLocalisation: LocEntry -> ScopeContext -> ValidationResult,
+        ?extendedConfigMetadata: ExtendedConfigMetadata
     ) =
+
+    let extendedConfigMetadata = defaultArg extendedConfigMetadata ExtendedConfigMetadata.empty
 
     let linkMap = links
     let valueTriggerMap = valueTriggers
@@ -226,6 +229,7 @@ type RuleValidationService
         { varMap = varMap
           enumsMap = enumsMap
           typesMap = typesMap
+          databaseObjectTypes = extendedConfigMetadata.databaseObjectTypes
           linkMap = linkMap
           valueTriggerMap = valueTriggerMap
           varSet = varSet

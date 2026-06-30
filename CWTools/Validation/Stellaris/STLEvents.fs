@@ -554,7 +554,10 @@ module STLEventValidation =
 
             let projectsWithTags = projects |> List.map (fun p -> p, p.TagText("key"))
 
-            let chains =
+            let eventIds =
+                events |> List.map (fun f -> f.TagText "id")
+
+            let chainIds =
                 events
                 |> List.collect (fun event ->
                     findAllReferencedEvents projectsWithTags event
@@ -563,10 +566,21 @@ module STLEventValidation =
                 //|> (fun f -> log "%A" f; f)
                 |> List.collect (fun (s, t) -> [ s, t; t, s ])
                 //|> (fun f -> log "%A" f; f)
-                //|> (fun es -> (graph2AdjacencyGraph (events |> List.map (fun f -> f.ID), es)))
-                |> (fun es -> (events |> List.map (fun f -> f.TagText "id"), es))
+                //|> (fun es -> (graph2AdjacencyGraph (eventIds, es)))
+                |> (fun es -> (eventIds, es))
                 |> connectedComponents
                 //|> (fun f -> log "%A" f; f)
+
+            let idsInChains =
+                chainIds |> List.collect id |> Set.ofList
+
+            let singletonChainIds =
+                eventIds
+                |> List.filter (fun eventId -> not (idsInChains.Contains eventId))
+                |> List.map (fun eventId -> [ eventId ])
+
+            let chains =
+                (chainIds @ singletonChainIds)
                 |> List.map (fun set -> set |> List.map (fun event -> eids.[event]))
 
             if chains |> List.isEmpty then
@@ -589,13 +603,36 @@ module STLEventValidation =
                     |> List.map findAllSavedGlobalEventTargets
                     |> List.fold Set.union Set.empty
 
-                // Also collect ALL save_event_target_as from all effect blocks in the workspace.
-                // This prevents false positives when targets are set in on_actions, decisions,
-                // scripted effects, or events outside the current chain.
-                let allSavedTargets =
+                let isEventFile (fileName: string) =
+                    let normalized = fileName.Replace('\\', '/')
+                    normalized.IndexOf("/events/", StringComparison.OrdinalIgnoreCase) >= 0
+
+                let isScriptedEffectFile (fileName: string) =
+                    let normalized = fileName.Replace('\\', '/')
+                    normalized.IndexOf("/common/scripted_effects/", StringComparison.OrdinalIgnoreCase) >= 0
+
+                let ambientSavedTargetEffects =
                     effects
+                    |> List.filter (fun e ->
+                        not (isEventFile e.Position.FileName)
+                        && not (isScriptedEffectFile e.Position.FileName))
+
+                let dynamicEventSavedTargets =
+                    effects
+                    |> List.filter (fun e -> isEventFile e.Position.FileName)
                     |> List.map findAllSavedEventTargets
                     |> List.fold Set.union Set.empty
+                    |> Set.filter (fun target -> target.Contains("@"))
+
+                // Also collect ALL save_event_target_as from all effect blocks in the workspace.
+                // This prevents false positives when targets are set in on_actions, decisions,
+                // or other non-event entry points, without leaking local event targets between
+                // unrelated events or treating scripted-effect definitions as implicit calls.
+                let allSavedTargets =
+                    ambientSavedTargetEffects
+                    |> List.map findAllSavedEventTargets
+                    |> List.fold Set.union Set.empty
+                    |> Set.union dynamicEventSavedTargets
 
                 // Saves performed through parameterised scripted-effect calls anywhere
                 // in the workspace (local and global), substituted with each call
@@ -605,7 +642,7 @@ module STLEventValidation =
                     seffects |> List.map (fun se -> se.Name.lower, se) |> Map.ofList
 
                 let substitutedCallSaves =
-                    effects
+                    ambientSavedTargetEffects
                     |> List.map (findSubstitutedCallSaves effectsByName)
                     |> List.fold Set.union Set.empty
 

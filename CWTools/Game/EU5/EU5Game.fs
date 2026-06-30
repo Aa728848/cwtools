@@ -96,7 +96,11 @@ type EU5Game(setupSettings: EU5Settings) =
           heavyExperimentalValidators = []
           experimental = false
           fileValidators = []
-          lookupValidators = (validateUndefinedModifierTypes, "undefinedmodifiers") :: commonValidationRules
+          lookupValidators =
+            [ validateUndefinedModifierTypes, "undefinedmodifiers"
+              validateDefinitionInjections, "definitioninjections"
+              validateConfiguredOnActionEventTypes, "configuredonactioneventtypes" ]
+            @ commonValidationRules
           lookupFileValidators = []
           useRules = true
           debugRulesOnly = false

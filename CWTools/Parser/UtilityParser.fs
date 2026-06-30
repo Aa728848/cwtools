@@ -13,9 +13,14 @@ module UtilityParser =
         let desc = node.TagText "desc"
 
         let inputScopes =
-            match node.TagText "input_scopes", node.Child "input_scopes" with
-            | x, _ when x <> "" -> [ parseScope (node.TagText "input_scopes") ]
-            | "", Some child ->
+            match node.TagText "input_scopes", node.Child "input_scopes", node.TagText "input_scope", node.Child "input_scope" with
+            | x, _, _, _ when x <> "" -> [ parseScope x ]
+            | "", Some child, _, _ ->
+                child.LeafValues
+                |> List.ofSeq
+                |> List.map (fun lv -> lv.ValueText |> parseScope)
+            | _, _, x, _ when x <> "" -> [ parseScope x ]
+            | _, _, "", Some child ->
                 child.LeafValues
                 |> List.ofSeq
                 |> List.map (fun lv -> lv.ValueText |> parseScope)
@@ -34,34 +39,46 @@ module UtilityParser =
             | "both" -> DataLinkType.Both
             | _ -> DataLinkType.Scope
 
-        match node.TagText "from_data" with
-        | "yes" ->
-            DataLink
-                { EventTargetDataLink.name = name
-                  inputScopes = inputScopes
-                  outputScope = outputScope
-                  description = desc
-                  dataPrefix = node.TagText "prefix" |> (fun s -> if s = "" then None else Some s)
-                  sourceRuleType = node.TagText "data_source"
-                  dataLinkType = dataLinkType }
-        | _ ->
+        let sourceRuleTypes = node.TagsText "data_source" |> Array.toList
+
+        let fromData = node.TagText "from_data" == "yes"
+        let fromArgument = node.TagText "from_argument" == "yes"
+        let dynamicLink = fromData || fromArgument || sourceRuleTypes.Length > 0 || node.Has "prefix"
+
+        match dynamicLink, sourceRuleTypes with
+        | true, [] -> []
+        | true, sources ->
+            sources
+            |> List.map (fun sourceRuleType ->
+                DataLink
+                    { EventTargetDataLink.name = name
+                      inputScopes = inputScopes
+                      outputScope = outputScope
+                      description = desc
+                      dataPrefix = node.TagText "prefix" |> (fun s -> if s = "" then None else Some s)
+                      sourceRuleType = sourceRuleType
+                      fromArgument = fromArgument
+                      argumentSeparator = node.TagText "argument_separator" |> (fun s -> if s = "" then None else Some s)
+                      forDefinitionType = node.TagText "for_definition_type" |> (fun s -> if s = "" then None else Some s)
+                      dataLinkType = dataLinkType })
+        | false, _ ->
             let effectType =
                 if dataLinkType = DataLinkType.Value then
                     EffectType.ValueTrigger
                 else
                     EffectType.Link
 
-            SimpleLink(
-                ScopedEffect(
-                    StringResource.stringManager.InternIdentifierToken name,
-                    inputScopes,
-                    Some outputScope,
-                    effectType,
-                    desc,
-                    "",
-                    true
-                )
-            )
+            [ SimpleLink(
+                  ScopedEffect(
+                      StringResource.stringManager.InternIdentifierToken name,
+                      inputScopes,
+                      Some outputScope,
+                      effectType,
+                      desc,
+                      "",
+                      true
+                  )
+              ) ]
 
     let loadEventTargetLinks anyScope parseScope allScopes filename fileString =
         let parsed = CKParser.parseString fileString filename
@@ -75,7 +92,7 @@ module UtilityParser =
                 CWTools.Process.STLProcess.simpleProcess.ProcessNode () "root" (mkZeroFile filename) s
 
             root.Child "links"
-            |> Option.map (fun l -> l.Children |> List.map (parseLink anyScope parseScope allScopes))
+            |> Option.map (fun l -> l.Children |> List.collect (parseLink anyScope parseScope allScopes))
             |> Option.defaultValue []
 
     let private parseScopeDef (node: Node) =

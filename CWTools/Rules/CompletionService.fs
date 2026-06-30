@@ -65,8 +65,11 @@ type CompletionService
         dataTypes: CWTools.Parser.DataTypeParser.JominiLocDataTypes,
         processLocalisation:
             Lang * Collections.Map<string, CWTools.Localisation.Entry> -> Lang * Collections.Map<string, LocEntry>,
-        validateLocalisation: LocEntry -> ScopeContext -> CWTools.Validation.ValidationResult
+        validateLocalisation: LocEntry -> ScopeContext -> CWTools.Validation.ValidationResult,
+        ?extendedConfigMetadata: ExtendedConfigMetadata
     ) =
+
+    let extendedConfigMetadata = defaultArg extendedConfigMetadata ExtendedConfigMetadata.empty
 
     let typesMap = types //|> Map.toSeq |> PSeq.map (fun (k, s) -> k, StringSet.Create(InsensitiveStringComparer(), (s |> List.map fst))) |> Map.ofSeq
 
@@ -792,6 +795,56 @@ type CompletionService
             |> Seq.map CompletionResponse.CreateSimple
             |> Seq.toArray
 
+        let databaseObjectCompletionItems (value: string) =
+            let configuredTypes = extendedConfigMetadata.databaseObjectTypes
+
+            if Map.isEmpty configuredTypes then
+                [||]
+            else
+                let raw = value.Trim().Trim('"')
+
+                let typedValues typeName =
+                    types.TryFind(typeName) |> Option.defaultValue []
+
+                let localisationValues prefix =
+                    defaultKeys
+                    |> Seq.filter (fun key ->
+                        String.IsNullOrWhiteSpace prefix
+                        || key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    |> Seq.toList
+
+                let objectValues (config: DatabaseObjectTypeConfig) =
+                    match config.objectType, config.localisationPrefix with
+                    | Some typeName, _ -> typedValues typeName
+                    | None, Some prefix -> localisationValues prefix
+                    | None, None -> []
+
+                let completions =
+                    if not (raw.Contains ':') then
+                        configuredTypes
+                        |> Map.toSeq
+                        |> Seq.map (fun (name, _) -> name + ":")
+                    else
+                        let parts = raw.Split([| ':' |], StringSplitOptions.None)
+                        let prefix = parts.[0]
+
+                        match configuredTypes |> Map.tryFind prefix with
+                        | None -> Seq.empty
+                        | Some config when parts.Length <= 2 ->
+                            objectValues config
+                            |> Seq.map (fun id -> prefix + ":" + id)
+                        | Some config ->
+                            match config.swapType with
+                            | Some swapType ->
+                                typedValues swapType
+                                |> Seq.map (fun id -> prefix + ":" + parts.[1] + ":" + id)
+                            | None -> Seq.empty
+
+                completions
+                |> Seq.distinctBy (fun value -> value.ToLowerInvariant())
+                |> Seq.map CompletionResponse.CreateSimple
+                |> Seq.toArray
+
         let fieldToRules (field: NewField) (value: string) (scopeContext: ScopeContext) (options: Options) =
             //            log (sprintf "%A %A" field value)
             //            eprintfn "%A" value
@@ -846,6 +899,17 @@ type CompletionService
                     |> Option.map (fun ss -> ss.StringValues |> Array.ofSeq)
                     |> Option.defaultValue [||]
                     |> Array.map CompletionResponse.CreateSimple
+                | NewField.DynamicValueField v ->
+                    varMap.TryFind v
+                    |> Option.map (fun ss -> ss.StringValues |> Array.ofSeq)
+                    |> Option.defaultValue [||]
+                    |> Array.map CompletionResponse.CreateSimple
+                | NewField.TagsField(v, _) ->
+                    varMap.TryFind v
+                    |> Option.map (fun ss -> ss.StringValues |> Array.ofSeq)
+                    |> Option.defaultValue [||]
+                    |> Array.map CompletionResponse.CreateSimple
+                | NewField.DatabaseObjectField -> databaseObjectCompletionItems value
                 | NewField.AliasValueKeysField aliasKey ->
                     aliasKeyMap
                     |> Map.tryFind aliasKey
@@ -871,6 +935,7 @@ type CompletionService
             { varMap = varMap
               enumsMap = enumsMap
               typesMap = typesMap
+              databaseObjectTypes = extendedConfigMetadata.databaseObjectTypes
               linkMap = linkMap
               valueTriggerMap = valueTriggerMap
               varSet = varSet

@@ -56,6 +56,21 @@ module Helpers =
                 |> Option.defaultValue Seq.empty
             | _ -> Seq.empty
 
+        let valuesFromVarDef (lookup: Lookup) name =
+            lookup.varDefInfo
+            |> Map.tryFind name
+            |> Option.map (Array.map (fun (value, _) -> value, None))
+            |> Option.defaultValue [||]
+
+        let valuesFromTypeDef (lookup: Lookup) name =
+            lookup.typeDefInfo
+            |> Map.tryFind name
+            |> Option.map (Array.map (fun tdi -> tdi.id, Some(TypeRef(name, tdi.id))))
+            |> Option.defaultValue [||]
+
+        let getDataExpressionSetting (expressionName: string) (text: string) =
+            RulesParser.getSettingFromString text expressionName
+
         let convertSourceRuleType (lookup: Lookup) (link: EventTargetDataLink) =
             match link.sourceRuleType.Trim() with
             | x when x.StartsWith '<' && x.EndsWith '>' ->
@@ -82,6 +97,54 @@ module Helpers =
                 | None ->
                     log (sprintf "Link %s refers to undefined value %A" link.name valuename)
                     [||]
+            | x when x.StartsWith "dynamic_value[" ->
+                match getDataExpressionSetting "dynamic_value" x with
+                | Some valueName ->
+                    let values = valuesFromVarDef lookup valueName
+
+                    if values.Length = 0 then
+                        log (sprintf "Link %s refers to undefined dynamic value %s" link.name valueName)
+
+                    values
+                | None -> [||]
+            | "$script_value_reference" ->
+                let values =
+                    [| yield! valuesFromTypeDef lookup "script_value"
+                       yield! valuesFromTypeDef lookup "scripted_value"
+                       yield! valuesFromVarDef lookup "script_value"
+                       yield! valuesFromVarDef lookup "scripted_value" |]
+                    |> Array.distinctBy fst
+
+                if values.Length = 0 then
+                    log (sprintf "Link %s refers to undefined script value references" link.name)
+
+                values
+            | "$define_reference"
+            | "$array_define_reference" -> [||]
+            | "$database_object" ->
+                lookup.extendedConfigMetadata.databaseObjectTypes
+                |> Map.toSeq
+                |> Seq.collect (fun (_, config) ->
+                    match config.objectType with
+                    | Some typeName ->
+                        lookup.typeDefInfo
+                        |> Map.tryFind typeName
+                        |> Option.map (fun values ->
+                            values
+                            |> Array.map (fun tdi -> config.name + ":" + tdi.id, Some(TypeRef(typeName, tdi.id))))
+                        |> Option.defaultValue [||]
+                    | None -> [||])
+                |> Seq.toArray
+            | x when x.StartsWith "$tags[" || x.StartsWith "$tags_condition[" ->
+                let expressionName =
+                    if x.StartsWith "$tags_condition[" then
+                        "$tags_condition"
+                    else
+                        "$tags"
+
+                match getDataExpressionSetting expressionName x with
+                | Some valueName -> valuesFromVarDef lookup valueName
+                | None -> [||]
             | x when x.StartsWith "alias_keys_field[" ->
                 let aliasKeyMap =
                     let resDict = Dictionary<string, string array>()
@@ -110,7 +173,35 @@ module Helpers =
 
         let getWildCard (link: EventTargetDataLink) =
             match link.sourceRuleType.Trim(), link.dataPrefix with
-            | x, Some prefix when x.StartsWith "value[" ->
+            | _, prefix when link.fromArgument ->
+                let functionName = prefix |> Option.defaultValue link.name
+
+                Some(
+                    ScopedEffect(
+                        StringResource.stringManager.InternIdentifierToken(functionName + "("),
+                        link.inputScopes,
+                        Some link.outputScope,
+                        EffectType.Link,
+                        link.description,
+                        "",
+                        true,
+                        [],
+                        true,
+                        false,
+                        true,
+                        None
+                    )
+                )
+            | x, Some prefix when
+                x.StartsWith "value["
+                || x.StartsWith "dynamic_value["
+                || x = "$script_value_reference"
+                || x = "$define_reference"
+                || x = "$array_define_reference"
+                || x = "$database_object"
+                || x.StartsWith "$tags["
+                || x.StartsWith "$tags_condition["
+                ->
                 Some(
                     ScopedEffect(
                         StringResource.stringManager.InternIdentifierToken prefix,
@@ -140,9 +231,13 @@ module Helpers =
 
             let inline keyToEffect (key: string, refHint: ReferenceHint option) =
                 let prefkey =
-                    link.dataPrefix
-                    |> Option.map (fun pref -> pref + key)
-                    |> Option.defaultValue key
+                    if link.fromArgument then
+                        let functionName = link.dataPrefix |> Option.defaultValue link.name
+                        functionName + "(" + key + ")"
+                    else
+                        link.dataPrefix
+                        |> Option.map (fun pref -> pref + key)
+                        |> Option.defaultValue key
 
                 seq {
 
@@ -199,6 +294,7 @@ module Helpers =
                                 false,
                                 refHint
                             )
+                    | _ -> ()
                 }
 
             let all = typeDefinedKeys |> Seq.collect keyToEffect
@@ -212,7 +308,132 @@ module Helpers =
                 | None -> ()
             }
 
-        links |> Seq.collect convertLinkToEffects |> Seq.cast<Effect> |> List.ofSeq
+        let convertArgumentLinkGroupToEffects (links: EventTargetDataLink array) =
+            match links with
+            | [||] -> Seq.empty
+            | _ ->
+                let template = links.[0]
+                let values = links |> Array.map (convertSourceRuleType lookup)
+
+                let all =
+                    if values |> Array.exists Array.isEmpty then
+                        Seq.empty
+                    else
+                        let rec combine index acc =
+                            seq {
+                                if index >= values.Length then
+                                    yield List.rev acc
+                                else
+                                    for value in values.[index] do
+                                        yield! combine (index + 1) (value :: acc)
+                            }
+
+                        let separator =
+                            match template.argumentSeparator |> Option.map (fun s -> s.Trim().ToLowerInvariant()) with
+                            | Some "pipe" -> "|"
+                            | _ -> ","
+
+                        let functionName = template.dataPrefix |> Option.defaultValue template.name
+
+                        let inline keyToEffect (args: (string * ReferenceHint option) list) =
+                            let key = args |> List.map fst |> String.concat separator
+
+                            let refHint =
+                                match args with
+                                | [ (_, refHint) ] -> refHint
+                                | _ -> None
+
+                            let prefkey = functionName + "(" + key + ")"
+
+                            seq {
+                                match template.dataLinkType with
+                                | DataLinkType.Scope ->
+                                    yield
+                                        ScopedEffect(
+                                            StringResource.stringManager.InternIdentifierToken prefkey,
+                                            template.inputScopes,
+                                            Some template.outputScope,
+                                            EffectType.Link,
+                                            template.description,
+                                            "",
+                                            true,
+                                            false,
+                                            refHint
+                                        )
+                                | DataLinkType.Value ->
+                                    yield
+                                        ScopedEffect(
+                                            StringResource.stringManager.InternIdentifierToken prefkey,
+                                            template.inputScopes,
+                                            Some template.outputScope,
+                                            EffectType.ValueTrigger,
+                                            template.description,
+                                            "",
+                                            true,
+                                            false,
+                                            refHint
+                                        )
+                                | DataLinkType.Both ->
+                                    yield
+                                        ScopedEffect(
+                                            StringResource.stringManager.InternIdentifierToken prefkey,
+                                            template.inputScopes,
+                                            Some template.outputScope,
+                                            EffectType.Link,
+                                            template.description,
+                                            "",
+                                            true,
+                                            false,
+                                            refHint
+                                        )
+
+                                    yield
+                                        ScopedEffect(
+                                            StringResource.stringManager.InternIdentifierToken prefkey,
+                                            template.inputScopes,
+                                            Some template.outputScope,
+                                            EffectType.ValueTrigger,
+                                            template.description,
+                                            "",
+                                            true,
+                                            false,
+                                            refHint
+                                        )
+                                | _ -> ()
+                            }
+
+                        combine 0 [] |> Seq.collect keyToEffect
+
+                let extra = if addWildCardLinks then getWildCard template else None
+
+                seq {
+                    yield! all
+
+                    match extra with
+                    | Some e -> yield e
+                    | None -> ()
+                }
+
+        let regularLinks =
+            links
+            |> Seq.filter (fun link -> not link.fromArgument)
+            |> Seq.collect convertLinkToEffects
+
+        let argumentLinks =
+            links
+            |> Seq.filter _.fromArgument
+            |> Seq.groupBy (fun link ->
+                link.name,
+                link.inputScopes,
+                link.outputScope,
+                link.description,
+                link.dataPrefix,
+                link.argumentSeparator,
+                link.forDefinitionType,
+                link.dataLinkType)
+            |> Seq.collect (fun (_, groupedLinks) -> groupedLinks |> Seq.toArray |> convertArgumentLinkGroupToEffects)
+
+        Seq.append regularLinks argumentLinks |> Seq.cast<Effect> |> List.ofSeq
 
     let getLocalisationErrors (game: GameObject<_, _>) globalLocalisation =
         fun (force: bool, forceGlobal: bool) ->

@@ -11,6 +11,7 @@ open CWTools.Process.STLProcess
 open CWTools.Process
 open CWTools.Utilities.Utils
 open System
+open System.Globalization
 open CWTools.Parser
 open CWTools.Rules
 open Shared
@@ -95,18 +96,41 @@ module private RulesParserImpl =
     let internal getSettingFromString (full: string) (key: string) =
         let setting = full.Substring(key.Length)
 
-        if not (setting.StartsWith '[' && setting.EndsWith ']') then
+        if
+            not (
+                (setting.StartsWith '[' || setting.StartsWith '(')
+                && (setting.EndsWith ']' || setting.EndsWith ')')
+            )
+        then
             None
         else
             Some(setting.Substring(1, setting.Length - 2))
 
+    let private getRangeSettingFromString (full: string) =
+        let start = full.IndexOfAny([| '['; '(' |])
+
+        if start < 0 then
+            None
+        else
+            let setting = full.Substring start
+
+            if
+                (setting.StartsWith '[' || setting.StartsWith '(')
+                && (setting.EndsWith ']' || setting.EndsWith ')')
+            then
+                Some(setting.Substring(1, setting.Length - 2))
+            else
+                None
+
     let private getFloatSettingFromString (full: string) =
-        match getSettingFromString full "float" with
+        match getRangeSettingFromString full with
         | Some s ->
             let split = s.Split("..", 2, StringSplitOptions.None)
 
             let parseDecimal (s: string) =
-                match s, Decimal.TryParse s with
+                let s = s.Trim()
+
+                match s, Decimal.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture) with
                 | "inf", _ -> Some(decimal RulesParserConstants.floatFieldDefaultMaximum)
                 | "-inf", _ -> Some(decimal RulesParserConstants.floatFieldDefaultMinimum)
                 | _, (true, num) -> Some num
@@ -122,12 +146,14 @@ module private RulesParserImpl =
 
 
     let private getIntSettingFromString (full: string) =
-        match getSettingFromString full "int" with
+        match getRangeSettingFromString full with
         | Some s ->
             let split = s.Split("..", 2)
 
             let parseInt (s: string) =
-                match s, Int32.TryParse s with
+                let s = s.Trim()
+
+                match s, Int32.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture) with
                 | "inf", _ -> Some RulesParserConstants.IntFieldDefaultMaximum
                 | "-inf", _ -> Some RulesParserConstants.IntFieldDefaultMinimum
                 | _, (true, num) -> Some num
@@ -399,9 +425,12 @@ module private RulesParserImpl =
 
     let internal processKey parseScope anyScope scopeGroup =
         function
+        | "$any" -> ScalarField ScalarValue
         | "scalar" -> ScalarField ScalarValue
+        | "wildcard_scalar" -> ScalarField ScalarValue
         | "bool" -> ValueField ValueType.Bool
         | "percentage_field" -> ValueField ValueType.Percent
+        | "int_percentage_field" -> ValueField ValueType.Percent
         | "localisation" -> LocalisationField(false, false)
         | "localisation_synced" -> LocalisationField(true, false)
         | "localisation_inline" -> LocalisationField(false, true)
@@ -417,7 +446,9 @@ module private RulesParserImpl =
                 | false -> FilepathField(Some setting, None)
             | None -> FilepathField(None, None)
         | "date_field" -> ValueField Date
+        | x when fastStartsWith x "date_field[" || fastStartsWith x "date_field(" -> ValueField Date
         | "datetime_field" -> ValueField DateTime
+        | x when fastStartsWith x "datetime_field[" || fastStartsWith x "datetime_field(" -> ValueField DateTime
         | x when fastStartsWith x "<" && fastEndsWith x ">" -> TypeField(TypeType.Simple(x.Trim([| '<'; '>' |])))
         | x when x.Contains '<' && x.Contains '>' ->
             let x = x.Trim('"')
@@ -432,12 +463,12 @@ module private RulesParserImpl =
                 )
             )
         | "int" -> defaultInt
-        | x when fastStartsWith x "int[" ->
+        | x when fastStartsWith x "int[" || fastStartsWith x "int(" ->
             match getIntSettingFromString x with
             | Some(min, max) -> ValueField(ValueType.Int(min, max))
             | None -> defaultInt
         | "float" -> defaultFloat
-        | x when fastStartsWith x "float[" ->
+        | x when fastStartsWith x "float[" || fastStartsWith x "float(" ->
             match getFloatSettingFromString x with
             | Some(min, max) -> ValueField(ValueType.Float(min, max))
             | None -> defaultFloat
@@ -464,7 +495,7 @@ module private RulesParserImpl =
                 false,
                 (RulesParserConstants.floatFieldDefaultMinimum, RulesParserConstants.floatFieldDefaultMaximum)
             )
-        | x when fastStartsWith x "variable_field[" ->
+        | x when fastStartsWith x "variable_field[" || fastStartsWith x "variable_field(" ->
             match getFloatSettingFromString x with
             | Some(min, max) -> VariableField(false, false, (min, max))
             | None ->
@@ -480,7 +511,7 @@ module private RulesParserImpl =
                 (decimal RulesParserConstants.IntFieldDefaultMinimum,
                  decimal RulesParserConstants.IntFieldDefaultMaximum)
             )
-        | x when fastStartsWith x "int_variable_field[" ->
+        | x when fastStartsWith x "int_variable_field[" || fastStartsWith x "int_variable_field(" ->
             match getIntSettingFromString x with
             | Some(min, max) -> VariableField(true, false, (decimal min, decimal max))
             | None ->
@@ -496,7 +527,7 @@ module private RulesParserImpl =
                 true,
                 (RulesParserConstants.floatFieldDefaultMinimum, RulesParserConstants.floatFieldDefaultMaximum)
             )
-        | x when fastStartsWith x "variable_field_32[" ->
+        | x when fastStartsWith x "variable_field_32[" || fastStartsWith x "variable_field_32(" ->
             match getFloatSettingFromString x with
             | Some(min, max) -> VariableField(false, true, (min, max))
             | None ->
@@ -512,7 +543,7 @@ module private RulesParserImpl =
                 (decimal RulesParserConstants.IntFieldDefaultMinimum,
                  decimal RulesParserConstants.IntFieldDefaultMaximum)
             )
-        | x when fastStartsWith x "int_variable_field_32[" ->
+        | x when fastStartsWith x "int_variable_field_32[" || fastStartsWith x "int_variable_field_32(" ->
             match getIntSettingFromString x with
             | Some(min, max) -> VariableField(true, true, (decimal min, decimal max))
             | None ->
@@ -527,7 +558,7 @@ module private RulesParserImpl =
                 false,
                 (RulesParserConstants.floatFieldDefaultMinimum, RulesParserConstants.floatFieldDefaultMaximum)
             )
-        | x when fastStartsWith x "value_field[" ->
+        | x when fastStartsWith x "value_field[" || fastStartsWith x "value_field(" ->
             match getFloatSettingFromString x with
             | Some(min, max) -> ValueScopeMarkerField(false, (min, max))
             | None ->
@@ -541,7 +572,7 @@ module private RulesParserImpl =
                 (decimal RulesParserConstants.IntFieldDefaultMinimum,
                  decimal RulesParserConstants.IntFieldDefaultMaximum)
             )
-        | x when fastStartsWith x "int_value_field[" ->
+        | x when fastStartsWith x "int_value_field[" || fastStartsWith x "int_value_field(" ->
             match getIntSettingFromString x with
             | Some(min, max) -> ValueScopeMarkerField(true, (decimal min, decimal max))
             | None ->
@@ -557,6 +588,10 @@ module private RulesParserImpl =
         | x when fastStartsWith x "value[" ->
             match getSettingFromString x "value" with
             | Some variable -> VariableGetField variable
+            | None -> ScalarField ScalarValue
+        | x when fastStartsWith x "dynamic_value[" ->
+            match getSettingFromString x "dynamic_value" with
+            | Some variable -> DynamicValueField variable
             | None -> ScalarField ScalarValue
         | x when fastStartsWith x "scope[" ->
             match getSettingFromString x "scope" with
@@ -587,6 +622,10 @@ module private RulesParserImpl =
             match getSettingFromString x "stellaris_name_format" with
             | Some aliasKey -> ValueField(STLNameFormat aliasKey)
             | None -> ScalarField ScalarValue
+        | x when fastStartsWith x "name_format[" ->
+            match getSettingFromString x "name_format" with
+            | Some formatType -> NameFormatField formatType
+            | None -> ScalarField ScalarValue
         | x when fastStartsWith x "scope_group[" ->
             match getSettingFromString x "scope_group" with
             | Some aliasKey ->
@@ -597,8 +636,23 @@ module private RulesParserImpl =
         | "portrait_dna_field" -> ValueField CK2DNA
         | "portrait_properties_field" -> ValueField CK2DNAProperty
         | "colour_field" -> MarkerField Marker.ColourField
+        | "color_field" -> MarkerField Marker.ColourField
+        | x when fastStartsWith x "colour[" || fastStartsWith x "color[" -> MarkerField Marker.ColourField
         | "ir_country_tag_field" -> MarkerField Marker.IRCountryTag
         | "ir_family_name_field" -> ValueField IRFamilyName
+        | "$command" -> CommandField
+        | "$script_value_reference" -> ScriptValueReferenceField
+        | "$define_reference" -> DefineReferenceField
+        | "$array_define_reference" -> ArrayDefineReferenceField
+        | x when fastStartsWith x "$tags[" ->
+            match getSettingFromString x "$tags" with
+            | Some name -> TagsField(name, false)
+            | None -> ScalarField ScalarValue
+        | x when fastStartsWith x "$tags_condition[" ->
+            match getSettingFromString x "$tags_condition" with
+            | Some name -> TagsField(name, true)
+            | None -> ScalarField ScalarValue
+        | "$database_object" -> DatabaseObjectField
         | "ignore_field" -> IgnoreMarkerField
         | x ->
             // eprintfn "ps %s" x
@@ -883,6 +937,9 @@ module private RulesParserImpl =
         | LeafValueC lv -> Some(configLeafValue parseScope allScopes anyScope scopeGroup lv comments)
         | _ -> None
 
+    let private extendedMetadataRootKeys =
+        set [ "priorities"; "system_scopes"; "locales"; "database_object_types"; "on_actions" ]
+
     let private processChildConfigRoot
         parseScope
         allScopes
@@ -892,7 +949,9 @@ module private RulesParserImpl =
         =
         match child with
         | NodeC n when n.Key == "types" -> None
+        | NodeC n when extendedMetadataRootKeys.Contains n.Key -> None
         | NodeC n -> Some(configRootNode processChildConfig parseScope allScopes anyScope scopeGroup n comments)
+        | LeafC l when extendedMetadataRootKeys.Contains l.Key -> None
         | LeafC l -> Some(configRootLeaf processChildConfig parseScope allScopes anyScope scopeGroup l comments)
         // |LeafValueC lv -> Some (configLeafValue lv comments)
         | _ -> None
@@ -1566,6 +1625,164 @@ module private RulesParserImpl =
 
         rules |> Array.collect rulesMapper
 
+    let private commentText (comment: string) =
+        comment.Trim().TrimStart('#').Trim()
+
+    let private descriptionFromComments (comments: string list) =
+        comments
+        |> List.choose (fun c ->
+            let t = c.Trim()
+            if t.StartsWith("#") && not (t.Contains "=") then
+                let cleaned = commentText t
+                if cleaned = "" then None else Some cleaned
+            else
+                None)
+        |> function
+            | [] -> None
+            | xs -> Some(String.concat Environment.NewLine xs)
+
+    let private optionFromComments (name: string) (comments: string list) =
+        comments
+        |> List.tryPick (fun c ->
+            let t = c.Trim()
+            if t.StartsWith("#") && t.Contains("=") then
+                let body = commentText t
+                let split = body.Split('=', 2)
+                if split.Length = 2 && split.[0].Trim().Equals(name, StringComparison.OrdinalIgnoreCase) then
+                    Some(split.[1].Trim().Trim('"'))
+                else
+                    None
+            else
+                None)
+
+    let private boolOption text =
+        match text with
+        | "" -> None
+        | x when x.Equals("yes", StringComparison.OrdinalIgnoreCase)
+              || x.Equals("true", StringComparison.OrdinalIgnoreCase) -> Some true
+        | x when x.Equals("no", StringComparison.OrdinalIgnoreCase)
+              || x.Equals("false", StringComparison.OrdinalIgnoreCase) -> Some false
+        | _ -> None
+
+    let private parseExtendedMetadata parseScope (root: Node) =
+        let parsePriority (leaf: Leaf) =
+            let path = leaf.Key.Replace("\\", "/")
+            path,
+            { path = path
+              strategy = leaf.ValueText }
+
+        let parseSystemScope comments (node: Node) =
+            node.Key,
+            { id = node.Key
+              baseId =
+                let text = node.TagText "base_id"
+                if String.IsNullOrWhiteSpace text then None else Some text
+              name =
+                let text = node.TagText "name"
+                if String.IsNullOrWhiteSpace text then None else Some text
+              description = descriptionFromComments comments }
+
+        let parseLocale comments (node: Node) =
+            let codes =
+                node.Child "codes"
+                |> Option.map (fun c -> c.LeafValues |> Seq.map _.ValueText |> Seq.toArray)
+                |> Option.defaultValue [||]
+
+            node.Key,
+            { id = node.Key
+              codes = codes
+              supports = boolOption (node.TagText "supports")
+              description = descriptionFromComments comments }
+
+        let parseDatabaseObjectType (node: Node) =
+            let optionalTag key =
+                let text = node.TagText key
+                if String.IsNullOrWhiteSpace text then None else Some text
+
+            match optionalTag "type", optionalTag "localisation" with
+            | None, None -> None
+            | objectType, localisationPrefix ->
+                Some(
+                    node.Key,
+                    { name = node.Key
+                      objectType = objectType
+                      swapType = optionalTag "swap_type"
+                      localisationPrefix = localisationPrefix }
+                )
+
+        let parseOnAction comments name =
+            match optionFromComments "event_type" comments with
+            | Some eventType when not (String.IsNullOrWhiteSpace eventType) ->
+                Some(
+                    name,
+                    { name = name
+                      eventType = eventType
+                      hint = optionFromComments "hint" comments
+                      replaceScopes = replaceScopes parseScope comments
+                      description = descriptionFromComments comments }
+                )
+            | _ -> None
+
+        let childComments (node: Node) = getNodeComments node
+
+        let directComments (node: Node) =
+            node.AllArray
+            |> Array.choose (function
+                | CommentC comment when comment.Comment.StartsWith("#") -> Some comment.Comment
+                | _ -> None)
+            |> List.ofArray
+
+        let priorities =
+            root.Child "priorities"
+            |> Option.map (fun n -> n.Leaves |> Seq.map parsePriority |> Map.ofSeq)
+            |> Option.defaultValue Map.empty
+
+        let systemScopes =
+            root.Child "system_scopes"
+            |> Option.map (fun n ->
+                childComments n
+                |> Seq.choose (function
+                    | NodeC child, comments -> Some(parseSystemScope comments child)
+                    | _ -> None)
+                |> Map.ofSeq)
+            |> Option.defaultValue Map.empty
+
+        let locales =
+            root.Child "locales"
+            |> Option.map (fun n ->
+                childComments n
+                |> Seq.choose (function
+                    | NodeC child, comments -> Some(parseLocale comments child)
+                    | _ -> None)
+                |> Map.ofSeq)
+            |> Option.defaultValue Map.empty
+
+        let databaseObjectTypes =
+            root.Child "database_object_types"
+            |> Option.map (fun n ->
+                n.Children
+                |> Seq.choose parseDatabaseObjectType
+                |> Map.ofSeq)
+            |> Option.defaultValue Map.empty
+
+        let onActions =
+            root.Child "on_actions"
+            |> Option.map (fun n ->
+                childComments n
+                |> Seq.choose (function
+                    | NodeC child, comments -> parseOnAction (comments @ directComments child) child.Key
+                    | LeafC leaf, comments -> parseOnAction comments leaf.Key
+                    | LeafValueC leafValue, comments -> parseOnAction comments leafValue.ValueText
+                    | _ -> None)
+                |> Map.ofSeq)
+            |> Option.defaultValue Map.empty
+
+        { priorities = priorities
+          systemScopes = systemScopes
+          locales = locales
+          databaseObjectTypes = databaseObjectTypes
+          onActions = onActions }
+
     let processConfig parseScope allScopes anyScope scopeGroup (node: Node) =
         let nodes = getNodeComments node
 
@@ -1581,7 +1798,8 @@ module private RulesParserImpl =
         let enums = nodes |> List.choose processChildEnum |> List.collect id
         let complexenums = nodes |> List.choose processComplexChildEnum |> List.collect id
         let values = nodes |> List.choose processChildValue |> List.collect id
-        rules, types, enums, complexenums, values
+        let metadata = parseExtendedMetadata parseScope node
+        rules, types, enums, complexenums, values, metadata
 
 module RulesConsistencyValidation =
     let rec cataRule (f: 'a list -> RuleType -> 'a list) (oldState) (rule: RuleType) : 'a list =
@@ -1668,19 +1886,25 @@ module RulesParser =
             ValueType.Int(RulesParserConstants.IntFieldDefaultMinimum, RulesParserConstants.IntFieldDefaultMaximum)
         )
 
-    let parseConfig parseScope allScopes anyScope scopeGroup filename fileString =
+    let parseConfigWithMetadata parseScope allScopes anyScope scopeGroup filename fileString =
         //log "parse"
         let parsed = CKParser.parseString fileString filename
 
         match parsed with
         | Failure(e, _, _) ->
             log $"config file %s{filename} failed with %s{e}"
-            ([], [], [], [], [])
+            ([], [], [], [], [], ExtendedConfigMetadata.empty)
         | Success(s, _, _) ->
             //log "parsed %A" s
             let root = simpleProcess.ProcessNode () "root" (mkZeroFile filename) s
             //log "processConfig"
             processConfig parseScope allScopes anyScope scopeGroup root
+
+    let parseConfig parseScope allScopes anyScope scopeGroup filename fileString =
+        let rules, types, enums, complexenums, values, _ =
+            parseConfigWithMetadata parseScope allScopes anyScope scopeGroup filename fileString
+
+        rules, types, enums, complexenums, values
 
     let parseConfigs
         parseScope
@@ -1691,13 +1915,14 @@ module RulesParser =
         stellarisScopeTriggers
         (files: (string * string) list)
         =
-        let rules, types, enums, complexenums, values =
+        let rules, types, enums, complexenums, values, metadata =
             files
             |> Seq.map (fun (filename, fileString) ->
-                parseConfig parseScope allScopes anyScope scopeGroup filename fileString)
+                parseConfigWithMetadata parseScope allScopes anyScope scopeGroup filename fileString)
             |> Seq.fold
-                (fun (rs, ts, es, ces, vs) (r, t, e, ce, v) -> r @ rs, t @ ts, e @ es, ce @ ces, v @ vs)
-                ([], [], [], [], [])
+                (fun (rs, ts, es, ces, vs, md) (r, t, e, ce, v, fileMd) ->
+                    r @ rs, t @ ts, e @ es, ce @ ces, v @ vs, ExtendedConfigMetadata.merge md fileMd)
+                ([], [], [], [], [], ExtendedConfigMetadata.empty)
 
         let rules =
             rules
@@ -1707,4 +1932,4 @@ module RulesParser =
             |> replaceColourField
             |> replaceIgnoreMarkerFields
         // File.AppendAllText ("test.test", sprintf "%O" rules)
-        rules, types, enums, complexenums, values
+        rules, types, enums, complexenums, values, metadata

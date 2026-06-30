@@ -776,6 +776,9 @@ type EventTargetDataLink =
       description: string
       dataPrefix: string option
       sourceRuleType: string
+      fromArgument: bool
+      argumentSeparator: string option
+      forDefinitionType: string option
       dataLinkType: DataLinkType }
 
 type EventTargetLink =

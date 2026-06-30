@@ -22,6 +22,7 @@ type CheckFieldParams =
     { varMap: FrozenDictionary<string, PrefixOptimisedStringSet>
       enumsMap: FrozenDictionary<string, string * PrefixOptimisedStringSet>
       typesMap: FrozenDictionary<string, PrefixOptimisedStringSet>
+      databaseObjectTypes: Map<string, DatabaseObjectTypeConfig>
       linkMap: EffectMap
       wildcardLinks: ScopedEffect list
       valueTriggerMap: EffectMap
@@ -683,6 +684,210 @@ module internal FieldValidators =
                 || checkMacroTemplateMatch (value.ToString()) values
         | None -> false
 
+    let private containsParameter (value: string) = value.IndexOf('$') >= 0
+
+    let private isDynamicIdentifierChar c =
+        Char.IsLetterOrDigit c
+        || c = '_'
+        || c = '.'
+        || c = '-'
+
+    let private isDynamicIdentifier (value: string) =
+        value <> "" && value |> Seq.forall isDynamicIdentifierChar
+
+    let private dynamicValueName (value: string) =
+        let atIndex = value.IndexOf('@')
+
+        if atIndex >= 0 then
+            value.Substring(0, atIndex)
+        else
+            value
+
+    let private checkDynamicValueFieldNE
+        (varMap: FrozenDictionary<_, PrefixOptimisedStringSet>)
+        (varName: string)
+        (ids: StringTokens)
+        =
+        let key = trimQuote (getOriginalKey ids)
+
+        if firstCharEqualsAmp ids.lower || containsParameter key then
+            true
+        else
+            match varMap.TryFind varName with
+            | Some values ->
+                let value = key.AsSpan().Trim('\"')
+
+                values.Contains value
+                || (value.Contains('@') && values.Contains(value.SplitFirst('@')))
+                || (values.FindFirstByPrefix(value) <> null)
+                || checkMacroTemplateMatch (value.ToString()) values
+            | None -> key |> dynamicValueName |> isDynamicIdentifier
+
+    let private checkDynamicValueField
+        (varMap: FrozenDictionary<_, PrefixOptimisedStringSet>)
+        severity
+        (varName: string)
+        (ids: StringTokens)
+        leafornode
+        errors
+        =
+        if checkDynamicValueFieldNE varMap varName ids then
+            errors
+        else
+            inv
+                (ErrorCodes.ConfigRulesUnexpectedValue
+                    $"Expected dynamic value of %s{varName}, got %s{trimQuote (getOriginalKey ids)}"
+                    (min Severity.Warning severity))
+                leafornode
+            <&&&> errors
+
+    let private splitByPipe (value: string) =
+        value.Split([| '|' |], StringSplitOptions.None)
+
+    let private checkScriptValueReferenceNE (ids: StringTokens) =
+        let key = trimQuote (getOriginalKey ids)
+
+        if containsParameter key then
+            true
+        else
+            let parts = splitByPipe key
+            parts.Length >= 1 && isDynamicIdentifier parts.[0]
+
+    let private checkDefineReferenceNE (ids: StringTokens) =
+        let key = trimQuote (getOriginalKey ids)
+
+        if containsParameter key then
+            true
+        else
+            match splitByPipe key with
+            | [| ns; name |] -> isDynamicIdentifier ns && isDynamicIdentifier name
+            | _ -> false
+
+    let private checkArrayDefineReferenceNE (ids: StringTokens) =
+        let key = trimQuote (getOriginalKey ids)
+
+        if containsParameter key then
+            true
+        else
+            match splitByPipe key with
+            | [| ns; name; index |] ->
+                isDynamicIdentifier ns
+                && isDynamicIdentifier name
+                && (match Int32.TryParse index with | true, i -> i >= 0 | _ -> false)
+            | _ -> false
+
+    let private checkTagsFieldNE
+        (varMap: FrozenDictionary<_, PrefixOptimisedStringSet>)
+        (varName: string)
+        condition
+        (ids: StringTokens)
+        =
+        let key = trimQuote (getOriginalKey ids)
+
+        if key = "" || containsParameter key then
+            true
+        else
+            let values = varMap.TryFind varName
+
+            let checkOne (raw: string) =
+                let value = raw.Trim()
+
+                let value =
+                    if
+                        condition
+                        && value.StartsWith("not(", StringComparison.OrdinalIgnoreCase)
+                        && value.EndsWith(")")
+                    then
+                        value.Substring(4, value.Length - 5).Trim()
+                    else
+                        value
+
+                if value = "" then
+                    false
+                else
+                    match values with
+                    | Some known ->
+                        let span = value.AsSpan()
+                        known.Contains span
+                        || (span.Contains('@') && known.Contains(span.SplitFirst('@')))
+                        || (known.FindFirstByPrefix span <> null)
+                    | None -> value |> dynamicValueName |> isDynamicIdentifier
+
+            key.Split([| ',' |], StringSplitOptions.None)
+            |> Array.forall checkOne
+
+    let private checkDatabaseObjectNE
+        (databaseObjectTypes: Map<string, DatabaseObjectTypeConfig>)
+        (typesMap: FrozenDictionary<string, PrefixOptimisedStringSet>)
+        (defaultLocalisation: Collections.Set<string>)
+        (ids: StringTokens)
+        =
+        let key = trimQuote (getOriginalKey ids)
+
+        if containsParameter key then
+            true
+        else
+            let parts = key.Split([| ':' |], StringSplitOptions.None)
+
+            let shapeOk =
+                parts.Length >= 2 && parts |> Array.forall (fun p -> p.Trim() |> isDynamicIdentifier)
+
+            let knownTypeValue (typeName: string) (value: string) =
+                match typesMap.TryFind typeName with
+                | Some values -> values.Contains(value)
+                | None -> true
+
+            let knownLocalisationValue (prefix: string) (value: string) =
+                defaultLocalisation.Contains value
+                || (not (String.IsNullOrWhiteSpace prefix) && defaultLocalisation.Contains(prefix + value))
+
+            if not shapeOk then
+                false
+            elif Map.isEmpty databaseObjectTypes then
+                true
+            else
+                let prefix = parts.[0].Trim()
+
+                match databaseObjectTypes |> Map.tryFind prefix with
+                | None -> false
+                | Some config ->
+                    let objectValue = parts.[1].Trim()
+
+                    let objectOk =
+                        match config.objectType, config.localisationPrefix with
+                        | Some typeName, _ -> knownTypeValue typeName objectValue
+                        | None, Some locPrefix -> knownLocalisationValue locPrefix objectValue
+                        | None, None -> true
+
+                    let swapOk =
+                        if parts.Length < 3 then
+                            true
+                        else
+                            match config.swapType with
+                            | Some swapType -> knownTypeValue swapType (parts.[2].Trim())
+                            | None -> false
+
+                    objectOk && swapOk
+
+    let private checkNameFormatNE (ids: StringTokens) =
+        let key = trimQuote (getOriginalKey ids)
+        key <> "" || containsParameter key
+
+    let private checkCommandNE (ids: StringTokens) =
+        let key = trimQuote (getOriginalKey ids)
+        key <> "" || containsParameter key
+
+    let private checkExtendedExpressionField name checkNE ids leafornode errors =
+        if checkNE ids then
+            errors
+        else
+            inv
+                (ErrorCodes.ConfigRulesUnexpectedValue
+                    $"Expected %s{name}, got %s{trimQuote (getOriginalKey ids)}"
+                    Severity.Warning)
+                leafornode
+            <&&&> errors
+
     let checkFilepathField
         (files: FrozenSet<string>)
         (ids: StringTokens)
@@ -1091,6 +1296,7 @@ module internal FieldValidators =
             | IconField folder -> checkIconField p.files folder keyIDs leafornode errors
             | VariableSetField v -> errors
             | VariableGetField v -> checkVariableGetField p.varMap severity v keyIDs leafornode errors
+            | DynamicValueField v -> checkDynamicValueField p.varMap severity v keyIDs leafornode errors
             | VariableField(isInt, is32Bit, (min, max)) ->
                 checkVariableField
                     p.linkMap
@@ -1121,6 +1327,41 @@ module internal FieldValidators =
                     keyIDs
                     leafornode
                     errors
+            | CommandField -> checkExtendedExpressionField "command expression" checkCommandNE keyIDs leafornode errors
+            | ScriptValueReferenceField ->
+                checkExtendedExpressionField
+                    "script value reference"
+                    checkScriptValueReferenceNE
+                    keyIDs
+                    leafornode
+                    errors
+            | DefineReferenceField ->
+                checkExtendedExpressionField "define reference" checkDefineReferenceNE keyIDs leafornode errors
+            | ArrayDefineReferenceField ->
+                checkExtendedExpressionField
+                    "array define reference"
+                    checkArrayDefineReferenceNE
+                    keyIDs
+                    leafornode
+                    errors
+            | TagsField(name, condition) ->
+                if checkTagsFieldNE p.varMap name condition keyIDs then
+                    errors
+                else
+                    inv
+                        (ErrorCodes.ConfigRulesUnexpectedValue
+                            $"Expected tags expression of %s{name}, got %s{trimQuote (getOriginalKey keyIDs)}"
+                            Severity.Warning)
+                        leafornode
+                    <&&&> errors
+            | DatabaseObjectField ->
+                checkExtendedExpressionField
+                    "database object expression"
+                    (checkDatabaseObjectNE p.databaseObjectTypes p.typesMap p.defaultLocalisation)
+                    keyIDs
+                    leafornode
+                    errors
+            | NameFormatField _ -> checkExtendedExpressionField "name format expression" checkNameFormatNE keyIDs leafornode errors
             | ScalarField _ -> errors
             | SpecificField(SpecificValue v) ->
                 if keyIDs.lower = v.lower then
@@ -1180,6 +1421,7 @@ module internal FieldValidators =
             | IconField folder -> checkIconFieldNE p.files folder keyIDs
             | VariableSetField _ -> true
             | VariableGetField v -> checkVariableGetFieldNE p.varMap v keyIDs
+            | DynamicValueField v -> checkDynamicValueFieldNE p.varMap v keyIDs
             | VariableField(isInt, is32Bit, (min, max)) ->
                 checkVariableFieldNE
                     p.linkMap
@@ -1206,6 +1448,13 @@ module internal FieldValidators =
                     min
                     max
                     keyIDs
+            | CommandField -> checkCommandNE keyIDs
+            | ScriptValueReferenceField -> checkScriptValueReferenceNE keyIDs
+            | DefineReferenceField -> checkDefineReferenceNE keyIDs
+            | ArrayDefineReferenceField -> checkArrayDefineReferenceNE keyIDs
+            | TagsField(name, condition) -> checkTagsFieldNE p.varMap name condition keyIDs
+            | DatabaseObjectField -> checkDatabaseObjectNE p.databaseObjectTypes p.typesMap p.defaultLocalisation keyIDs
+            | NameFormatField _ -> checkNameFormatNE keyIDs
             | TypeMarkerField(dummy, _) -> dummy = keyIDs.lower
             | ScalarField _ -> true
             | SpecificField(SpecificValue v) -> v.lower = keyIDs.lower

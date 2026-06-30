@@ -173,17 +173,18 @@ module internal SharedParsers =
     let oppGTE = skipString ">=" >>% Operator.GreaterThanOrEqual
     let oppNE = skipString "!=" >>% Operator.NotEqual
     let oppEE = skipString "==" >>% Operator.EqualEqual
+    let oppQSE = attempt (skipChar '?' .>> spaces1 .>> skipChar '=') >>% Operator.QuestionSpaceEqual
     let oppQE = skipString "?=" >>% Operator.QuestionEqual
     let oppLT = skipChar '<' >>% Operator.LessThan
     let oppGT = skipChar '>' >>% Operator.GreaterThan
     let oppE = skipChar '=' >>% Operator.Equals
 
     let operator =
-        choiceL [ oppLTE; oppGTE; oppNE; oppEE; oppLT; oppGT; oppE; oppQE ] "operator"
+        choiceL [ oppLTE; oppGTE; oppNE; oppEE; oppQSE; oppQE; oppLT; oppGT; oppE ] "operator"
         .>> ws
 
     let operatorLookahead =
-        choice [ chSkip '='; chSkip '>'; chSkip '<'; chSkip '!'; strSkip "?=" ]
+        choice [ chSkip '='; chSkip '>'; chSkip '<'; chSkip '!'; attempt (skipChar '?' .>> spaces1 .>> skipChar '=' .>> ws); strSkip "?=" ]
         <?> "operator 1"
 
     let comment =

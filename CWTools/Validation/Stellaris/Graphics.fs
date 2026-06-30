@@ -135,6 +135,13 @@ module Graphics =
                 |> List.filter (fun ss -> not (ss.Has "entity"))
                 |> List.map (fun ss -> ss, ss.Key, getGraphicalCultureSearchList allCultures ss)
 
+            let explicitShipSizeEntities =
+                es.AllOfTypeChildren EntityType.ShipSizes
+                |> List.collect (fun ss ->
+                    ss.Leafs "entity"
+                    |> Seq.map (fun entity -> ss, entity, getGraphicalCultureSearchList allCultures ss)
+                    |> List.ofSeq)
+
             let assets =
                 (os.AllOfTypeChildren EntityType.GfxAsset @ es.AllOfTypeChildren EntityType.GfxAsset)
                 |> List.map (fun a -> a.TagText "name")
@@ -142,6 +149,9 @@ module Graphics =
 
             shipsizesV
             <&!&> (fun (ss, n, c) -> validateEntityWithGraphicalCultures assets cultures c (n + "_entity") ss)
+            <&&> (explicitShipSizeEntities
+                  <&!&> (fun (_, entity, allowedCultures) ->
+                      validateEntityWithGraphicalCultures assets cultures allowedCultures (entity.Value.ToRawString()) entity))
 
     let valComponentGraphics: STLStructureValidator =
         fun os es ->

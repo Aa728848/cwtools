@@ -578,6 +578,7 @@ type STLGame(setupSettings: StellarisSettings) =
               valTechnology, "tech"
               validateShipDesigns, "designs"
               validateIfElse, "ifelse2"
+              validateNOTMultiple, "notmultiple"
               validatePlanetKillers, "pk"
               validateRedundantANDWithNOR, "AND"
               valMegastructureGraphics, "megastructure"

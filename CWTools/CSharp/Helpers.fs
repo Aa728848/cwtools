@@ -19,7 +19,7 @@ type Helpers =
         RulesLoader.loadAndInitializeFromConfigFiles (configs |> List.ofSeq) game
         |> ignore
 
-        let rules, types, enums, complexenums, values =
+        let rules, types, enums, complexenums, values, _ =
             configs
             |> List.ofSeq
             |> List.filter (fun (fn, ft) -> Path.GetExtension fn == ".cwt")

@@ -133,18 +133,39 @@ module Scopes =
         | None -> context
         | Some ps -> ps :: context
 
+    let private splitOnDotsOutsideGroups (key: string) =
+        let parts = ResizeArray<string>()
+        let mutable depth = 0
+        let mutable start = 0
+
+        for i = 0 to key.Length - 1 do
+            match key.[i] with
+            | '('
+            | '['
+            | '{' -> depth <- depth + 1
+            | ')'
+            | ']'
+            | '}' when depth > 0 -> depth <- depth - 1
+            | '.' when depth = 0 ->
+                parts.Add(key.Substring(start, i - start))
+                start <- i + 1
+            | _ -> ()
+
+        parts.Add(key.Substring start)
+        parts.ToArray()
+
     let private splitScopePath (key: string) =
         let atIndex = key.IndexOf('@')
 
         if atIndex < 0 then
-            key.Split('.')
+            splitOnDotsOutsideGroups key
         else
             let prefix = key.Substring(0, atIndex)
 
             if String.IsNullOrEmpty prefix then
                 [| key |]
             else
-                let parts = prefix.Split('.')
+                let parts = splitOnDotsOutsideGroups prefix
                 let last = parts.Length - 1
                 parts.[last] <- parts.[last] + key.Substring(atIndex)
                 parts

@@ -17,6 +17,8 @@ test_scripted_effect_none = {
                test_rhs = yes
            }
 
+           #error
+           #error
            test_scripted_effect_params = {
                test_lhs = blah
                test_rhs = blah
@@ -24,13 +26,11 @@ test_scripted_effect_none = {
     }
 }
 
+#error
+#error
 test_scripted_effect_params = {
-    #error
-    #error
     $test_lhs$ = {
 
     }
-    #error
-    #error
     set_ship_flag = $test_rhs$
 }

@@ -33,6 +33,7 @@ module Types =
         | NotEqual = 5uy
         | EqualEqual = 6uy
         | QuestionEqual = 7uy
+        | QuestionSpaceEqual = 8uy
 
     let operatorToString =
         function
@@ -44,6 +45,7 @@ module Types =
         | Operator.NotEqual -> "!="
         | Operator.EqualEqual -> "=="
         | Operator.QuestionEqual -> "?="
+        | Operator.QuestionSpaceEqual -> "? ="
         | x -> failwith (sprintf "Unknown enum value %A" x)
 
     type Key = string

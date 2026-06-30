@@ -1,0 +1,17 @@
+on_test_used = {
+    events = {
+        test.1
+    }
+}
+
+on_test_unused = {
+    events = {
+        test.2
+    }
+}
+
+on_game_start = {
+    events = {
+        test.1
+    }
+}

@@ -2203,6 +2203,16 @@ let fixEmbeddedFileName (s: string) =
 
     out
 
+let fixEmbeddedResourceFileName (s: string) =
+    let marker = ".embedded."
+    let embeddedIndex = s.IndexOf(marker, StringComparison.Ordinal)
+
+    if embeddedIndex >= 0 then
+        let fixedName = s.Substring(embeddedIndex + marker.Length) |> fixEmbeddedFileName
+        fixedName.TrimStart('/')
+    else
+        fixEmbeddedFileName s
+
 [<Tests>]
 let embeddedTests =
     testWithCapturedLogs "embedded"
@@ -2235,7 +2245,25 @@ let embeddedTests =
                 2000000
             )
 
-        let files = fileManager.AllFilesByPath()
+        let manifestEmbeddedFiles =
+            embeddedFileNames
+            |> List.ofArray
+            |> List.map (fun f ->
+                fixEmbeddedResourceFileName f,
+                (new StreamReader(Assembly.GetExecutingAssembly().GetManifestResourceStream(f))).ReadToEnd())
+
+        let manifestResourceInputs =
+            manifestEmbeddedFiles
+            |> List.map (fun (filePath, fileText) ->
+                EntityResourceInput
+                    { scope = "embedded"
+                      filepath = filePath
+                      logicalpath = fileManager.ConvertPathToLogicalPath filePath
+                      filetext = fileText
+                      validate = false })
+            |> Array.ofList
+
+        let files = Array.append (fileManager.AllFilesByPath()) manifestResourceInputs
 
         let resources: IResourceAPI<STLComputedData> =
             ResourceManager<STLComputedData>(
@@ -2272,12 +2300,7 @@ let embeddedTests =
         let cached = unpickled.resources
 
 
-        let _ =
-            embeddedFileNames
-            |> List.ofArray
-            |> List.map (fun f ->
-                fixEmbeddedFileName f,
-                (new StreamReader(Assembly.GetExecutingAssembly().GetManifestResourceStream(f))).ReadToEnd())
+        let embeddedFiles = filelist @ manifestEmbeddedFiles
 
         let configtext = configFilesFromDir "./testfiles/embeddedtest/config/"
         let baseSettings = emptyStellarisSettings "./testfiles/embeddedtest/test"
@@ -2296,13 +2319,30 @@ let embeddedTests =
                 embedded =
                     ManualSettings
                         { emptyEmbeddedSettings with
-                            embeddedFiles = filelist
+                            embeddedFiles = embeddedFiles
                             cachedResourceData = cached } }
         // UtilityParser.initializeScopes None (Some defaultScopeInputs)
 
         let stlE = STLGame(settingsE) :> IGame<STLComputedData>
         let stlNE = STLGame(settings) :> IGame<STLComputedData>
-        let eerrors = stlE.ValidationErrors() |> List.map (fun e -> e.range)
+        let embeddedButtonEffects =
+            stlE.Types()
+            |> Map.tryFind "button_effect"
+            |> Option.defaultValue [||]
+            |> Array.map (fun t -> t.id)
+            |> Array.toList
+
+        let embeddedEntitySummaries =
+            stlE.AllEntities()
+            |> Seq.map (fun struct (e, _) -> e.filepath, e.logicalpath, e.entityType.ToString())
+            |> Seq.toList
+
+        Expect.contains
+            embeddedButtonEffects
+            "test_button_effect_1"
+            $"Embedded button effects should be loaded, got %A{embeddedButtonEffects}; entities %A{embeddedEntitySummaries}"
+
+        let eerrors = stlE.ValidationErrors() |> List.map (fun e -> e.message, e.range)
         let neerrors = stlNE.ValidationErrors() |> List.map (fun e -> e.message, e.range)
 
         let etestVals =
@@ -2316,7 +2356,7 @@ let embeddedTests =
             |> List.map (fun struct (e, _) -> e.filepath, getNodeComments e.entity |> List.map fst)
 
         let einner (file, _: range list) =
-            let fileErrors = eerrors |> List.filter (fun f -> f.FileName = file)
+            let fileErrors = eerrors |> List.filter (fun (_, f) -> f.FileName = file)
             Expect.isEmpty fileErrors $"Following lines are not expected to have an error %A{fileErrors}"
 
         etestVals |> List.iter einner

@@ -11,6 +11,27 @@ open FSharp.Collections.ParallelSeq
 open CWTools.Utilities.Utils
 open CWTools.Common
 
+let private tryDefinitionInjectionKey (key: string) =
+    let index = key.IndexOf(':')
+
+    if index <= 0 || index >= key.Length - 1 then
+        None
+    else
+        let mode = key.Substring(0, index).ToUpperInvariant()
+        let target = key.Substring(index + 1)
+
+        match mode with
+        | "INJECT"
+        | "REPLACE"
+        | "TRY_INJECT"
+        | "TRY_REPLACE"
+        | "INJECT_OR_CREATE"
+        | "REPLACE_OR_CREATE" -> Some(mode, target)
+        | _ -> None
+
+let private isDefinitionInjectionCreateMode mode =
+    mode = "REPLACE_OR_CREATE"
+
 
 let getTypesFromDefinitions
     (ruleapplicator: RuleValidationService option)
@@ -55,11 +76,17 @@ let getTypesFromDefinitions
                     | None ->
                         match n with
                         | :? ValueClause as vc -> vc.SecondKey |> Option.defaultValue "clause"
-                        | _ -> n.Key
+                        | _ ->
+                            match tryDefinitionInjectionKey n.Key with
+                            | Some(mode, target) when isDefinitionInjectionCreateMode mode -> target
+                            | _ -> n.Key
 
                 let result =
-                    def.name :: subtypes
-                    |> List.map (fun s -> s, (v, key, n.Position, getExplicitLocalisationKeys n def, rawSubtypes))
+                    match tryDefinitionInjectionKey filterKey with
+                    | Some(mode, _) when not (isDefinitionInjectionCreateMode mode) -> []
+                    | _ ->
+                        def.name :: subtypes
+                        |> List.map (fun s -> s, (v, key, n.Position, getExplicitLocalisationKeys n def, rawSubtypes))
 
                 if FieldValidators.typekeyfilter def filterKey prefixKey then
                     result

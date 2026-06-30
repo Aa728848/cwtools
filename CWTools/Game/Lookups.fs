@@ -85,6 +85,7 @@ type Lookup() =
     member val typeDefInfo: Map<string, TypeDefInfo array> = Map.empty with get, set
     member val typeDefInfoForValidation: Map<string, struct (string * range) array> = Map.empty with get, set
     member val varDefInfo: Map<string, (string * range) array> = Map.empty with get, set
+    member val extendedConfigMetadata: ExtendedConfigMetadata = ExtendedConfigMetadata.empty with get, set
     member val savedEventTargets: ResizeArray<string * range * Scope> = new ResizeArray<_>() with get, set
     /// Stores scripted variables as (name, value) pairs
     member val scriptedVariables: (string * string) list = [] with get, set

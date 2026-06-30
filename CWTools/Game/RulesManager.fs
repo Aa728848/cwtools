@@ -164,7 +164,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
 
     let loadBaseConfig (rulesSettings: RulesSettings) =
-        let rules, types, enums, complexenums, values =
+        let rules, types, enums, complexenums, values, metadata =
             rulesSettings.ruleFiles
             |> List.filter (fun (fn, _) ->
                 Path.GetExtension(fn.AsSpan()).Equals(".cwt", StringComparison.OrdinalIgnoreCase))
@@ -176,6 +176,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 settings.useFormulas
                 settings.stellarisScopeTriggers
         baseConfigRules <- rules
+        lookup.extendedConfigMetadata <- metadata
         // tempEffects <- updateScriptedEffects game rules
         // effects <- tempEffects
         // tempTriggers <- updateScriptedTriggers game rules
@@ -235,7 +236,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             settings.defaultContext,
             settings.defaultLang,
             processLoc,
-            validateLoc
+            validateLoc,
+            extendedConfigMetadata = lookup.extendedConfigMetadata
         )
 
     let buildServices rulesWrapper typeMap =
@@ -282,7 +284,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 settings.anyScope,
                 settings.defaultLang,
                 processLoc,
-                validateLoc
+                validateLoc,
+                extendedConfigMetadata = lookup.extendedConfigMetadata
             )
 
         let completionService =
@@ -304,7 +307,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 settings.defaultLang,
                 dataTypes,
                 processLoc,
-                validateLoc
+                validateLoc,
+                extendedConfigMetadata = lookup.extendedConfigMetadata
             )
 
         ruleValidationService, infoService, completionService
@@ -506,7 +510,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 settings.anyScope,
                 settings.defaultLang,
                 processLoc,
-                validateLoc
+                validateLoc,
+                extendedConfigMetadata = lookup.extendedConfigMetadata
             )
 
 

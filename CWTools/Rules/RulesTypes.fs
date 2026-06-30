@@ -186,9 +186,17 @@ and NewField =
     | SubtypeField of string * bool * NewRule list
     | VariableSetField of string
     | VariableGetField of string
+    | DynamicValueField of string
     | VariableField of isInt: bool * is32Bit: bool * minmax: (decimal * decimal)
     | ValueScopeMarkerField of isInt: bool * minmax: (decimal * decimal)
     | ValueScopeField of isInt: bool * minmax: (decimal * decimal)
+    | CommandField
+    | ScriptValueReferenceField
+    | DefineReferenceField
+    | ArrayDefineReferenceField
+    | TagsField of name: string * condition: bool
+    | DatabaseObjectField
+    | NameFormatField of string
     | MarkerField of Marker
     | JominiGuiField
     | IgnoreMarkerField
@@ -231,6 +239,58 @@ type RootRule =
         | SingleAliasRule(n, r) -> $"Single alias definition %s{n} ({r})"
         | TypeRule(n, r) -> $"Type rule %s{n} ({r})"
 // type EffectRule = Rule // Add scopes
+
+type ConfigPriority =
+    { path: string
+      strategy: string }
+
+type SystemScopeConfig =
+    { id: string
+      baseId: string option
+      name: string option
+      description: string option }
+
+type LocaleConfig =
+    { id: string
+      codes: string array
+      supports: bool option
+      description: string option }
+
+type DatabaseObjectTypeConfig =
+    { name: string
+      objectType: string option
+      swapType: string option
+      localisationPrefix: string option }
+
+type ExtendedOnActionConfig =
+    { name: string
+      eventType: string
+      hint: string option
+      replaceScopes: ReplaceScopes option
+      description: string option }
+
+type ExtendedConfigMetadata =
+    { priorities: Map<string, ConfigPriority>
+      systemScopes: Map<string, SystemScopeConfig>
+      locales: Map<string, LocaleConfig>
+      databaseObjectTypes: Map<string, DatabaseObjectTypeConfig>
+      onActions: Map<string, ExtendedOnActionConfig> }
+
+module ExtendedConfigMetadata =
+    let empty =
+        { priorities = Map.empty
+          systemScopes = Map.empty
+          locales = Map.empty
+          databaseObjectTypes = Map.empty
+          onActions = Map.empty }
+
+    let merge left right =
+        { priorities = Map.fold (fun s k v -> Map.add k v s) left.priorities right.priorities
+          systemScopes = Map.fold (fun s k v -> Map.add k v s) left.systemScopes right.systemScopes
+          locales = Map.fold (fun s k v -> Map.add k v s) left.locales right.locales
+          databaseObjectTypes =
+            Map.fold (fun s k v -> Map.add k v s) left.databaseObjectTypes right.databaseObjectTypes
+          onActions = Map.fold (fun s k v -> Map.add k v s) left.onActions right.onActions }
 
 type EnumDefinition =
     { key: string
