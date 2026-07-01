@@ -3113,6 +3113,58 @@ let nestedEventTargetTests =
                   (Set.contains "wg_dragon_own_country?" exists)
                   $"exists event target should not include '?' in the key, got %A{exists}"
 
+          testCase "global save under owner existence guard is collected"
+          <| fun () ->
+              let input =
+                  "fleet_event = {\n\
+                            id = ai_action.6\n\
+                            immediate = {\n\
+                            owner? = { save_global_event_target_as = kuat_friendly_faction }\n\
+                            }\n\
+                            }"
+
+              let node = parseRoot input
+              let globals = STLProcess.findAllSavedGlobalEventTargets node
+
+              Expect.contains
+                  globals
+                  "kuat_friendly_faction"
+                  $"owner? global save should be collected, got %A{globals}"
+          testCase "global saved event target satisfies guarded event-chain usage"
+          <| fun () ->
+              let input =
+                  "event = {\n\
+                            id = ai_action.14\n\
+                            trigger = {\n\
+                            exists = event_target:kuat_friendly_faction\n\
+                            any_galaxy_fleet = {\n\
+                            controller? = { is_at_war_with = event_target:kuat_friendly_faction }\n\
+                            }\n\
+                            }\n\
+                            immediate = {\n\
+                            event_target:kuat_friendly_faction = { clear_orders = yes }\n\
+                            }\n\
+                            }\n\
+                            fleet_event = {\n\
+                            id = ai_action.6\n\
+                            immediate = {\n\
+                            owner? = { save_global_event_target_as = kuat_friendly_faction }\n\
+                            set_automatic_fleet_avaliable = { FRIENDLY_TARGET = event_target:kuat_friendly_faction }\n\
+                            }\n\
+                            }"
+
+              let root = parseRoot input
+              let events = root.Children
+
+              let globals =
+                  events
+                  |> List.map STLProcess.findAllSavedGlobalEventTargets
+                  |> List.fold Set.union Set.empty
+
+              let result =
+                  CWTools.Validation.Stellaris.STLEventValidation.checkEventChain [] [] [] globals events
+
+              Expect.equal result OK $"global target should suppress CW220/CW221, got %A{result}"
           testCase "save via nested parameterised call propagates to caller"
           <| fun () ->
               // Mirrors vanilla cosmic storms: try_spawn calls choose_location

@@ -597,9 +597,15 @@ module STLEventValidation =
                 let globalScriptedEffects =
                     seffects |> List.collect (fun se -> se.GlobalEventTargets) |> Set.ofList
 
-                // Collect global event targets (save_global_event_target_as) from all effect blocks
-                let globalSavedTargets =
+                // Global targets are workspace-wide once saved anywhere; scan raw mod trees too,
+                // not just EffectBlocks, so saves under scope guards (owner? = { ... }) aren't missed.
+                let globalSaveSources =
                     effects
+                    @ events
+                    @ es.GlobMatchChildren("**/common/**/*.txt")
+
+                let globalSavedTargets =
+                    globalSaveSources
                     |> List.map findAllSavedGlobalEventTargets
                     |> List.fold Set.union Set.empty
 
