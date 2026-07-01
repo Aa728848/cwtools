@@ -307,10 +307,26 @@ module private RulesParserImpl =
         (valueRequiredQuotes: bool)
         (comments: string list)
         =
+        let commentSetting name =
+            comments
+            |> List.tryPick (fun s ->
+                let trimmed = s.Trim().TrimStart('#').Trim()
+                let equalsIndex = trimmed.IndexOf '='
+
+                if equalsIndex >= 0 then
+                    let key = trimmed.Substring(0, equalsIndex).Trim()
+
+                    if String.Equals(key, name, StringComparison.OrdinalIgnoreCase) then
+                        Some(trimmed.Substring(equalsIndex + 1).Trim())
+                    else
+                        None
+                else
+                    None)
+
         let min, max, strictmin =
-            match comments |> List.tryFind (fun s -> s.Contains("cardinality")) with
+            match commentSetting "cardinality" with
             | Some c ->
-                let nums = c.Substring(c.IndexOf '=' + 1).Trim().Split("..", 2)
+                let nums = c.Split("..", 2)
 
                 try
                     let minText, strictMin =
@@ -333,9 +349,7 @@ module private RulesParserImpl =
             | xs -> Some(xs |> List.map (fun x -> x.Trim('#')) |> String.concat Environment.NewLine)
 
         let pushScope =
-            match comments |> List.tryFind (fun s -> s.Contains("push_scope")) with
-            | Some s -> s.Substring(s.IndexOf '=' + 1).Trim() |> parseScope |> Some
-            | None -> None
+            commentSetting "push_scope" |> Option.map parseScope
 
         let reqScope =
             match comments |> List.tryFind (fun s -> s.StartsWith("# scope =")) with
@@ -353,9 +367,7 @@ module private RulesParserImpl =
             | None -> []
 
         let severity =
-            match comments |> List.tryFind (fun s -> s.Contains("severity")) with
-            | Some s -> s.Substring(s.IndexOf "=" + 1).Trim() |> parseSeverity |> Some
-            | None -> None
+            commentSetting "severity" |> Option.map parseSeverity
 
         let referenceDetails =
             match comments |> List.tryFind (fun s -> s.Contains("outgoingReferenceLabel")) with
@@ -368,35 +380,49 @@ module private RulesParserImpl =
         let comparison = operator = Operator.EqualEqual
 
         let errorIfMatched =
-            match comments |> List.tryFind (fun s -> s.Contains("error_if_only_match")) with
-            | Some s -> s.Substring(s.IndexOf '=' + 1).Trim() |> Some
-            | None -> None
+            commentSetting "error_if_only_match"
 
         let completionType =
-            match comments |> List.tryFind (fun s -> s.Contains("completion_type")) with
-            | Some s when s.Contains '=' -> s.Substring(s.IndexOf '=' + 1).Trim() |> Some
-            | _ -> None
+            commentSetting "completion_type"
 
         let typePrefixFrom =
-            match comments |> List.tryFind (fun s -> s.Contains("type_prefix_from")) with
-            | Some s when s.Contains '=' -> s.Substring(s.IndexOf '=' + 1).Trim() |> Some
-            | _ -> None
+            commentSetting "type_prefix_from"
 
         let typeSuffixPatterns =
             match
-                comments
-                |> List.tryFind (fun s ->
-                    s.Contains("type_suffix_pattern")
-                    || s.Contains("type_suffix_patterns"))
+                commentSetting "type_suffix_patterns"
+                |> Option.orElseWith (fun () -> commentSetting "type_suffix_pattern")
             with
-            | Some s when s.Contains '=' ->
-                s.Substring(s.IndexOf '=' + 1).Trim().Trim('{', '}')
-                    .Split([| ' '; '\t'; ',' |], StringSplitOptions.RemoveEmptyEntries)
+            | Some s ->
+                s.Trim().Trim('{', '}').Split([| ' '; '\t'; ',' |], StringSplitOptions.RemoveEmptyEntries)
                 |> Array.map (fun value -> value.Trim().Trim('"'))
                 |> Array.filter (String.IsNullOrWhiteSpace >> not)
                 |> Array.distinct
                 |> Array.toList
             | _ -> []
+
+        let parseStringListSetting (value: string) =
+            value.Trim().Trim('{', '}')
+                .Split([| ' '; '\t'; ',' |], StringSplitOptions.RemoveEmptyEntries)
+            |> Array.map (fun v -> v.Trim().Trim('"').TrimStart('.').ToLowerInvariant())
+            |> Array.filter (String.IsNullOrWhiteSpace >> not)
+            |> Array.distinct
+            |> Array.toList
+
+        let fileExtensions =
+            commentSetting "file_extensions"
+            |> Option.map parseStringListSetting
+            |> Option.defaultValue []
+
+        let colorType =
+            commentSetting "color_type"
+            |> Option.map (fun v -> v.Trim().Trim('"').ToLowerInvariant())
+            |> Option.filter (String.IsNullOrWhiteSpace >> not)
+
+        let inject =
+            commentSetting "inject"
+            |> Option.map (fun v -> v.Trim().Trim('"'))
+            |> Option.filter (String.IsNullOrWhiteSpace >> not)
 
         { min = min
           max = max
@@ -415,7 +441,10 @@ module private RulesParserImpl =
           completionType = completionType
           errorIfOnlyMatch = errorIfMatched
           typePrefixFrom = typePrefixFrom
-          typeSuffixPatterns = typeSuffixPatterns }
+          typeSuffixPatterns = typeSuffixPatterns
+          fileExtensions = fileExtensions
+          colorType = colorType
+          inject = inject }
 
     let fastStartsWith (x: string) y =
         x.StartsWith(y, StringComparison.OrdinalIgnoreCase)
@@ -445,6 +474,13 @@ module private RulesParserImpl =
                     | _ -> FilepathField(Some setting, None)
                 | false -> FilepathField(Some setting, None)
             | None -> FilepathField(None, None)
+        | "filename" -> FilenameField None
+        | x when fastStartsWith x "filename[" ->
+            match getSettingFromString x "filename" with
+            | Some folder -> FilenameField(Some folder)
+            | None -> FilenameField None
+        | "abs_filepath"
+        | "absolute_filepath" -> AbsoluteFilepathField
         | "date_field" -> ValueField Date
         | x when fastStartsWith x "date_field[" || fastStartsWith x "date_field(" -> ValueField Date
         | "datetime_field" -> ValueField DateTime
@@ -635,9 +671,18 @@ module private RulesParserImpl =
             | None -> ScalarField ScalarValue
         | "portrait_dna_field" -> ValueField CK2DNA
         | "portrait_properties_field" -> ValueField CK2DNAProperty
-        | "colour_field" -> MarkerField Marker.ColourField
-        | "color_field" -> MarkerField Marker.ColourField
-        | x when fastStartsWith x "colour[" || fastStartsWith x "color[" -> MarkerField Marker.ColourField
+        | "colour_field" -> MarkerField(Marker.ColourField None)
+        | "color_field" -> MarkerField(Marker.ColourField None)
+        | x when fastStartsWith x "colour[" ->
+            getSettingFromString x "colour"
+            |> Option.map (fun value -> value.Trim().Trim('"').ToLowerInvariant())
+            |> Marker.ColourField
+            |> MarkerField
+        | x when fastStartsWith x "color[" ->
+            getSettingFromString x "color"
+            |> Option.map (fun value -> value.Trim().Trim('"').ToLowerInvariant())
+            |> Marker.ColourField
+            |> MarkerField
         | "ir_country_tag_field" -> MarkerField Marker.IRCountryTag
         | "ir_family_name_field" -> ValueField IRFamilyName
         | "$command" -> CommandField
@@ -653,6 +698,18 @@ module private RulesParserImpl =
             | Some name -> TagsField(name, true)
             | None -> ScalarField ScalarValue
         | "$database_object" -> DatabaseObjectField
+        | x when fastStartsWith x "glob.i:" -> PatternField(GlobPattern, x.Substring(7), true)
+        | x when fastStartsWith x "glob:" -> PatternField(GlobPattern, x.Substring(5), false)
+        | x when fastStartsWith x "ant.i:" -> PatternField(AntPattern, x.Substring(6), true)
+        | x when fastStartsWith x "ant:" -> PatternField(AntPattern, x.Substring(4), false)
+        | x when fastStartsWith x "re.i:" -> PatternField(RegexPattern, x.Substring(5), true)
+        | x when fastStartsWith x "re:" -> PatternField(RegexPattern, x.Substring(3), false)
+        | "$shader_effect" -> ShaderEffectField
+        | "$mesh_locator" -> MeshLocatorField
+        | "$technology_with_level" -> TechnologyWithLevelField
+        | "$parameter" -> ParameterField
+        | "$parameter_value" -> ParameterValueField
+        | "$localisation_parameter" -> LocalisationParameterField
         | "ignore_field" -> IgnoreMarkerField
         | x ->
             // eprintfn "ps %s" x
@@ -733,7 +790,10 @@ module private RulesParserImpl =
           completionType = None
           errorIfOnlyMatch = None
           typePrefixFrom = None
-          typeSuffixPatterns = [] }
+          typeSuffixPatterns = []
+          fileExtensions = []
+          colorType = None
+          inject = None }
 
     let private hsvRule =
         LeafValueRule(ValueField(ValueType.Float(0.0M, 2.0M))),
@@ -754,7 +814,10 @@ module private RulesParserImpl =
           completionType = None
           errorIfOnlyMatch = None
           typePrefixFrom = None
-          typeSuffixPatterns = [] }
+          typeSuffixPatterns = []
+          fileExtensions = []
+          colorType = None
+          inject = None }
 
     let private configLeaf parseScope allScopes anyScope scopeGroup (leaf: Leaf) (comments: string list) (key: string) =
         let leftfield = processKey parseScope anyScope scopeGroup (key.Trim('"'))
@@ -1077,6 +1140,11 @@ module private RulesParserImpl =
                     | Some c -> Some(c.Substring(c.IndexOf '=' + 1).Trim())
                     | None -> None
 
+                let typeKeyRegex =
+                    match comments |> List.tryFind (fun s -> s.Contains "type_key_regex") with
+                    | Some c when c.Contains '=' -> Some(c.Substring(c.IndexOf '=' + 1).Trim().Trim('"'))
+                    | _ -> None
+
                 let onlyIfNot =
                     match comments |> List.tryFind (fun s -> s.Contains "only_if_not") with
                     | Some c ->
@@ -1106,6 +1174,7 @@ module private RulesParserImpl =
                         { name = key
                           rules = rules
                           typeKeyField = typekeyfilter
+                          typeKeyRegex = typeKeyRegex
                           pushScope = pushScope
                           localisation = []
                           startsWith = startsWith
@@ -1154,6 +1223,7 @@ module private RulesParserImpl =
                "path_file"
                "path_extension"
                "starts_with"
+               "type_key_regex"
                "severity"
                "unique"
                "error_unknown_keys" |]
@@ -1203,6 +1273,11 @@ module private RulesParserImpl =
                     Some(node.TagText "starts_with")
                 else
                     None
+
+            let typeKeyRegex =
+                match comments |> List.tryFind (fun s -> s.Contains "type_key_regex") with
+                | Some c when c.Contains '=' -> Some(c.Substring(c.IndexOf '=' + 1).Trim().Trim('"'))
+                | _ -> None
 
             let skiprootkey = getSkipRootKey node
             let subtypes = getNodeComments node |> List.choose parseSubType
@@ -1328,6 +1403,7 @@ module private RulesParserImpl =
                       conditions = None
                       subtypes = subtypes
                       typeKeyFilter = typekeyfilter
+                      typeKeyRegex = typeKeyRegex
                       rootCompletionFromSubtypes = rootCompletionFromSubtypes
                       skipRootKey = skiprootkey
                       warningOnly = warningOnly
@@ -1524,18 +1600,190 @@ module private RulesParserImpl =
 
         rules |> Array.map rulesMapper
 
+    let applyConfigInjections (sourceRulesByFile: (string * RootRule list) list) (rules: RootRule array) =
+        let normalisePath (path: string) =
+            path.Replace('\\', '/').TrimStart('/').ToLowerInvariant()
+
+        let findSourceRules sourcePath =
+            let expected = normalisePath sourcePath
+
+            sourceRulesByFile
+            |> List.tryPick (fun (filename, fileRules) ->
+                let actual = normalisePath filename
+
+                if actual = expected || actual.EndsWith("/" + expected, StringComparison.OrdinalIgnoreCase) then
+                    Some fileRules
+                else
+                    None)
+
+        let segmentMatches (pattern: string) (value: string) =
+            if pattern = "*" then
+                true
+            elif pattern.Contains('*') || pattern.Contains('?') then
+                let regex =
+                    "^"
+                    + System.Text.RegularExpressions.Regex.Escape(pattern)
+                        .Replace(@"\*", ".*")
+                        .Replace(@"\?", ".")
+                    + "$"
+
+                System.Text.RegularExpressions.Regex.IsMatch(
+                    value,
+                    regex,
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                    ||| System.Text.RegularExpressions.RegexOptions.CultureInvariant
+                )
+            else
+                String.Equals(pattern, value, StringComparison.OrdinalIgnoreCase)
+
+        let fieldName =
+            function
+            | SpecificField(SpecificValue value) ->
+                Some(CWTools.Utilities.StringResource.stringManager.GetStringForID value.normal)
+            | _ -> None
+
+        let rootName =
+            function
+            | TypeRule(name, _)
+            | AliasRule(name, _)
+            | SingleAliasRule(name, _) -> name
+
+        let rootRule =
+            function
+            | TypeRule(_, rule)
+            | AliasRule(_, rule)
+            | SingleAliasRule(_, rule) -> rule
+
+        let ruleName (rule, _) =
+            match rule with
+            | NodeRule(left, _)
+            | LeafRule(left, _) -> fieldName left
+            | SubtypeRule(name, _, _) -> Some name
+            | LeafValueRule _
+            | ValueClauseRule _ -> None
+
+        let childRules =
+            function
+            | NodeRule(_, children)
+            | ValueClauseRule children
+            | SubtypeRule(_, _, children) -> Some children
+            | _ -> None
+
+        let rec findInRule segments newRule =
+            match segments with
+            | [] -> [ newRule ]
+            | segment :: tail ->
+                match ruleName newRule with
+                | Some name when segmentMatches segment name ->
+                    if tail.IsEmpty then
+                        [ newRule ]
+                    else
+                        match childRules (fst newRule) with
+                        | Some children -> children |> Array.toList |> List.collect (findInRule tail)
+                        | None -> []
+                | _ -> []
+
+        let findInRoot segments root =
+            match segments with
+            | [] -> []
+            | segment :: tail when segmentMatches segment (rootName root) ->
+                let rule = rootRule root
+
+                if tail.IsEmpty then
+                    [ rule ]
+                else
+                    match childRules (fst rule) with
+                    | Some children -> children |> Array.toList |> List.collect (findInRule tail)
+                    | None -> []
+            | _ -> []
+
+        let resolveInject (expression: string) =
+            match expression.Split('@', 2, StringSplitOptions.RemoveEmptyEntries) with
+            | [| sourcePath; memberPath |] ->
+                let segments =
+                    memberPath.Replace('\\', '/').Split([| '/' |], StringSplitOptions.RemoveEmptyEntries)
+                    |> Array.toList
+
+                findSourceRules sourcePath
+                |> Option.map (fun fileRules -> fileRules |> List.collect (findInRoot segments))
+            | _ -> None
+
+        let hasInject (_, options: Options) = options.inject.IsSome
+
+        let rec injectRule newRule : NewRule =
+            let rule, options = newRule
+
+            let injected =
+                options.inject
+                |> Option.bind resolveInject
+                |> Option.defaultValue []
+
+            let injected =
+                if injected |> List.exists hasInject then
+                    [||]
+                else
+                    injected |> List.toArray
+
+            let injectChildren children =
+                children |> Array.map injectRule |> fun existing -> Array.append existing injected
+
+            match rule with
+            | NodeRule(left, children) -> NodeRule(left, injectChildren children), options
+            | ValueClauseRule children -> ValueClauseRule(injectChildren children), options
+            | SubtypeRule(name, isSubtypeValue, children) ->
+                SubtypeRule(name, isSubtypeValue, injectChildren children), options
+            | _ -> newRule
+
+        let mapRoot =
+            function
+            | TypeRule(name, rule) -> TypeRule(name, injectRule rule)
+            | AliasRule(name, rule) -> AliasRule(name, injectRule rule)
+            | SingleAliasRule(name, rule) -> SingleAliasRule(name, injectRule rule)
+
+        rules |> Array.map mapRoot
+
 
     let replaceColourField (rules: RootRule array) =
 
+        let colorLeafRule (colorType: string option) =
+            match colorType |> Option.map (fun s -> s.Trim().ToLowerInvariant()) with
+            | Some "hex" -> Choice2Of2(ScalarField ScalarValue)
+            | Some "rgb" ->
+                Choice1Of2(
+                    ValueField(ValueType.Float(0.0M, 255.0M)),
+                    { defaultOptions with
+                        min = 3
+                        max = 4 }
+                )
+            | Some "hsv360" ->
+                Choice1Of2(
+                    ValueField(ValueType.Float(0.0M, 360.0M)),
+                    { defaultOptions with
+                        min = 3
+                        max = 4 }
+                )
+            | Some "hsv" ->
+                Choice1Of2(
+                    ValueField(ValueType.Float(0.0M, 2.0M)),
+                    { defaultOptions with
+                        min = 3
+                        max = 4 }
+                )
+            | _ ->
+                Choice1Of2(
+                    ValueField(ValueType.Float(-256.0M, 256.0M)),
+                    { defaultOptions with
+                        min = 3
+                        max = 3 }
+                )
+
         let rec cataRule rule : NewRule array =
             match rule with
-            | LeafRule(l, MarkerField ColourField), o ->
-                [| NodeRule(
-                       l,
-                       [| LeafValueRule(ValueField(ValueType.Float(-256.0M, 256.0M))),
-                          { defaultOptions with min = 3; max = 3 } |]
-                   ),
-                   o |]
+            | LeafRule(l, MarkerField(ColourField explicitColorType)), o ->
+                match colorLeafRule (explicitColorType |> Option.orElse o.colorType) with
+                | Choice1Of2(valueRule, valueOptions) ->
+                    [| NodeRule(l, [| LeafValueRule valueRule, valueOptions |]), o |]
+                | Choice2Of2 scalarRule -> [| LeafRule(l, scalarRule), o |]
             | LeafRule(l, MarkerField IRCountryTag), o ->
                 [| LeafRule(l, ValueField(ValueType.Enum "country_tags")), o
                    LeafRule(l, VariableGetField "dynamic_country_tag"), o |]
@@ -1893,6 +2141,12 @@ module RulesParser =
         let rules, types, enums, complexenums, values, _ =
             parseConfigWithMetadata parseScope allScopes anyScope scopeGroup filename fileString
 
+        let rules =
+            rules
+            |> Array.ofList
+            |> applyConfigInjections [ filename, rules ]
+            |> Array.toList
+
         rules, types, enums, complexenums, values
 
     let parseConfigs
@@ -1904,18 +2158,27 @@ module RulesParser =
         stellarisScopeTriggers
         (files: (string * string) list)
         =
-        let rules, types, enums, complexenums, values, metadata =
+        let parsedFiles =
             files
             |> Seq.map (fun (filename, fileString) ->
-                parseConfigWithMetadata parseScope allScopes anyScope scopeGroup filename fileString)
+                filename, parseConfigWithMetadata parseScope allScopes anyScope scopeGroup filename fileString)
+            |> Seq.toList
+
+        let rules, types, enums, complexenums, values, metadata =
+            parsedFiles
             |> Seq.fold
-                (fun (rs, ts, es, ces, vs, md) (r, t, e, ce, v, fileMd) ->
+                (fun (rs, ts, es, ces, vs, md) (_, (r, t, e, ce, v, fileMd)) ->
                     r @ rs, t @ ts, e @ es, ce @ ces, v @ vs, ExtendedConfigMetadata.merge md fileMd)
                 ([], [], [], [], [], ExtendedConfigMetadata.empty)
+
+        let sourceRulesByFile =
+            parsedFiles
+            |> List.map (fun (filename, (fileRules, _, _, _, _, _)) -> filename, fileRules)
 
         let rules =
             rules
             |> Array.ofList
+            |> applyConfigInjections sourceRulesByFile
             |> replaceValueMarkerFields useFormulas stellarisScopeTriggers
             |> replaceSingleAliases
             |> replaceColourField

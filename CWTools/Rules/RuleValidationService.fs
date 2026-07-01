@@ -319,7 +319,19 @@ type RuleValidationService
         (parent: IClause)
         (severity: Severity)
         =
-        let direct = FieldValidators.checkField p severity ctx field keyIDs leafornode OK
+        let direct =
+            match field with
+            | FilepathField(prefix, extension) when options.fileExtensions.Length > 0 ->
+                FieldValidators.checkFilepathField
+                    p.files
+                    keyIDs
+                    prefix
+                    extension
+                    options.fileExtensions
+                    leafornode
+                    severity
+                    OK
+            | _ -> FieldValidators.checkField p severity ctx field keyIDs leafornode OK
 
         match direct, field with
         | OK, _ -> OK
@@ -788,7 +800,18 @@ type RuleValidationService
             options.severity
             |> Option.defaultValue (if ctx.warningOnly then Severity.Warning else Severity.Error)
         // let errors = OK
-        FieldValidators.checkField p severity ctx rule leafvalue.ValueId leafvalue errors
+        (match rule with
+         | FilepathField(prefix, extension) when options.fileExtensions.Length > 0 ->
+             FieldValidators.checkFilepathField
+                 p.files
+                 leafvalue.ValueId
+                 prefix
+                 extension
+                 options.fileExtensions
+                 leafvalue
+                 severity
+                 errors
+         | _ -> FieldValidators.checkField p severity ctx rule leafvalue.ValueId leafvalue errors)
         <&&> (if checkQuotes leafvalue.ValueId.quoted options.valueRequiredQuotes then
                   OK
               else

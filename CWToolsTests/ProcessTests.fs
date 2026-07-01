@@ -127,6 +127,36 @@ let plsConfigCompatibilityTests =
               | DatabaseObjectField, NameFormatField "character" -> ()
               | other -> failtestf "Expected PLS database/name-format fields, got %A" other
 
+              match
+                  parseField "$shader_effect",
+                  parseField "$mesh_locator",
+                  parseField "$technology_with_level",
+                  parseField "$parameter",
+                  parseField "$parameter_value",
+                  parseField "$localisation_parameter"
+              with
+              | ShaderEffectField,
+                MeshLocatorField,
+                TechnologyWithLevelField,
+                ParameterField,
+                ParameterValueField,
+                LocalisationParameterField -> ()
+              | other -> failtestf "Expected PLS dynamic reference fields, got %A" other
+
+              match parseField "glob:*.dds", parseField "ant:on_daily_*", parseField "re:[a-z_]+" with
+              | PatternField(GlobPattern, "*.dds", false),
+                PatternField(AntPattern, "on_daily_*", false),
+                PatternField(RegexPattern, "[a-z_]+", false) -> ()
+              | other -> failtestf "Expected PLS pattern fields, got %A" other
+
+              match parseField "ant.i:On_Daily_*", parseField "re.i:[A-Z_]+" with
+              | PatternField(AntPattern, "On_Daily_*", true), PatternField(RegexPattern, "[A-Z_]+", true) -> ()
+              | other -> failtestf "Expected PLS ignore-case pattern fields, got %A" other
+
+              match parseField "abs_filepath", parseField "filename[gfx/interface]" with
+              | AbsoluteFilepathField, FilenameField(Some "gfx/interface") -> ()
+              | other -> failtestf "Expected PLS path reference fields, got %A" other
+
           testCase "parses open and closed value field ranges"
           <| fun () ->
               match parseField "value_field[0.0..inf)" with
@@ -297,6 +327,410 @@ let plsConfigCompatibilityTests =
               Expect.contains names "active_outbreak(c1|s1)" "First combined argument link should be generated"
               Expect.contains names "active_outbreak(c2|s1)" "Second combined argument link should be generated"
 
+          testWithCapturedLogs "validates PLS pattern and parameter fields"
+          <| fun () ->
+              let config =
+                  String.concat
+                      "\n"
+                      [ "pattern_rule = {"
+                        "    ant:on_daily_*"
+                        "    glob:portrait_*.dds"
+                        "    re:ship_[0-9]+"
+                        "}"
+                        "scripted_effect = {"
+                        "    $parameter = $parameter_value"
+                        "}"
+                        "gfx_rule = {"
+                        "    shader = $shader_effect"
+                        "    locator = $mesh_locator"
+                        "    tech = $technology_with_level"
+                        "    loc_param = $localisation_parameter"
+                        "}" ]
+
+              let rules, types, _, _, _, metadata =
+                  RulesParser.parseConfigWithMetadata
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      "pls_dynamic_fields.cwt"
+                      config
+
+              let typeRules =
+                  rules
+                  |> List.choose (function
+                      | TypeRule(_, rs) -> Some rs
+                      | _ -> None)
+                  |> Array.ofList
+
+              let apply =
+                  RuleValidationService(
+                      RulesWrapper(rules |> List.toArray),
+                      types,
+                      FrozenDictionary.Empty,
+                      FrozenDictionary.Empty,
+                      FrozenDictionary.Empty,
+                      [||],
+                      FrozenSet.Empty,
+                      EffectMap(),
+                      EffectMap(),
+                      (scopeManager.ParseScope () "Any"),
+                      changeScope,
+                      defaultContext,
+                      STL STLLang.Default,
+                      processLocalisationLazy.Value,
+                      validateLocalisationLazy.Value,
+                      extendedConfigMetadata = metadata
+                  )
+
+              let validate onAction =
+                  let input =
+                      String.concat
+                          "\n"
+                          [ "pattern_rule = {"
+                            $"    %s{onAction}"
+                            "    portrait_city.dds"
+                            "    ship_42"
+                            "}"
+                            "scripted_effect = {"
+                            "    CUSTOM_PARAM = \"owner.GetName\""
+                            "}"
+                            "gfx_rule = {"
+                            "    shader = PdxMeshStandard"
+                            "    locator = turret_locator"
+                            "    tech = tech_lasers@3"
+                            "    loc_param = Root.GetName"
+                            "}" ]
+
+                  match CKParser.parseString input "pls_dynamic_fields.txt" with
+                  | Success(r, _, _) ->
+                      let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+                      apply.ApplyNodeRule(typeRules, node)
+                  | Failure(e, _, _) -> failtest e
+
+              match validate "on_daily_country_tag" with
+              | OK -> ()
+              | Invalid(_, errors) -> failtestf "Valid PLS dynamic fields should pass, got %A" errors
+
+              match validate "on_yearly_country_tag" with
+              | OK -> failtest "Value outside the ant: pattern should fail"
+              | Invalid _ -> ()
+
+          testCase "preserves PLS file extension and color metadata"
+          <| fun () ->
+              let config =
+                  String.concat
+                      "\n"
+                      [ "sprite = {"
+                        "    ## file_extensions = { png dds tga }"
+                        "    texturefile = filepath"
+                        "    ## color_type = hsv"
+                        "    color = colour[hsv]"
+                        "}" ]
+
+              let rules, _, _, _, _, _ =
+                  RulesParser.parseConfigWithMetadata
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      "pls_file_metadata.cwt"
+                      config
+
+              let innerRules =
+                  rules
+                  |> List.tryPick (function
+                      | TypeRule("sprite", (NodeRule(_, inner), _)) -> Some inner
+                      | _ -> None)
+                  |> Option.defaultWith (fun () -> failtest "Expected sprite root rule")
+
+              let optionsFor predicate =
+                  innerRules
+                  |> Array.tryPick (fun (rule, options) ->
+                      if predicate rule then Some options else None)
+                  |> Option.defaultWith (fun () -> failtest "Expected matching child rule")
+
+              let fileOptions =
+                  optionsFor (function
+                      | LeafRule(_, FilepathField _) -> true
+                      | _ -> false)
+
+              let colorOptions =
+                  optionsFor (function
+                      | NodeRule(_, _) -> true
+                      | _ -> false)
+
+              Expect.sequenceEqual fileOptions.fileExtensions [ "png"; "dds"; "tga" ] "file_extensions should be preserved"
+              Expect.equal colorOptions.colorType (Some "hsv") "color_type should be preserved"
+
+          testWithCapturedLogs "uses PLS file extensions for filepath validation"
+          <| fun () ->
+              let config =
+                  String.concat
+                      "\n"
+                      [ "asset = {"
+                        "    ## file_extensions = { dds png }"
+                        "    texture = filepath"
+                        "}" ]
+
+              let rules, types, _, _, _, metadata =
+                  RulesParser.parseConfigWithMetadata
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      "pls_file_extensions.cwt"
+                      config
+
+              let typeRules =
+                  rules
+                  |> List.choose (function
+                      | TypeRule(_, rs) -> Some rs
+                      | _ -> None)
+                  |> Array.ofList
+
+              let files =
+                  [| "gfx/icons/portrait.dds"; "gfx/icons/portrait.png"; "gfx/icons/portrait.txt" |]
+                      .ToFrozenSet(System.StringComparer.OrdinalIgnoreCase)
+
+              let apply =
+                  RuleValidationService(
+                      RulesWrapper(rules |> List.toArray),
+                      types,
+                      FrozenDictionary.Empty,
+                      FrozenDictionary.Empty,
+                      FrozenDictionary.Empty,
+                      [||],
+                      files,
+                      EffectMap(),
+                      EffectMap(),
+                      (scopeManager.ParseScope () "Any"),
+                      changeScope,
+                      defaultContext,
+                      STL STLLang.Default,
+                      processLocalisationLazy.Value,
+                      validateLocalisationLazy.Value,
+                      extendedConfigMetadata = metadata
+                  )
+
+              let validate value =
+                  let input = $"asset = {{\n    texture = \"%s{value}\"\n}}"
+
+                  match CKParser.parseString input "pls_file_extensions.txt" with
+                  | Success(r, _, _) ->
+                      let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+                      apply.ApplyNodeRule(typeRules, node)
+                  | Failure(e, _, _) -> failtest e
+
+              match validate "gfx/icons/portrait.dds", validate "gfx/icons/portrait" with
+              | OK, OK -> ()
+              | explicitResult, inferredResult ->
+                  failtestf
+                      "Allowed explicit and inferred file extensions should pass, got %A and %A"
+                      explicitResult
+                      inferredResult
+
+              match validate "gfx/icons/portrait.txt" with
+              | OK -> failtest "Existing file with an extension outside file_extensions should fail"
+              | Invalid _ -> ()
+
+          testWithCapturedLogs "validates PLS absolute filepath and filename fields"
+          <| fun () ->
+              let config =
+                  String.concat
+                      "\n"
+                      [ "asset = {"
+                        "    path = abs_filepath"
+                        "    icon = filename[gfx/interface]"
+                        "}" ]
+
+              let rules, types, _, _, _, metadata =
+                  RulesParser.parseConfigWithMetadata
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      "pls_path_fields.cwt"
+                      config
+
+              let typeRules =
+                  rules
+                  |> List.choose (function
+                      | TypeRule(_, rs) -> Some rs
+                      | _ -> None)
+                  |> Array.ofList
+
+              let files =
+                  [| "gfx/interface/asset_icon.dds" |].ToFrozenSet(System.StringComparer.OrdinalIgnoreCase)
+
+              let apply =
+                  RuleValidationService(
+                      RulesWrapper(rules |> List.toArray),
+                      types,
+                      FrozenDictionary.Empty,
+                      FrozenDictionary.Empty,
+                      FrozenDictionary.Empty,
+                      [||],
+                      files,
+                      EffectMap(),
+                      EffectMap(),
+                      (scopeManager.ParseScope () "Any"),
+                      changeScope,
+                      defaultContext,
+                      STL STLLang.Default,
+                      processLocalisationLazy.Value,
+                      validateLocalisationLazy.Value,
+                      extendedConfigMetadata = metadata
+                  )
+
+              let validate path icon =
+                  let input = $"asset = {{\n    path = \"%s{path}\"\n    icon = \"%s{icon}\"\n}}"
+
+                  match CKParser.parseString input "pls_path_fields.txt" with
+                  | Success(r, _, _) ->
+                      let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+                      apply.ApplyNodeRule(typeRules, node)
+                  | Failure(e, _, _) -> failtest e
+
+              match validate "C:/mods/example" "asset_icon.dds" with
+              | OK -> ()
+              | Invalid(_, errors) -> failtestf "Valid absolute path and filename should pass, got %A" errors
+
+              match validate "relative/mods/example" "asset_icon.dds" with
+              | OK -> failtest "Relative path should not match abs_filepath"
+              | Invalid _ -> ()
+
+              match validate "C:/mods/example" "nested/asset_icon.dds" with
+              | OK -> failtest "Nested path should not match filename"
+              | Invalid _ -> ()
+
+          testCase "applies PLS color type metadata to color fields"
+          <| fun () ->
+              let config =
+                  String.concat
+                      "\n"
+                      [ "palette = {"
+                        "    ## color_type = rgb"
+                        "    tint = color_field"
+                        "    ## color_type = hex"
+                        "    tint_hex = color_field"
+                        "}" ]
+
+              let rules, _, _, _, _, _ =
+                  RulesParser.parseConfigs
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      true
+                      false
+                      [ "pls_color_type.cwt", config ]
+
+              let innerRules =
+                  rules
+                  |> Array.tryPick (function
+                      | TypeRule("palette", (NodeRule(_, inner), _)) -> Some inner
+                      | _ -> None)
+                  |> Option.defaultWith (fun () -> failtest "Expected palette root rule")
+
+              let tryRule name =
+                  innerRules
+                  |> Array.tryPick (fun (rule, _) ->
+                      match rule with
+                      | NodeRule(SpecificField(SpecificValue value), _)
+                          when CWTools.Utilities.StringResource.stringManager.GetStringForID value.normal = name ->
+                          Some rule
+                      | LeafRule(SpecificField(SpecificValue value), _)
+                          when CWTools.Utilities.StringResource.stringManager.GetStringForID value.normal = name ->
+                          Some rule
+                      | _ -> None)
+                  |> Option.defaultWith (fun () -> failtestf "Expected %s rule" name)
+
+              match tryRule "tint" with
+              | NodeRule(_, [| LeafValueRule(ValueField(ValueType.Float(min, max))), options |]) ->
+                  Expect.equal min 0.0M "rgb color minimum should be applied"
+                  Expect.equal max 255.0M "rgb color maximum should be applied"
+                  Expect.equal options.min 3 "rgb color should require at least 3 channels"
+                  Expect.equal options.max 4 "rgb color should allow alpha"
+              | other -> failtestf "Expected rgb color node rule, got %A" other
+
+              match tryRule "tint_hex" with
+              | LeafRule(_, ScalarField ScalarValue) -> ()
+              | other -> failtestf "Expected hex color scalar rule, got %A" other
+
+          testCase "applies PLS config inject metadata without recursive expansion"
+          <| fun () ->
+              let source =
+                  String.concat
+                      "\n"
+                      [ "injected_group = {"
+                        "    injected1 = 1"
+                        "    injected2 = 2"
+                        "}" ]
+
+              let target =
+                  String.concat
+                      "\n"
+                      [ "## inject = common/test/injection_source.cwt@injected_group/*"
+                        "target_block = {"
+                        "    existing = 0"
+                        "}" ]
+
+              let rules, _, _, _, _, _ =
+                  RulesParser.parseConfigs
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      true
+                      false
+                      [ "common/test/injection_source.cwt", source
+                        "common/test/injection_target.cwt", target ]
+
+              let injectedNames =
+                  rules
+                  |> Array.tryPick (function
+                      | TypeRule("target_block", (NodeRule(_, inner), _)) ->
+                          inner
+                          |> Array.choose (function
+                              | LeafRule(SpecificField(SpecificValue value), _), _ ->
+                                  Some(
+                                      CWTools.Utilities.StringResource.stringManager.GetStringForID value.normal
+                                  )
+                              | _ -> None)
+                          |> Some
+                      | _ -> None)
+                  |> Option.defaultWith (fun () -> failtest "Expected target block rule")
+
+              Expect.contains injectedNames "existing" "Existing child rule should remain"
+              Expect.contains injectedNames "injected1" "Injected child rule should be added"
+              Expect.contains injectedNames "injected2" "Injected child rule should be added"
+
+          testCase "preserves PLS type key regex filters"
+          <| fun () ->
+              let config =
+                  String.concat
+                      "\n"
+                      [ "types = {"
+                        "    ## type_key_regex = \"^ship_.*$\""
+                        "    type[ship_design] = {"
+                        "        path = common/ship_designs"
+                        "    }"
+                        "}" ]
+
+              let _, types, _, _, _, _ =
+                  RulesParser.parseConfigWithMetadata
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      "pls_type_key_regex.cwt"
+                      config
+
+              match types with
+              | [ typeDef ] -> Expect.equal typeDef.typeKeyRegex (Some "^ship_.*$") "type_key_regex should be parsed"
+              | other -> failtestf "Expected one type definition, got %A" other
+
           testCase "keeps recursive single aliases bounded"
           <| fun () ->
               let config =
@@ -321,6 +755,59 @@ let plsConfigCompatibilityTests =
                       [ "recursive_alias.cwt", config ]
 
               Expect.isGreaterThan rules.Length 0 "Recursive single aliases should parse without unbounded expansion"
+
+          testCase "parses external PLS rule samples without importing them"
+          <| fun () ->
+              let root = System.Environment.GetEnvironmentVariable("CWTOOLS_PLS_CONFIG_ROOT")
+
+              if not (System.String.IsNullOrWhiteSpace root) && Directory.Exists root then
+                  let scanRoot =
+                      let cwtRoot = Path.Combine(root, "cwt")
+
+                      if Directory.Exists cwtRoot then
+                          cwtRoot
+                      else
+                          root
+
+                  let failures = ResizeArray<string>()
+
+                  // Compatibility smoke only: external PLS rules are parse samples, not bundled game rules.
+                  let knownMalformedExternalSample (file: string) =
+                      let normalized = file.Replace('\\', '/')
+
+                      [ "/cwtools-vic2-config/history/history_consolidated.cwt"
+                        "/cwtools-stellaris-config/config/common/leader_classes.cwt"
+                        "/cwtools-stellaris-config/config/gfx/asset_selectors.cwt" ]
+                      |> List.exists (fun known ->
+                          normalized.EndsWith(known, System.StringComparison.OrdinalIgnoreCase))
+
+                  Directory.EnumerateFiles(scanRoot, "*.cwt", SearchOption.AllDirectories)
+                  |> Seq.filter (fun file ->
+                      not (file.Contains($"{Path.DirectorySeparatorChar}.git{Path.DirectorySeparatorChar}"))
+                      && not (knownMalformedExternalSample file))
+                  |> Seq.iter (fun file ->
+                      let text = File.ReadAllText file
+
+                      match CKParser.parseString text file with
+                      | Failure(e, _, _) -> failures.Add($"{file}: {e}")
+                      | Success _ ->
+                          try
+                              RulesParser.parseConfigWithMetadata
+                                  (scopeManager.ParseScope())
+                                  scopeManager.AllScopes
+                                  (scopeManager.ParseScope () "Any")
+                                  scopeManager.ScopeGroups
+                                  file
+                                  text
+                              |> ignore
+                          with ex ->
+                              failures.Add($"{file}: {ex.Message}"))
+
+                  let failureList = failures |> Seq.truncate 20 |> Seq.toList
+                  Expect.isEmpty
+                      failureList
+                      ("External PLS config samples should parse when CWTOOLS_PLS_CONFIG_ROOT is set. Failures:\n"
+                       + String.concat "\n" failureList)
 
           testWithCapturedLogs "validates configured database_object fields"
           <| fun () ->
@@ -591,6 +1078,7 @@ let createStarbaseTypeDefLazy =
           conditions = None
           subtypes = []
           typeKeyFilter = None
+          typeKeyRegex = None
           rootCompletionFromSubtypes = false
           skipRootKey = []
           warningOnly = false
@@ -657,6 +1145,7 @@ let shipBehaviorTypeLazy =
           conditions = None
           subtypes = []
           typeKeyFilter = None
+          typeKeyRegex = None
           rootCompletionFromSubtypes = false
           skipRootKey = []
           warningOnly = false
@@ -683,6 +1172,7 @@ let shipSizeTypeLazy =
           conditions = None
           subtypes = []
           typeKeyFilter = None
+          typeKeyRegex = None
           rootCompletionFromSubtypes = false
           skipRootKey = []
           warningOnly = false

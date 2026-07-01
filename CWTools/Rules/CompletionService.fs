@@ -240,6 +240,8 @@ type CompletionService
             |> Option.bind List.tryHead
             |> Option.map (fun n -> p + n + s)
             |> Option.defaultValue "x"
+        | FilenameField _ -> files |> Seq.tryHead |> Option.map Path.GetFileName |> Option.defaultValue "x"
+        | AbsoluteFilepathField -> "C:/path/to/file"
         | ScopeField _ -> "THIS"
         | _ -> "x"
     //TODO: Expand
@@ -795,6 +797,51 @@ type CompletionService
             |> Seq.map CompletionResponse.CreateSimple
             |> Seq.toArray
 
+        let normaliseFileExtension (extension: string) =
+            extension.Trim().TrimStart('.').ToLowerInvariant()
+
+        let fileCompletionItems prefix extension (options: Options) =
+            let allowedExtensions =
+                options.fileExtensions
+                |> List.map normaliseFileExtension
+                |> List.filter (String.IsNullOrWhiteSpace >> not)
+                |> List.distinct
+
+            let matchesPrefix (file: string) =
+                match prefix with
+                | Some p when p <> "" ->
+                    file.Replace('\\', '/').StartsWith(p.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase)
+                | _ -> true
+
+            let matchesExtension (file: string) =
+                let fileExtension =
+                    Path.GetExtension(file) |> normaliseFileExtension
+
+                match extension, allowedExtensions with
+                | Some ext, _ -> fileExtension = normaliseFileExtension ext
+                | None, [] -> true
+                | None, allowed -> allowed |> List.contains fileExtension
+
+            files
+            |> Seq.filter (fun file -> matchesPrefix file && matchesExtension file)
+            |> Seq.map CompletionResponse.CreateSimple
+            |> Seq.toArray
+
+        let filenameCompletionItems prefix =
+            let matchesPrefix (file: string) =
+                match prefix with
+                | Some p when p <> "" ->
+                    file.Replace('\\', '/').StartsWith(p.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase)
+                | _ -> true
+
+            files
+            |> Seq.filter matchesPrefix
+            |> Seq.map (fun file -> Path.GetFileName(file.Replace('\\', '/')))
+            |> Seq.filter (String.IsNullOrWhiteSpace >> not)
+            |> Seq.distinctBy (fun file -> file.ToLowerInvariant())
+            |> Seq.map CompletionResponse.CreateSimple
+            |> Seq.toArray
+
         let databaseObjectCompletionItems (value: string) =
             let configuredTypes = extendedConfigMetadata.databaseObjectTypes
 
@@ -885,7 +932,8 @@ type CompletionService
                         |> Option.map (snd >> Set.toArray)
                         |> Option.defaultValue [||]
                         |> Array.map CompletionResponse.CreateSimple
-                | NewField.FilepathField _ -> files.Select(CompletionResponse.CreateSimple).ToArray()
+                | NewField.FilepathField(prefix, extension) -> fileCompletionItems prefix extension options
+                | NewField.FilenameField prefix -> filenameCompletionItems prefix
                 | NewField.ScopeField x ->
                     completionForRHSScopeChain value scopeContext (CompletionScopeExpectation.Scopes x)
                     |> List.toArray

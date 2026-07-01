@@ -41,6 +41,7 @@ type CheckFieldParams =
 module internal FieldValidators =
 
     open System
+    open System.Text.RegularExpressions
     open CWTools.Process
     open CWTools.Validation
     open CWTools.Validation.ValidationCore
@@ -695,6 +696,16 @@ module internal FieldValidators =
     let private isDynamicIdentifier (value: string) =
         value <> "" && value |> Seq.forall isDynamicIdentifierChar
 
+    let private isExtendedIdentifierChar c =
+        isDynamicIdentifierChar c
+        || c = ':'
+        || c = '/'
+        || c = '\\'
+        || c = '\''
+
+    let private isExtendedIdentifier (value: string) =
+        value <> "" && value |> Seq.forall isExtendedIdentifierChar
+
     let private dynamicValueName (value: string) =
         let atIndex = value.IndexOf('@')
 
@@ -877,6 +888,95 @@ module internal FieldValidators =
         let key = trimQuote (getOriginalKey ids)
         key <> "" || containsParameter key
 
+    let private wildcardRegex kind (pattern: string) =
+        match kind with
+        | GlobPattern ->
+            Regex.Escape(pattern).Replace(@"\*", ".*").Replace(@"\?", ".")
+        | AntPattern ->
+            Regex.Escape(pattern)
+                .Replace(@"\*\*", ".*")
+                .Replace(@"\*", @"[^/\\]*")
+                .Replace(@"\?", @"[^/\\]")
+        | RegexPattern -> pattern
+
+    let private checkPatternFieldNE kind pattern ignoreCase (ids: StringTokens) =
+        let key = trimQuote (getOriginalKey ids)
+
+        if containsParameter key then
+            true
+        else
+            try
+                let options =
+                    RegexOptions.CultureInvariant
+                    ||| if ignoreCase then
+                            RegexOptions.IgnoreCase
+                        else
+                            RegexOptions.None
+
+                Regex.IsMatch(
+                    key,
+                    $"^(?:%s{wildcardRegex kind pattern})$",
+                    options
+                )
+            with _ ->
+                false
+
+    let private checkLooseExpressionNE (ids: StringTokens) =
+        let key = trimQuote (getOriginalKey ids)
+        key <> "" || containsParameter key
+
+    let private checkAbsoluteFilepathNE (ids: StringTokens) =
+        let key = trimQuote (getOriginalKey ids)
+
+        containsParameter key
+        || Regex.IsMatch(
+            key,
+            @"^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+|/).+",
+            RegexOptions.CultureInvariant
+        )
+
+    let private checkFilenameFieldNE (files: FrozenSet<string>) (ids: StringTokens) (prefix: string option) =
+        let key = (trimQuote (getOriginalKey ids)).Replace('\\', '/')
+
+        if containsParameter key then
+            true
+        elif key = "" || key.Contains('/') then
+            false
+        else
+            let normalisedPrefix =
+                prefix
+                |> Option.map (fun p -> p.Replace('\\', '/').Trim('/'))
+                |> Option.filter (String.IsNullOrWhiteSpace >> not)
+
+            files.Any(fun file ->
+                let normalisedFile = file.Replace('\\', '/').Trim('/')
+
+                let folderMatches =
+                    match normalisedPrefix with
+                    | Some p -> normalisedFile.StartsWith(p.TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase)
+                    | None -> true
+
+                folderMatches
+                && String.Equals(
+                    System.IO.Path.GetFileName normalisedFile,
+                    key,
+                    StringComparison.OrdinalIgnoreCase
+                ))
+
+    let private checkParameterNE (ids: StringTokens) =
+        let key = trimQuote (getOriginalKey ids)
+        containsParameter key || isExtendedIdentifier key
+
+    let private checkTechnologyWithLevelNE (ids: StringTokens) =
+        let key = trimQuote (getOriginalKey ids)
+
+        containsParameter key
+        || Regex.IsMatch(
+            key,
+            "^[A-Za-z_][A-Za-z0-9_.:-]*(?:@[0-9]+)?$",
+            RegexOptions.CultureInvariant
+        )
+
     let private checkExtendedExpressionField name checkNE ids leafornode errors =
         if checkNE ids then
             errors
@@ -893,27 +993,98 @@ module internal FieldValidators =
         (ids: StringTokens)
         (prefix: string option)
         (extension: string option)
+        (fileExtensions: string list)
         leafornode
+        severity
         errors
         =
-        let isValid, file =
-            FieldValidatorsHelper.CheckFilePathField(getOriginalKey ids, files, prefix, extension, true)
+        let normaliseExtension (extension: string) =
+            extension.Trim().TrimStart('.').ToLowerInvariant()
+
+        let allowedExtensions =
+            fileExtensions
+            |> List.map normaliseExtension
+            |> List.filter (String.IsNullOrWhiteSpace >> not)
+            |> List.distinct
+
+        let checkWith extension =
+            FieldValidatorsHelper.CheckFilePathField(getOriginalKey ids, files, prefix, extension, false) |> fst
+
+        let isValid =
+            match allowedExtensions with
+            | [] -> checkWith extension
+            | allowed ->
+                match extension with
+                | Some ext when allowed |> List.contains (normaliseExtension ext) -> checkWith extension
+                | Some _ -> false
+                | None ->
+                    let key =
+                        (trimQuote (getOriginalKey ids)).Replace('\\', '/')
+
+                    let keyExtension =
+                        System.IO.Path.GetExtension(key) |> normaliseExtension
+
+                    if keyExtension <> "" then
+                        (allowed |> List.contains keyExtension) && checkWith None
+                    else
+                        allowed |> List.exists (fun ext -> checkWith (Some("." + ext)))
 
         if isValid then
             errors
-        else
+        elif allowedExtensions.IsEmpty then
+            let _, file =
+                FieldValidatorsHelper.CheckFilePathField(getOriginalKey ids, files, prefix, extension, true)
+
             inv (ErrorCodes.MissingFile file) leafornode <&&&> errors
+        else
+            let allowedText =
+                allowedExtensions
+                |> List.map (fun ext -> "." + ext)
+                |> String.concat ", "
+
+            inv
+                (ErrorCodes.CustomError
+                    $"Expected file path with extension %s{allowedText}, got %s{trimQuote (getOriginalKey ids)}"
+                    severity)
+                leafornode
+            <&&&> errors
 
     let checkFilepathFieldNE
         (files: FrozenSet<string>)
         (ids: StringTokens)
         (prefix: string option)
         (extension: string option)
+        (fileExtensions: string list)
         =
-        let result, _ =
-            FieldValidatorsHelper.CheckFilePathField(getOriginalKey ids, files, prefix, extension, false)
+        let normaliseExtension (extension: string) =
+            extension.Trim().TrimStart('.').ToLowerInvariant()
 
-        result
+        let allowedExtensions =
+            fileExtensions
+            |> List.map normaliseExtension
+            |> List.filter (String.IsNullOrWhiteSpace >> not)
+            |> List.distinct
+
+        let checkWith extension =
+            FieldValidatorsHelper.CheckFilePathField(getOriginalKey ids, files, prefix, extension, false) |> fst
+
+        match allowedExtensions with
+        | [] -> checkWith extension
+        | allowed ->
+            match extension with
+            | Some ext when allowed |> List.contains (normaliseExtension ext) -> checkWith extension
+            | Some _ -> false
+            | None ->
+                let key =
+                    (trimQuote (getOriginalKey ids)).Replace('\\', '/')
+
+                let keyExtension =
+                    System.IO.Path.GetExtension(key) |> normaliseExtension
+
+                if keyExtension <> "" then
+                    (allowed |> List.contains keyExtension) && checkWith None
+                else
+                    allowed |> List.exists (fun ext -> checkWith (Some("." + ext)))
 
     let private fileExistsIgnoringCase (files: FrozenSet<string>) (file: string) =
         files.Any(fun existing -> existing.Equals(file, System.StringComparison.OrdinalIgnoreCase))
@@ -1292,7 +1463,20 @@ module internal FieldValidators =
                     keyIDs
                     leafornode
                     errors
-            | FilepathField(prefix, extension) -> checkFilepathField p.files keyIDs prefix extension leafornode errors
+            | FilepathField(prefix, extension) ->
+                checkFilepathField p.files keyIDs prefix extension [] leafornode severity errors
+            | FilenameField prefix ->
+                if checkFilenameFieldNE p.files keyIDs prefix then
+                    errors
+                else
+                    inv
+                        (ErrorCodes.CustomError
+                            $"Expected filename, got %s{trimQuote (getOriginalKey keyIDs)}"
+                            severity)
+                        leafornode
+                    <&&&> errors
+            | AbsoluteFilepathField ->
+                checkExtendedExpressionField "absolute file path" checkAbsoluteFilepathNE keyIDs leafornode errors
             | IconField folder -> checkIconField p.files folder keyIDs leafornode errors
             | VariableSetField v -> errors
             | VariableGetField v -> checkVariableGetField p.varMap severity v keyIDs leafornode errors
@@ -1362,6 +1546,37 @@ module internal FieldValidators =
                     leafornode
                     errors
             | NameFormatField _ -> checkExtendedExpressionField "name format expression" checkNameFormatNE keyIDs leafornode errors
+            | PatternField(kind, pattern, ignoreCase) ->
+                if checkPatternFieldNE kind pattern ignoreCase keyIDs then
+                    errors
+                else
+                    inv
+                        (ErrorCodes.ConfigRulesUnexpectedValue
+                            $"Expected value matching %A{kind} pattern %s{pattern}, got %s{trimQuote (getOriginalKey keyIDs)}"
+                            severity)
+                        leafornode
+                    <&&&> errors
+            | ShaderEffectField ->
+                checkExtendedExpressionField "shader effect expression" checkLooseExpressionNE keyIDs leafornode errors
+            | MeshLocatorField ->
+                checkExtendedExpressionField "mesh locator expression" checkLooseExpressionNE keyIDs leafornode errors
+            | TechnologyWithLevelField ->
+                checkExtendedExpressionField
+                    "technology-with-level expression"
+                    checkTechnologyWithLevelNE
+                    keyIDs
+                    leafornode
+                    errors
+            | ParameterField -> checkExtendedExpressionField "parameter expression" checkParameterNE keyIDs leafornode errors
+            | ParameterValueField ->
+                checkExtendedExpressionField "parameter value expression" checkLooseExpressionNE keyIDs leafornode errors
+            | LocalisationParameterField ->
+                checkExtendedExpressionField
+                    "localisation parameter expression"
+                    checkParameterNE
+                    keyIDs
+                    leafornode
+                    errors
             | ScalarField _ -> errors
             | SpecificField(SpecificValue v) ->
                 if keyIDs.lower = v.lower then
@@ -1417,7 +1632,9 @@ module internal FieldValidators =
                     s
                     keyIDs
             | LocalisationField _ -> true
-            | FilepathField(prefix, extension) -> checkFilepathFieldNE p.files keyIDs prefix extension
+            | FilepathField(prefix, extension) -> checkFilepathFieldNE p.files keyIDs prefix extension []
+            | FilenameField prefix -> checkFilenameFieldNE p.files keyIDs prefix
+            | AbsoluteFilepathField -> checkAbsoluteFilepathNE keyIDs
             | IconField folder -> checkIconFieldNE p.files folder keyIDs
             | VariableSetField _ -> true
             | VariableGetField v -> checkVariableGetFieldNE p.varMap v keyIDs
@@ -1455,6 +1672,13 @@ module internal FieldValidators =
             | TagsField(name, condition) -> checkTagsFieldNE p.varMap name condition keyIDs
             | DatabaseObjectField -> checkDatabaseObjectNE p.databaseObjectTypes p.typesMap p.defaultLocalisation keyIDs
             | NameFormatField _ -> checkNameFormatNE keyIDs
+            | PatternField(kind, pattern, ignoreCase) -> checkPatternFieldNE kind pattern ignoreCase keyIDs
+            | ShaderEffectField -> checkLooseExpressionNE keyIDs
+            | MeshLocatorField -> checkLooseExpressionNE keyIDs
+            | TechnologyWithLevelField -> checkTechnologyWithLevelNE keyIDs
+            | ParameterField -> checkParameterNE keyIDs
+            | ParameterValueField -> checkLooseExpressionNE keyIDs
+            | LocalisationParameterField -> checkParameterNE keyIDs
             | TypeMarkerField(dummy, _) -> dummy = keyIDs.lower
             | ScalarField _ -> true
             | SpecificField(SpecificValue v) -> v.lower = keyIDs.lower
@@ -1536,6 +1760,17 @@ module internal FieldValidators =
         | None -> true
         && match td.startsWith with
            | Some prefix -> n.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+           | None -> true
+        && match td.typeKeyRegex with
+           | Some pattern ->
+               try
+                   Regex.IsMatch(
+                       n,
+                       pattern,
+                       RegexOptions.IgnoreCase ||| RegexOptions.CultureInvariant
+                   )
+               with _ ->
+                   false
            | None -> true
         && match td.keyPrefix, keyPrefix with
            | Some prefix, Some keyPrefix -> prefix == keyPrefix

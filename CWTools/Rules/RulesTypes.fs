@@ -31,7 +31,10 @@ type Options =
       completionType: string option
       errorIfOnlyMatch: string option
       typePrefixFrom: string option
-      typeSuffixPatterns: string list }
+      typeSuffixPatterns: string list
+      fileExtensions: string list
+      colorType: string option
+      inject: string option }
 
     static member DefaultOptions =
         { min = 0
@@ -51,7 +54,10 @@ type Options =
           completionType = None
           errorIfOnlyMatch = None
           typePrefixFrom = None
-          typeSuffixPatterns = [] }
+          typeSuffixPatterns = []
+          fileExtensions = []
+          colorType = None
+          inject = None }
 
 type ValueType =
     | Enum of enumc: string
@@ -94,8 +100,13 @@ type TypeType =
 
 [<Struct; IsReadOnly>]
 type Marker =
-    | ColourField
+    | ColourField of colorType: string option
     | IRCountryTag
+
+type PatternKind =
+    | GlobPattern
+    | AntPattern
+    | RegexPattern
 
 type TypeLocalisation =
     { name: string
@@ -138,6 +149,7 @@ type SubTypeDefinition =
       abbreviation: string option
       rules: NewRule array
       typeKeyField: string option
+      typeKeyRegex: string option
       startsWith: string option
       pushScope: Scope option
       localisation: TypeLocalisation list
@@ -151,6 +163,7 @@ and TypeDefinition =
       conditions: Node option
       subtypes: SubTypeDefinition list
       typeKeyFilter: (string list * bool) option
+      typeKeyRegex: string option
       rootCompletionFromSubtypes: bool
       skipRootKey: SkipRootKey list
       startsWith: string option
@@ -175,6 +188,8 @@ and NewField =
     | ScopeField of Scope list
     | LocalisationField of synced: bool * isInline: bool
     | FilepathField of prefix: string option * extension: string option
+    | FilenameField of prefix: string option
+    | AbsoluteFilepathField
     | IconField of string
     /// The keys of an alias rule
     | AliasValueKeysField of string
@@ -197,6 +212,13 @@ and NewField =
     | TagsField of name: string * condition: bool
     | DatabaseObjectField
     | NameFormatField of string
+    | PatternField of kind: PatternKind * pattern: string * ignoreCase: bool
+    | ShaderEffectField
+    | MeshLocatorField
+    | TechnologyWithLevelField
+    | ParameterField
+    | ParameterValueField
+    | LocalisationParameterField
     | MarkerField of Marker
     | JominiGuiField
     | IgnoreMarkerField

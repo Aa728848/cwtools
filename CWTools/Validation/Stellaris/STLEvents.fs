@@ -603,36 +603,13 @@ module STLEventValidation =
                     |> List.map findAllSavedGlobalEventTargets
                     |> List.fold Set.union Set.empty
 
-                let isEventFile (fileName: string) =
-                    let normalized = fileName.Replace('\\', '/')
-                    normalized.IndexOf("/events/", StringComparison.OrdinalIgnoreCase) >= 0
-
-                let isScriptedEffectFile (fileName: string) =
-                    let normalized = fileName.Replace('\\', '/')
-                    normalized.IndexOf("/common/scripted_effects/", StringComparison.OrdinalIgnoreCase) >= 0
-
-                let ambientSavedTargetEffects =
-                    effects
-                    |> List.filter (fun e ->
-                        not (isEventFile e.Position.FileName)
-                        && not (isScriptedEffectFile e.Position.FileName))
-
-                let dynamicEventSavedTargets =
-                    effects
-                    |> List.filter (fun e -> isEventFile e.Position.FileName)
-                    |> List.map findAllSavedEventTargets
-                    |> List.fold Set.union Set.empty
-                    |> Set.filter (fun target -> target.Contains("@"))
-
                 // Also collect ALL save_event_target_as from all effect blocks in the workspace.
                 // This prevents false positives when targets are set in on_actions, decisions,
-                // or other non-event entry points, without leaking local event targets between
-                // unrelated events or treating scripted-effect definitions as implicit calls.
+                // scripted effects, or events outside the current chain.
                 let allSavedTargets =
-                    ambientSavedTargetEffects
+                    effects
                     |> List.map findAllSavedEventTargets
                     |> List.fold Set.union Set.empty
-                    |> Set.union dynamicEventSavedTargets
 
                 // Saves performed through parameterised scripted-effect calls anywhere
                 // in the workspace (local and global), substituted with each call
@@ -642,7 +619,7 @@ module STLEventValidation =
                     seffects |> List.map (fun se -> se.Name.lower, se) |> Map.ofList
 
                 let substitutedCallSaves =
-                    ambientSavedTargetEffects
+                    effects
                     |> List.map (findSubstitutedCallSaves effectsByName)
                     |> List.fold Set.union Set.empty
 
