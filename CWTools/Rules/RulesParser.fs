@@ -1457,32 +1457,38 @@ module private RulesParserImpl =
 
 
     let replaceSingleAliases (rules: RootRule array) =
-        let mutable singlealiases =
+        let singlealiases =
             rules
             |> Array.choose (function
                 | SingleAliasRule(name, inner) -> Some(SingleAliasRule(name, inner))
                 | _ -> None)
 
-        let singlealiasesmap () =
+        let singlealiasesmap =
             singlealiases
             |> Array.choose (function
                 | SingleAliasRule(name, inner) -> Some(name, inner)
                 | _ -> None)
             |> Map.ofArray
 
-        let rec cataRule rule : NewRule =
+        let aliasInStack name stack =
+            stack |> List.exists (fun n -> String.Equals(n, name, StringComparison.OrdinalIgnoreCase))
+
+        let rec cataRule stack rule : NewRule =
             match rule with
-            | NodeRule(l, r), o -> (NodeRule(l, r |> Array.map cataRule), o)
-            | ValueClauseRule r, o -> (ValueClauseRule(r |> Array.map cataRule), o)
-            | SubtypeRule(a, b, i), o -> (SubtypeRule(a, b, (i |> Array.map cataRule)), o)
+            | NodeRule(l, r), o -> (NodeRule(l, r |> Array.map (cataRule stack)), o)
+            | ValueClauseRule r, o -> (ValueClauseRule(r |> Array.map (cataRule stack)), o)
+            | SubtypeRule(a, b, i), o -> (SubtypeRule(a, b, (i |> Array.map (cataRule stack))), o)
+            | LeafRule(l, SingleAliasField name), o when aliasInStack name stack -> rule
             | LeafRule(l, SingleAliasField name), o ->
-                match singlealiasesmap () |> Map.tryFind name with
+                let nextStack = name :: stack
+
+                match singlealiasesmap |> Map.tryFind name with
                 | Some(LeafRule(al, ar), ao) ->
                     // log (sprintf "Replaced single alias leaf %A %s with leaf %A" (l |> function |ValueField (Specific x) -> StringResource.stringManager.GetStringForIDs x |_ -> "") name (al |> function |ValueField (Specific x) -> StringResource.stringManager.GetStringForIDs x |_ -> ""))
-                    LeafRule(l, ar), o
+                    cataRule nextStack (LeafRule(l, ar), o)
                 | Some(NodeRule(al, ar), ao) ->
                     // log (sprintf "Replaced single alias leaf %A %s with node %A" (l |> function |ValueField (Specific x) -> StringResource.stringManager.GetStringForIDs x |_ -> "") name (al |> function |ValueField (Specific x) -> StringResource.stringManager.GetStringForIDs x |_ -> ""))
-                    NodeRule(l, ar), o
+                    NodeRule(l, ar |> Array.map (cataRule nextStack)), o
                 | x ->
                     log (
                         sprintf
@@ -1497,9 +1503,12 @@ module private RulesParserImpl =
 
                     rule
             /// TODO: Add clause key validation
+            | LeafValueRule(SingleAliasClauseField(_, name)), o when aliasInStack name stack -> rule
             | LeafValueRule(SingleAliasClauseField(clauseKey, name)), o ->
-                match singlealiasesmap () |> Map.tryFind name with
-                | Some(NodeRule(al, ar), ao) -> ValueClauseRule(ar), o
+                let nextStack = name :: stack
+
+                match singlealiasesmap |> Map.tryFind name with
+                | Some(NodeRule(al, ar), ao) -> ValueClauseRule(ar |> Array.map (cataRule nextStack)), o
                 | x ->
                     log $"Failed to find defined single alias %s{name} when replacing single alias clause. Found %A{x}"
 
@@ -1507,31 +1516,11 @@ module private RulesParserImpl =
 
             | _ -> rule
 
-        let singlealiasesmapper =
-            function
-            | SingleAliasRule(name, rule) -> SingleAliasRule(name, cataRule rule)
-            | x -> x
-
-        let mutable final = singlealiases
-        let mutable i = 0
-        let mutable first = true
-
-        let ff () =
-            i <- i + 1
-            let before = final
-            final <- final |> Array.map singlealiasesmapper
-            singlealiases <- final
-            first <- false
-            before = final || i > 10
-
-        while (not (ff ())) do
-            ()
-
         let rulesMapper =
             function
-            | TypeRule(name, rule) -> TypeRule(name, cataRule rule)
-            | AliasRule(name, rule) -> AliasRule(name, cataRule rule)
-            | SingleAliasRule(name, rule) -> SingleAliasRule(name, cataRule rule)
+            | TypeRule(name, rule) -> TypeRule(name, cataRule [] rule)
+            | AliasRule(name, rule) -> AliasRule(name, cataRule [] rule)
+            | SingleAliasRule(name, rule) -> SingleAliasRule(name, cataRule [] rule)
 
         rules |> Array.map rulesMapper
 

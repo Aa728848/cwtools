@@ -297,6 +297,31 @@ let plsConfigCompatibilityTests =
               Expect.contains names "active_outbreak(c1|s1)" "First combined argument link should be generated"
               Expect.contains names "active_outbreak(c2|s1)" "Second combined argument link should be generated"
 
+          testCase "keeps recursive single aliases bounded"
+          <| fun () ->
+              let config =
+                  String.concat
+                      "\n"
+                      [ "single_alias[recursive_color_clause] = {"
+                        "    int = color_field"
+                        "    special_selection = single_alias_right[recursive_color_clause]"
+                        "}"
+                        "color_list = {"
+                        "    int = single_alias_right[recursive_color_clause]"
+                        "}" ]
+
+              let rules, _, _, _, _, _ =
+                  RulesParser.parseConfigs
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      true
+                      false
+                      [ "recursive_alias.cwt", config ]
+
+              Expect.isGreaterThan rules.Length 0 "Recursive single aliases should parse without unbounded expansion"
+
           testWithCapturedLogs "validates configured database_object fields"
           <| fun () ->
               let config =
