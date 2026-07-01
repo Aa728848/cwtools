@@ -607,6 +607,9 @@ type ResourceManager<'T when 'T :> ComputedData>
     let inlineSimpleParameterPattern =
         System.Text.RegularExpressions.Regex(@"\$([^$|]+)\$", System.Text.RegularExpressions.RegexOptions.Compiled)
 
+    let inlineArithmeticExpressionPattern =
+        System.Text.RegularExpressions.Regex(@"@\[\s*(.*?)\s*\]", System.Text.RegularExpressions.RegexOptions.Compiled)
+
     let inlineParameterName (text: string) =
         let pipeIndex = text.IndexOf('|')
         if pipeIndex >= 0 then text.Substring(0, pipeIndex) else text
@@ -646,6 +649,170 @@ type ResourceManager<'T when 'T :> ComputedData>
                 let name = m.Groups.[1].Value
                 match values |> Map.tryFind name with
                 | Some value -> value
+                | None -> m.Value)
+        )
+
+    let rec collectScriptedVariableValuesFromNode (node: Node) =
+        [ yield!
+              node.Leaves
+              |> Seq.choose (fun leaf ->
+                  if leaf.Key.StartsWith("@", StringComparison.Ordinal)
+                     && not (leaf.Key.StartsWith("@[", StringComparison.Ordinal))
+                     && not (leaf.Key.StartsWith(@"@\[", StringComparison.Ordinal)) then
+                      Some(leaf.Key, leaf.Value.ToRawString().Trim('"'))
+                  else
+                      None)
+          yield! node.Nodes |> Seq.collect collectScriptedVariableValuesFromNode ]
+
+    let collectScriptedVariableValues () =
+        entitiesMap.Values
+        |> Seq.map structFst
+        |> Seq.filter (fun e ->
+            e.overwrite <> Overwrite.Overwritten
+            && e.logicalpath.Replace('\\', '/').Contains("common/scripted_variables/", StringComparison.OrdinalIgnoreCase))
+        |> Seq.collect (fun e -> collectScriptedVariableValuesFromNode e.rawEntity)
+        |> Seq.distinctBy fst
+        |> Map.ofSeq
+
+    let tryEvaluateInlineArithmeticExpression (variableValues: Map<string, string>) (expression: string) =
+        let text = expression.Trim()
+        let mutable index = 0
+
+        let skipWs () =
+            while index < text.Length && Char.IsWhiteSpace text.[index] do
+                index <- index + 1
+
+        let tryParseNumber () =
+            skipWs ()
+            let start = index
+
+            while index < text.Length && (Char.IsDigit text.[index] || text.[index] = '.') do
+                index <- index + 1
+
+            if index = start then
+                None
+            else
+                match Decimal.TryParse(text.Substring(start, index - start), Globalization.NumberStyles.Number, Globalization.CultureInfo.InvariantCulture) with
+                | true, value -> Some value
+                | _ -> None
+
+        let tryReadVariableName () =
+            skipWs ()
+            let start = index
+
+            if index < text.Length && text.[index] = '@' then
+                index <- index + 1
+
+            if index < text.Length && (Char.IsLetter text.[index] || text.[index] = '_') then
+                index <- index + 1
+
+                while
+                    index < text.Length
+                    && (Char.IsLetterOrDigit text.[index]
+                        || text.[index] = '_'
+                        || text.[index] = '.'
+                        || text.[index] = ':')
+                    do
+                    index <- index + 1
+
+                let name = text.Substring(start, index - start)
+                if name.StartsWith("@", StringComparison.Ordinal) then name else "@" + name
+                |> Some
+            else
+                index <- start
+                None
+
+        let tryVariableValue name =
+            variableValues
+            |> Map.tryFind name
+            |> Option.bind (fun raw ->
+                match Decimal.TryParse(raw.Trim().Trim('"'), Globalization.NumberStyles.Number, Globalization.CultureInfo.InvariantCulture) with
+                | true, value -> Some value
+                | _ -> None)
+
+        let rec parseExpression () : decimal option = parseAddSub ()
+
+        and parseAddSub () : decimal option =
+            let mutable left: decimal option = parseMulDivMod ()
+            skipWs ()
+
+            while left.IsSome && index < text.Length && (text.[index] = '+' || text.[index] = '-') do
+                let op = text.[index]
+                index <- index + 1
+                let right = parseMulDivMod ()
+                left <-
+                    match left, right with
+                    | Some l, Some r -> Some(if op = '+' then l + r else l - r)
+                    | _ -> None
+                skipWs ()
+
+            left
+
+        and parseMulDivMod () : decimal option =
+            let mutable left: decimal option = parseUnary ()
+            skipWs ()
+
+            while left.IsSome && index < text.Length && (text.[index] = '*' || text.[index] = '/' || text.[index] = '%') do
+                let op = text.[index]
+                index <- index + 1
+                let right = parseUnary ()
+                left <-
+                    match left, right with
+                    | Some l, Some r when op = '/' && r = 0M -> None
+                    | Some l, Some r when op = '%' && r = 0M -> None
+                    | Some l, Some r ->
+                        match op with
+                        | '*' -> Some(l * r)
+                        | '/' -> Some(l / r)
+                        | '%' -> Some(l % r)
+                        | _ -> None
+                    | _ -> None
+                skipWs ()
+
+            left
+
+        and parseUnary () : decimal option =
+            skipWs ()
+
+            if index < text.Length && text.[index] = '+' then
+                index <- index + 1
+                parseUnary ()
+            elif index < text.Length && text.[index] = '-' then
+                index <- index + 1
+                parseUnary () |> Option.map (fun value -> -value)
+            else
+                parsePrimary ()
+
+        and parsePrimary () : decimal option =
+            skipWs ()
+
+            if index < text.Length && text.[index] = '(' then
+                index <- index + 1
+                let value = parseExpression ()
+                skipWs ()
+
+                if index < text.Length && text.[index] = ')' then
+                    index <- index + 1
+                    value
+                else
+                    None
+            else
+                match tryParseNumber () with
+                | Some _ as value -> value
+                | None ->
+                    tryReadVariableName ()
+                    |> Option.bind tryVariableValue
+
+        let result = parseExpression ()
+        skipWs ()
+        if index = text.Length then result else None
+
+    let evaluateInlineArithmeticExpressions (variableValues: Map<string, string>) (text: string) =
+        inlineArithmeticExpressionPattern.Replace(
+            text,
+            System.Text.RegularExpressions.MatchEvaluator(fun m ->
+                match tryEvaluateInlineArithmeticExpression variableValues m.Groups.[1].Value with
+                | Some value -> value.ToString("G29", Globalization.CultureInfo.InvariantCulture)
                 | None -> m.Value)
         )
 
@@ -805,9 +972,16 @@ type ResourceManager<'T when 'T :> ComputedData>
             | _ -> ()
 
         let inlineScriptsMap = getOrBuildInlineScriptsMap ()
+        let scriptedVariableValues = lazy (collectScriptedVariableValues ())
 
         // Helper: try exact match first, then suffix match, then wildcard match for $PARAM$ patterns
         let tryFindInlineScript (scriptName: string) =
+            let scriptName =
+                if scriptName.Contains("@[", StringComparison.Ordinal) then
+                    evaluateInlineArithmeticExpressions scriptedVariableValues.Value scriptName
+                else
+                    scriptName
+
             let lookupName = (normalizeInlineScriptPath (scriptName.Replace('\\', '/'))).ToLowerInvariant()
             match inlineScriptsMap |> Map.tryFind lookupName with
             | Some _ as result -> result

@@ -1252,6 +1252,88 @@ let inlineScriptCompletionRegressionTests =
               let callers = stl.RefreshInlineScriptCallers [ scriptName + ".txt" ]
               Expect.contains callers callerFilename "Unicode inline_script references should remain indexable"
 
+          testWithCapturedLogs "nested inline evaluates arithmetic script path suffixes" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/inlinescripts"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let varsFilename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "scripted_variables", "inline_path_arithmetic.txt")
+                  )
+              let parentInlineFilename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "inline_scripts", "inline_path_arithmetic_parent.txt")
+                  )
+              let switchInlineFilename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "inline_scripts", "inline_path_arithmetic_switch.txt")
+                  )
+              let caseZeroFilename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "inline_scripts", "inline_path_arithmetic_case_0.txt")
+                  )
+              let caseOneFilename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "inline_scripts", "inline_path_arithmetic_case_1.txt")
+                  )
+              let callerFilename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "script_consume", "inline_path_arithmetic.txt")
+                  )
+
+              stl.UpdateFile false varsFilename (Some "@inline_path_toggle = 0")
+              |> ignore
+              stl.UpdateFile
+                  false
+                  parentInlineFilename
+                  (Some
+                      "inline_script = {
+                           script = inline_path_arithmetic_switch
+                           file = inline_path_arithmetic_case_
+                           value = @[ $toggle$ ]
+                           params = \"root_only = yes\"
+                       }")
+              |> ignore
+              stl.UpdateFile
+                  false
+                  switchInlineFilename
+                  (Some
+                      "inline_script = {
+                           script = $file$$value$
+                           $params$
+                       }")
+              |> ignore
+              stl.UpdateFile false caseZeroFilename (Some "# no-op")
+              |> ignore
+              stl.UpdateFile false caseOneFilename (Some "$params$")
+              |> ignore
+
+              let callerErrors =
+                  stl.UpdateFile
+                      false
+                      callerFilename
+                      (Some
+                          "inline_path_arithmetic = {
+                               inline_script = {
+                                   script = inline_path_arithmetic_parent
+                                   toggle = @inline_path_toggle
+                               }
+                           }")
+
+              Expect.isFalse
+                  (callerErrors |> List.exists (fun error -> error.message.Contains("Missing inline_script")))
+                  "Arithmetic inline_script path suffixes should resolve to a concrete inline script"
+
           testWithCapturedLogs "nested inline keeps concrete parent path" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/inlinescripts"
               let configtext = configFilesFromDir folder
