@@ -233,6 +233,43 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         log $"Update file Time: %i{timer.ElapsedMilliseconds}"
         res
 
+    let entityByFilePathWithFallback filepath =
+        match resourceManager.Api.GetEntityByFilePath filepath with
+        | Some entity -> Some entity
+        | None ->
+            let target =
+                try FileInfo(filepath).FullName.Replace('\\', '/').ToLowerInvariant()
+                with _ -> filepath.Replace('\\', '/').ToLowerInvariant()
+
+            resourceManager.Api.AllEntities()
+            |> Seq.tryFind (fun struct (entity, _) ->
+                let candidate =
+                    try FileInfo(entity.filepath).FullName.Replace('\\', '/').ToLowerInvariant()
+                    with _ -> entity.filepath.Replace('\\', '/').ToLowerInvariant()
+                candidate = target)
+
+    let validateFile (shallow: bool) filepath =
+        log $"validateFile %s{filepath}"
+        let timer = System.Diagnostics.Stopwatch.StartNew()
+        let res =
+            match entityByFilePathWithFallback filepath with
+            | None -> []
+            | Some entity ->
+                match shallow with
+                | true ->
+                    let shallowres, _ = validationManager.Validate(shallow, [ entity ])
+                    let shallowres = shallowres @ (validationManager.ValidateLocalisation [ entity ])
+                    let deep = match errorCache.TryGetValue(filepath) with true, v -> v | _ -> []
+                    shallowres @ deep
+                | false ->
+                    let shallowres, deepres = validationManager.Validate(shallow, [ entity ])
+                    let shallowres = shallowres @ (validationManager.ValidateLocalisation [ entity ])
+                    errorCache.[filepath] <- deepres
+                    shallowres @ deepres
+
+        log $"Validate file Time: %i{timer.ElapsedMilliseconds}"
+        res
+
     let initialLoad () =
         let timer = System.Diagnostics.Stopwatch()
         timer.Start()
@@ -390,6 +427,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member _.ValidationManager = validationManager
     member _.Settings = settings
     member _.UpdateFile shallow file text = updateFile shallow file text
+    member _.ValidateFile shallow file = validateFile shallow file
     member _.RemoveFile file = resourceManager.Api.RemoveFile file
 
     member _.RefreshValidationManager() =

@@ -138,8 +138,23 @@ module STLGameFunctions =
         elif path.Contains("common/script_values/") then Some "script_value"
         else None
 
-    let scriptedTypeKeysForFiles files =
-        files |> List.choose scriptedTypeKeyForPath |> List.distinct
+    let normaliseRefreshPath (filepath: string) =
+        filepath.Replace('\\', '/').ToLowerInvariant()
+
+    let incrementalTypeKeysForFiles (game: GameObject<STLComputedData, STLLookup>) files =
+        let fileSet = files |> List.map normaliseRefreshPath |> Set.ofList
+        let indexedTypeKeys =
+            game.Lookup.typeDefInfo
+            |> Map.toSeq
+            |> Seq.choose (fun (typeKey, infos) ->
+                if infos |> Array.exists (fun info -> fileSet.Contains(normaliseRefreshPath info.range.FileName)) then
+                    Some typeKey
+                else
+                    None)
+            |> Seq.toList
+
+        (indexedTypeKeys @ (files |> List.choose scriptedTypeKeyForPath))
+        |> List.distinct
 
     let globalLocalisation (game: GameObject) =
         let locfiles =
@@ -757,6 +772,7 @@ type STLGame(setupSettings: StellarisSettings) =
         member _.ScriptedVariables() = lookup.scriptedVariables
         member _.StaticModifiers() = lookup.staticModifiers
         member _.UpdateFile shallow file text = game.UpdateFile shallow file text
+        member _.ValidateFile shallow file = game.ValidateFile shallow file
         member _.AllEntities() = resources.AllEntities()
 
         member _.References() =
@@ -801,14 +817,14 @@ type STLGame(setupSettings: StellarisSettings) =
         member _.RefreshCaches() = game.RefreshCaches()
 
         member _.RefreshScriptedTypes files =
-            let typeKeys = scriptedTypeKeysForFiles files
+            let typeKeys = incrementalTypeKeysForFiles game files
             if typeKeys.IsEmpty then false
             else
                 game.RefreshScriptedTypesForFiles(files, typeKeys)
                 true
 
         member _.RemoveScriptedTypes files =
-            let typeKeys = scriptedTypeKeysForFiles files
+            let typeKeys = incrementalTypeKeysForFiles game files
             if typeKeys.IsEmpty then false
             else
                 for file in files do
@@ -817,7 +833,7 @@ type STLGame(setupSettings: StellarisSettings) =
                 true
 
         member _.PrepareScriptedTypes files =
-            let typeKeys = scriptedTypeKeysForFiles files
+            let typeKeys = incrementalTypeKeysForFiles game files
             if typeKeys.IsEmpty then None
             else game.PrepareScriptedTypesForFiles(files, typeKeys)
 

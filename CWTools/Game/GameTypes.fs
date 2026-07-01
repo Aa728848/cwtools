@@ -87,6 +87,7 @@ type IGame =
     abstract AllFiles: unit -> Resource list
     abstract AllLoadedLocalisation: unit -> string list
     abstract UpdateFile: bool -> string -> string option -> CWError list
+    abstract ValidateFile: bool -> string -> CWError list
     abstract Complete: pos -> string -> string -> CompletionResponse list
     abstract GoToType: pos -> string -> string -> range option
     abstract FindAllRefs: pos -> string -> string -> range list option

@@ -314,6 +314,7 @@ type IRGame(setupSettings: IRSettings) =
         member _.ScriptedVariables() = lookup.scriptedVariables
         member _.StaticModifiers() = [||] //lookup.staticModifiers
         member _.UpdateFile shallow file text = game.UpdateFile shallow file text
+        member _.ValidateFile shallow file = game.ValidateFile shallow file
         member _.AllEntities() = resources.AllEntities()
 
         member _.References() =
