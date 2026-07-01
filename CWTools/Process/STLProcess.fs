@@ -102,7 +102,12 @@ module STLProcess =
         )
 
     let private eventTargetName (value: string) =
-        let raw = value.Substring(13)
+        let prefix = "event_target:"
+        let mutable raw = value.Trim()
+
+        while raw.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) do
+            raw <- raw.Substring(prefix.Length)
+
         let atIndex = raw.IndexOf('@')
         let dotIndex = raw.IndexOf('.')
 
@@ -120,7 +125,7 @@ module STLProcess =
         let fNode =
             (fun (x: Node) (children: string list) ->
                 let targetFromString (k: string) =
-                    substituteParams parameters (eventTargetName k)
+                    substituteParams parameters (eventTargetName k) |> eventTargetName
 
                 let inner (leaf: Leaf) =
                     let value = leaf.Value.ToRawString()
@@ -170,7 +175,7 @@ module STLProcess =
                         leaf.Key == "exists"
                         && value.StartsWith("event_target:", StringComparison.OrdinalIgnoreCase)
                     then
-                        Some(substituteParams parameters (eventTargetName value))
+                        Some(substituteParams parameters (eventTargetName value) |> eventTargetName)
                     else
                         None
 
@@ -320,7 +325,12 @@ module STLProcess =
                                     | None -> (s, u, g)
                                     | Some(cs, cu, cg) ->
                                         let sub = Set.map (substituteParams callParams)
-                                        (Set.union s (sub cs), Set.union u (sub cu), Set.union g (sub cg)))
+                                        let subUsed =
+                                            Set.map
+                                                (fun target -> substituteParams callParams target |> eventTargetName)
+                                                cu
+
+                                        (Set.union s (sub cs), Set.union u subUsed, Set.union g (sub cg)))
                                 (saved, used, globals))
 
                 let changed = updated <> current

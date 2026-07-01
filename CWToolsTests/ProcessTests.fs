@@ -3083,6 +3083,12 @@ let nestedEventTargetTests =
             | :? ScriptedEffect as se when se.Name.GetString() == name -> Some se.GlobalEventTargets
             | _ -> None)
 
+    let usedTargetsOf (name: string) (effects: Effect list) =
+        effects
+        |> List.pick (function
+            | :? ScriptedEffect as se when se.Name.GetString() == name -> Some se.UsedEventTargets
+            | _ -> None)
+
     testList
         "nested scripted effect event targets"
         [ testCase "event target existence suffix is not part of the saved target key"
@@ -3165,6 +3171,145 @@ let nestedEventTargetTests =
                   CWTools.Validation.Stellaris.STLEventValidation.checkEventChain [] [] [] globals events
 
               Expect.equal result OK $"global target should suppress CW220/CW221, got %A{result}"
+          testCase "legacy optional scopes work in dotted event target chains"
+          <| fun () ->
+              UtilityParser.initializeScopes None (Some(defaultScopeInputs ()))
+
+              let parseScope name = scopeManager.ParseScope () name
+              let country = parseScope "Country"
+              let planet = parseScope "Planet"
+              let galacticObject = parseScope "GalacticObject"
+              let star = parseScope "Star"
+              let ship = parseScope "Ship"
+
+              let mkLink (name: string) (inputs: Scope list) (target: Scope) =
+                  ScopedEffect(name, inputs, target, EffectType.Link, "", "", false) :> Effect
+
+              let links =
+                  EffectMap.FromList
+                      [ mkLink "owner" [ planet; galacticObject; star; ship ] country
+                        mkLink "solar_system" [ planet; star ] galacticObject
+                        mkLink "star" [ galacticObject ] star ]
+
+              let resolve root current (key: string) =
+                  let context =
+                      { Root = root
+                        From = []
+                        Scopes = [ current ] }
+
+                  match
+                      changeScope.Invoke(
+                          false,
+                          true,
+                          links,
+                          EffectMap(),
+                          [],
+                          createStringSet [],
+                          System.ReadOnlySpan<char>(key.ToCharArray()),
+                          context
+                      )
+                  with
+                  | NewScope(context, _, _) -> context.CurrentScope
+                  | other -> failtestf "%s should resolve as a legacy scope chain, got %A" key other
+
+              Expect.equal (resolve country planet "owner?") country "owner? should behave like owner"
+              Expect.equal (resolve planet ship "root.owner?") country "root.owner? should strip the optional marker"
+              Expect.equal
+                  (resolve country planet "event_target:target_system.star.owner?")
+                  country
+                  "event target scope chains should allow optional legacy links"
+          testCase "event target parameter values normalize after substitution"
+          <| fun () ->
+              let input =
+                  "inner_effect = {\n\
+                            event_target:$OWNER$ = { clear_orders = yes }\n\
+                            exists = event_target:$OWNER$\n\
+                            }\n\
+                            outer_effect = {\n\
+                            inner_effect = { OWNER = event_target:kuat_friendly_faction }\n\
+                            }"
+
+              let used = buildEffects input |> usedTargetsOf "outer_effect"
+
+              Expect.contains
+                  used
+                  "kuat_friendly_faction"
+                  $"scope-valued parameter should normalize to the saved target key, got %A{used}"
+
+              Expect.isFalse
+                  (List.contains "event_target:kuat_friendly_faction" used)
+                  $"scope-valued parameter should not keep a nested event_target prefix, got %A{used}"
+          testWithCapturedLogs "STL game validation accepts global target saved in legacy optional scope"
+          <| fun () ->
+              let root =
+                  Path.Combine(Path.GetTempPath(), "cwtools-event-target-" + System.Guid.NewGuid().ToString("N"))
+
+              let eventsDir = Path.Combine(root, "events")
+              let scriptedEffectsDir = Path.Combine(root, "common", "scripted_effects")
+              Directory.CreateDirectory(eventsDir) |> ignore
+              Directory.CreateDirectory(scriptedEffectsDir) |> ignore
+              let eventFile = Path.Combine(eventsDir, "kuat_action_event.txt")
+              let effectFile = Path.Combine(scriptedEffectsDir, "kuat_effects.txt")
+              let eventText =
+                  "event = {\n\
+                            id = ai_action.14\n\
+                            hide_window = yes\n\
+                            is_triggered_only = yes\n\
+                            trigger = {\n\
+                            exists = event_target:kuat_friendly_faction\n\
+                            any_galaxy_fleet = {\n\
+                            exists = controller\n\
+                            controller? = { is_at_war_with = event_target:kuat_friendly_faction }\n\
+                            }\n\
+                            }\n\
+                            immediate = {\n\
+                            event_target:kuat_friendly_faction = { clear_orders = yes }\n\
+                            kuat_exe_auto_fleet_action = { OWNER = event_target:kuat_friendly_faction }\n\
+                            }\n\
+                            }\n\
+                            fleet_event = {\n\
+                            id = ai_action.6\n\
+                            hide_window = yes\n\
+                            is_triggered_only = yes\n\
+                            immediate = {\n\
+                            owner? = { save_global_event_target_as = kuat_friendly_faction }\n\
+                            set_automatic_fleet_avaliable = { FRIENDLY_TARGET = event_target:kuat_friendly_faction }\n\
+                            }\n\
+                            }"
+              let effectText =
+                  "kuat_exe_auto_fleet_action = {\n\
+                            event_target:$OWNER$ = { clear_orders = yes }\n\
+                            exists = event_target:$OWNER$\n\
+                            }"
+
+              File.WriteAllText(eventFile, eventText)
+              File.WriteAllText(effectFile, effectText)
+
+              try
+                  let configText = Tests.configFilesFromDir "./testfiles/stellarisconfig/config"
+
+                  let settings =
+                      { emptyStellarisSettings root with
+                          rules =
+                              Some
+                                  { ruleFiles = configText
+                                    validateRules = true
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+
+                  let stl = STLGame(settings) :> IGame<STLComputedData>
+                  let eventTargetErrors phase errors =
+                      errors
+                      |> List.filter (fun e ->
+                          (e.code = "CW220" || e.code = "CW221")
+                          && e.message.Contains("kuat_friendly_faction"))
+                      |> fun matches ->
+                          Expect.isEmpty matches $"{phase} should not report kuat_friendly_faction as unsaved: %A{matches}"
+
+                  stl.ValidationErrors() |> eventTargetErrors "full validation"
+                  stl.UpdateFile false eventFile (Some eventText) |> eventTargetErrors "UpdateFile validation"
+              finally
+                  if Directory.Exists(root) then Directory.Delete(root, true)
           testCase "save via nested parameterised call propagates to caller"
           <| fun () ->
               // Mirrors vanilla cosmic storms: try_spawn calls choose_location

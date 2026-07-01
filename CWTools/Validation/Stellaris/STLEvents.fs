@@ -115,7 +115,12 @@ module STLEventValidation =
         )
 
     let private eventTargetName (value: string) =
-        let raw = value.Substring(13)
+        let prefix = "event_target:"
+        let mutable raw = value.Trim()
+
+        while raw.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) do
+            raw <- raw.Substring(prefix.Length)
+
         let atIndex = raw.IndexOf('@')
         let dotIndex = raw.IndexOf('.')
         let name =
@@ -132,7 +137,7 @@ module STLEventValidation =
         let fNode =
             (fun (x: Node) (children: string list) ->
                 let targetFromString (k: string) = 
-                    substituteParams parameters (eventTargetName k)
+                    substituteParams parameters (eventTargetName k) |> eventTargetName
 
                 let inner (children: string list) (leaf: Leaf) =
                     let value = leaf.Value.ToRawString()
@@ -181,7 +186,7 @@ module STLEventValidation =
                         leaf.Key == "exists"
                         && value.StartsWith("event_target:", StringComparison.OrdinalIgnoreCase)
                     then
-                        Some(substituteParams parameters (eventTargetName value))
+                        Some(substituteParams parameters (eventTargetName value) |> eventTargetName)
                     else
                         None
 
@@ -253,13 +258,13 @@ module STLEventValidation =
             |> List.map (fun l -> ("$" + l.Key + "$", l.ValueText))
 
         let getScriptedEffectTargets (callParams: (string * string) list) (effect: ScriptedEffect) =
-            let substituteAndFilter targets =
+            let substituteAndFilter (normalize: string -> string) (targets: string list) =
                 targets
-                |> List.map (substituteParams callParams)
+                |> List.map (fun target -> substituteParams callParams target |> normalize)
                 |> List.filter (fun target -> not (target.Contains("$")))
                 |> Set.ofList
 
-            substituteAndFilter effect.SavedEventTargets, substituteAndFilter effect.UsedEventTargets
+            substituteAndFilter id effect.SavedEventTargets, substituteAndFilter eventTargetName effect.UsedEventTargets
 
         let fNode =
             (fun (x: Node) (s, u) ->
