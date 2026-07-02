@@ -89,6 +89,36 @@ type Lookup() =
     member val savedEventTargets: ResizeArray<string * range * Scope> = new ResizeArray<_>() with get, set
     /// Stores scripted variables as (name, value) pairs
     member val scriptedVariables: (string * string) list = [] with get, set
+    /// Names of scripted variables that are game-globals (defined under
+    /// common/scripted_variables); all other @-variables are file-local.
+    member val globalScriptedVariableNames: string list = [] with get, set
+
+    /// Shallow copy for staged (lockless) cache refreshes: the clone shares all current
+    /// field values, so a refresh can mutate it freely while readers keep seeing the
+    /// original's consistent state.
+    member this.ShallowClone() : Lookup = this.MemberwiseClone() :?> Lookup
+
+    /// Copy every instance field (including subclass fields) from another lookup of the
+    /// same runtime type. Commits a staged refresh back onto the shared instance under
+    /// the write lock without changing its object identity.
+    member this.AbsorbFieldsFrom(other: Lookup) =
+        if not (System.Object.ReferenceEquals(this.GetType(), other.GetType())) then
+            invalidArg "other" "AbsorbFieldsFrom requires the same runtime lookup type"
+
+        let rec copyFields (t: System.Type) =
+            if not (isNull t) && t <> typeof<obj> then
+                let flags =
+                    System.Reflection.BindingFlags.DeclaredOnly
+                    ||| System.Reflection.BindingFlags.Instance
+                    ||| System.Reflection.BindingFlags.Public
+                    ||| System.Reflection.BindingFlags.NonPublic
+
+                for field in t.GetFields(flags) do
+                    field.SetValue(this, field.GetValue(other))
+
+                copyFields t.BaseType
+
+        copyFields (this.GetType())
 
 type JominiLookup() =
     inherit Lookup()

@@ -74,6 +74,11 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         debugMode: bool
     ) =
 
+    // Mutable shadow of the constructor's lookup: a staged full refresh temporarily
+    // points this at a shallow clone so refreshConfig (and its hooks) mutate the clone,
+    // while every external reader keeps seeing the untouched original until commit.
+    let mutable lookup: 'L = lookup
+
     let addEmbeddedTypeDefData =
         match embeddedSettings.cachedRuleMetadata with
         | None -> id
@@ -218,7 +223,63 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 else
                     None))
 
-    let buildRuleValidationService rulesWrapper typeMap varMap loc files =
+    // The structures below only change on a full refreshConfig (or an explicit rules reload),
+    // so rebuilding them on every incremental scripted-type commit is wasted work inside the
+    // save path. All caches key on reference identity of their immutable sources: any real
+    // change produces a new instance and therefore a cache miss.
+    let mutable cachedRulesWrapperSource: obj = null
+    let mutable cachedRulesWrapper: RulesWrapper option = None
+
+    let rulesWrapperFor (rules: RootRule array) =
+        match cachedRulesWrapper with
+        | Some wrapper when Object.ReferenceEquals(cachedRulesWrapperSource, rules) -> wrapper
+        | _ ->
+            let wrapper = RulesWrapper(rules)
+            cachedRulesWrapperSource <- box rules
+            cachedRulesWrapper <- Some wrapper
+            wrapper
+
+    let mutable cachedVarMapSource: obj = null
+
+    let mutable cachedVarMap: FrozenDictionary<string, PrefixOptimisedStringSet> =
+        FrozenDictionary.Empty
+
+    let currentVarMap () =
+        if not (Object.ReferenceEquals(cachedVarMapSource, lookup.varDefInfo)) then
+            cachedVarMap <-
+                (lookup.varDefInfo
+                 |> Map.toSeq
+                 |> PSeq.map (fun (k, s) -> KeyValuePair(k, s |> Seq.map fst |> createStringSet)))
+                    .ToFrozenDictionary()
+
+            cachedVarMapSource <- box lookup.varDefInfo
+
+        cachedVarMap
+
+    let mutable cachedAliasKeyMapKey: (obj * obj * obj) voption = ValueNone
+
+    let mutable cachedAliasKeyMap: Map<string, HashSet<CWTools.Utilities.StringToken>> =
+        Map.empty
+
+    let aliasKeyMapFor
+        (rulesWrapper: RulesWrapper)
+        (typeMapSource: Map<string, PrefixOptimisedStringSet>)
+        (frozenTypeMap: FrozenDictionary<string, PrefixOptimisedStringSet>)
+        =
+        match cachedAliasKeyMapKey with
+        | ValueSome(w, t, e) when
+            Object.ReferenceEquals(w, rulesWrapper)
+            && Object.ReferenceEquals(t, typeMapSource)
+            && Object.ReferenceEquals(e, tempEnumMap)
+            ->
+            cachedAliasKeyMap
+        | _ ->
+            let result = computeAliasKeyMap rulesWrapper frozenTypeMap tempEnumMap
+            cachedAliasKeyMapKey <- ValueSome(box rulesWrapper, box typeMapSource, box tempEnumMap)
+            cachedAliasKeyMap <- result
+            result
+
+    let buildRuleValidationService rulesWrapper typeMap varMap loc files aliasKeyMap =
         let processLoc, validateLoc = settings.locFunctions lookup
 
         RuleValidationService(
@@ -237,18 +298,14 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             settings.defaultLang,
             processLoc,
             validateLoc,
-            extendedConfigMetadata = lookup.extendedConfigMetadata
+            extendedConfigMetadata = lookup.extendedConfigMetadata,
+            ?aliasKeyMapOverride = aliasKeyMap
         )
 
-    let buildServices rulesWrapper typeMap =
-        let loc = currentLoc ()
-        let files = currentFiles ()
-
-        let varMap: FrozenDictionary<string, PrefixOptimisedStringSet> =
-            (lookup.varDefInfo
-             |> Map.toSeq
-             |> PSeq.map (fun (k, s) -> KeyValuePair(k, s |> Seq.map fst |> createStringSet)))
-                .ToFrozenDictionary()
+    let buildServices rulesWrapper (typeMapSource: Map<string, PrefixOptimisedStringSet>) loc files =
+        let typeMap = typeMapSource.ToFrozenDictionary()
+        let varMap = currentVarMap ()
+        let aliasKeyMap = aliasKeyMapFor rulesWrapper typeMapSource typeMap
 
         let dataTypes =
             embeddedSettings.localisationCommands
@@ -262,10 +319,10 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                       dataTypeNames = Set.empty }
 
         let processLoc, validateLoc = settings.locFunctions lookup
-        let globalScriptVariables = lookup.scriptedVariables |> List.map fst
+        let globalScriptVariables = lookup.globalScriptedVariableNames
 
         let ruleValidationService =
-            buildRuleValidationService rulesWrapper typeMap varMap loc files
+            buildRuleValidationService rulesWrapper typeMap varMap loc files (Some aliasKeyMap)
 
         let infoService =
             InfoService(
@@ -285,7 +342,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 settings.defaultLang,
                 processLoc,
                 validateLoc,
-                extendedConfigMetadata = lookup.extendedConfigMetadata
+                extendedConfigMetadata = lookup.extendedConfigMetadata,
+                aliasKeyMapOverride = aliasKeyMap
             )
 
         let completionService =
@@ -308,7 +366,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 dataTypes,
                 processLoc,
                 validateLoc,
-                extendedConfigMetadata = lookup.extendedConfigMetadata
+                extendedConfigMetadata = lookup.extendedConfigMetadata,
+                aliasKeyMapOverride = aliasKeyMap
             )
 
         ruleValidationService, infoService, completionService
@@ -402,7 +461,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let endToEndTimer = System.Diagnostics.Stopwatch()
         timer.Start()
         endToEndTimer.Start()
-        let rulesWrapper = RulesWrapper(lookup.configRules)
+        let rulesWrapper = rulesWrapperFor lookup.configRules
 
         // Materialize all entities once to avoid repeated Seq creation (5+ calls previously)
         let allEntitiesList = resources.AllEntities() |> Seq.toList
@@ -445,6 +504,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     emptyVarMap
                     loc
                     files
+                    None
 
             let allEntities = allEntitiesList |> Seq.map structFst
             let typeDefInfo =
@@ -484,6 +544,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 emptyVarMap
                 loc
                 files
+                None
 
         lookup.typeDefInfoForValidation <- typeDefInfoForValidationFrom lookup.typeDefInfo
 
@@ -681,27 +742,40 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         //|> Seq.fold (fun m map -> Map.toList map |>  List.fold (fun m2 (n,k) -> if Map.containsKey n m2 then Map.add n ((k |> List.ofSeq)@m2.[n]) m2 else Map.add n (k |> List.ofSeq) m2) m) tempValues
         settings.refreshConfigAfterVarDefHook lookup resources embeddedSettings
 
-        // Collect global scripted variables with their actual values from all entities
-        let globalScriptVariablesWithValues =
+        // Collect scripted variables with their values from all entities. Only variables
+        // defined under common/scripted_variables are game-globals; every other @-variable
+        // is file-local. The full list keeps feeding hover/docs, while completion receives
+        // the globals only (CompletionService adds the current file's locals per entity).
+        let isGlobalVariableEntity (e: Entity) =
+            e.logicalpath.Replace('\\', '/').Contains("common/scripted_variables/")
+
+        let scriptVariablesWithScope =
             allEntitiesList
             |> Seq.collect (fun struct (e, _) ->
+                let isGlobal = isGlobalVariableEntity e
+
                 e.entity.Leaves
                 |> Seq.choose (fun leaf ->
                     if leaf.Key.StartsWith("@") && not (leaf.Key.StartsWith("@[")) && not (leaf.Key.StartsWith(@"@\[")) then
-                        Some (leaf.Key, leaf.Value.ToRawString())
+                        Some (isGlobal, leaf.Key, leaf.Value.ToRawString())
                     else None))
+            |> Seq.toList
+
+        // Store in lookup for later use (with actual values)
+        lookup.scriptedVariables <-
+            scriptVariablesWithScope
+            |> Seq.map (fun (_, key, value) -> key, value)
             |> Seq.distinctBy fst
             |> Seq.toList
 
-        // Also collect variable names for CompletionService (needs name-only list)
-        let globalScriptVariables =
-            globalScriptVariablesWithValues |> List.map fst
-
-        // Store in lookup for later use (with actual values)
-        lookup.scriptedVariables <- globalScriptVariablesWithValues
+        lookup.globalScriptedVariableNames <-
+            scriptVariablesWithScope
+            |> Seq.choose (fun (isGlobal, key, _) -> if isGlobal then Some key else None)
+            |> Seq.distinct
+            |> Seq.toList
 
         let ruleValidationService, infoService, completionService =
-            buildServices rulesWrapper (tempTypeMap.ToFrozenDictionary())
+            buildServices rulesWrapper tempTypeMap (currentLoc ()) (currentFiles ())
 
         // log "Refresh rule caches time: %i" timer.ElapsedMilliseconds; timer.Restart()
         // game.RefreshValidationManager()
@@ -737,18 +811,20 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let fileSet = files |> List.map normaliseFilePath |> Set.ofList
 
         lookup.configRules <- settings.loadConfigRulesHook baseConfigRules lookup embeddedSettings
-        let rulesWrapper = RulesWrapper(lookup.configRules)
+        let rulesWrapper = rulesWrapperFor lookup.configRules
         let loc = currentLoc ()
         let allFiles = currentFiles ()
         let emptyVarMap: FrozenDictionary<string, PrefixOptimisedStringSet> = FrozenDictionary.Empty
+        let baseFrozenTypeMap = tempTypeMap.ToFrozenDictionary()
 
         let tempRuleValidationService =
             buildRuleValidationService
                 rulesWrapper
-                (tempTypeMap.ToFrozenDictionary())
+                baseFrozenTypeMap
                 emptyVarMap
                 loc
                 allFiles
+                (Some(aliasKeyMapFor rulesWrapper tempTypeMap baseFrozenTypeMap))
 
         let entities =
             files
@@ -797,7 +873,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         lookup.typeDefInfoForValidation <- typeDefInfoForValidationFrom lookup.typeDefInfo
 
         let ruleValidationService, infoService, completionService =
-            buildServices rulesWrapper (tempTypeMap.ToFrozenDictionary())
+            buildServices rulesWrapper tempTypeMap loc allFiles
 
         logInfo $"Refresh scripted types: files=%d{files.Length}, typeKeys=%d{typeKeys.Length}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
         ruleValidationService, infoService, completionService
@@ -813,18 +889,20 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let baseTypeDefInfo = lookup.typeDefInfo
         let baseTempTypeMap = tempTypeMap
 
-        let rulesWrapper = RulesWrapper(lookup.configRules)
+        let rulesWrapper = rulesWrapperFor lookup.configRules
         let loc = currentLoc ()
         let allFiles = currentFiles ()
         let emptyVarMap: FrozenDictionary<string, PrefixOptimisedStringSet> = FrozenDictionary.Empty
+        let baseFrozenTypeMap = baseTempTypeMap.ToFrozenDictionary()
 
         let tempRuleValidationService =
             buildRuleValidationService
                 rulesWrapper
-                (baseTempTypeMap.ToFrozenDictionary())
+                baseFrozenTypeMap
                 emptyVarMap
                 loc
                 allFiles
+                (Some(aliasKeyMapFor rulesWrapper baseTempTypeMap baseFrozenTypeMap))
 
         let entities =
             files
@@ -874,7 +952,11 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let newTypeDefInfoForValidation = typeDefInfoForValidationFrom newTypeDefInfo
 
         let ruleValidationService, infoService, completionService =
-            buildServices rulesWrapper (newTempTypeMap.ToFrozenDictionary())
+            buildServices rulesWrapper newTempTypeMap loc allFiles
+
+        // Pay the lazy inverted-map cost here (read lock) rather than on the first
+        // write-locked validation after commit.
+        infoService.WarmTypeLocalisationIndex()
 
         logInfo $"Prepare scripted types: files=%d{files.Length}, typeKeys=%d{typeKeys.Length}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
 
@@ -900,8 +982,72 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 staged.completionService :?> CompletionService
             )
 
+    // Staged full refresh: run the heavy refreshConfig against a shallow clone of the
+    // lookup so it can execute without the write lock. Shared manager state (tempTypeMap
+    // etc.) is snapshotted and restored, so between prepare and commit the instance stays
+    // fully consistent with the untouched original lookup.
+    let prepareRefreshConfig () =
+        let original = lookup
+        let baseTypeDefInfo = original.typeDefInfo
+        let baseVarDefInfo = original.varDefInfo
+        let baseConfigRules = original.configRules
+        let baseTempTypeMap = tempTypeMap
+        let baseTempEnumMap = tempEnumMap
+        let baseRulesDataGenerated = rulesDataGenerated
+        let clone = original.ShallowClone() :?> 'L
+        lookup <- clone
+
+        try
+            let ruleValidationService, infoService, completionService = refreshConfig ()
+            // Pay the lazy inverted-map cost during the read-locked prepare, not after commit.
+            infoService.WarmTypeLocalisationIndex()
+
+            let staged =
+                { refreshedLookup = box clone
+                  baseTypeDefInfo = box baseTypeDefInfo
+                  baseVarDefInfo = box baseVarDefInfo
+                  baseConfigRules = box baseConfigRules
+                  newTempTypeMap = box tempTypeMap
+                  newTempEnumMap = box tempEnumMap
+                  newRulesDataGenerated = rulesDataGenerated
+                  ruleService = box ruleValidationService
+                  infoService = box infoService
+                  completionService = box completionService }
+
+            Some staged
+        finally
+            lookup <- original
+            tempTypeMap <- baseTempTypeMap
+            tempEnumMap <- baseTempEnumMap
+            rulesDataGenerated <- baseRulesDataGenerated
+
+    let commitRefreshConfig (staged: StagedCacheRefresh) =
+        let guardsHold =
+            System.Object.ReferenceEquals(lookup.typeDefInfo, staged.baseTypeDefInfo)
+            && System.Object.ReferenceEquals(lookup.varDefInfo, staged.baseVarDefInfo)
+            && System.Object.ReferenceEquals(lookup.configRules, staged.baseConfigRules)
+
+        if not guardsHold then
+            None
+        else
+            lookup.AbsorbFieldsFrom(staged.refreshedLookup :?> Lookup)
+            tempTypeMap <- staged.newTempTypeMap :?> Map<string, PrefixOptimisedStringSet>
+
+            tempEnumMap <-
+                staged.newTempEnumMap :?> FrozenDictionary<string, string * PrefixOptimisedStringSet>
+
+            rulesDataGenerated <- staged.newRulesDataGenerated
+
+            Some(
+                staged.ruleService :?> RuleValidationService,
+                staged.infoService :?> InfoService,
+                staged.completionService :?> CompletionService
+            )
+
     member _.LoadBaseConfig(rulesSettings) = loadBaseConfig rulesSettings
     member _.RefreshConfig() = refreshConfig ()
+    member _.PrepareRefreshConfig() = prepareRefreshConfig ()
+    member _.CommitRefreshConfig(staged) = commitRefreshConfig staged
     member _.RefreshScriptedTypes(files, typeKeys) = refreshScriptedTypes files typeKeys
     member _.PrepareScriptedTypes(files, typeKeys) = prepareScriptedTypes files typeKeys
     member _.CommitScriptedTypes(staged) = commitScriptedTypes staged

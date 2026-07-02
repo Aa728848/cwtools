@@ -475,6 +475,21 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
     member _.ReplaceConfigRules rules = rulesManager.LoadBaseConfig rules
     member _.RefreshCaches() = updateRulesCache ()
+
+    member _.PrepareRefreshCaches() = rulesManager.PrepareRefreshConfig()
+
+    member this.CommitRefreshCaches(staged) =
+        match rulesManager.CommitRefreshConfig(staged) with
+        | Some(rules, info, completion) ->
+            this.RuleValidationService <- Some rules
+            this.InfoService <- Some info
+            this.completionService <- Some completion
+            this.RefreshValidationManager()
+            LanguageFeatures.clearCompletionEntityCache ()
+            LanguageFeatures.clearTypeReferenceIndexCache ()
+            true
+        | None -> false
+
     member _.RefreshScriptedTypesForFiles(files, typeKeys) = updateScriptedTypesCache files typeKeys
 
     member _.PrepareScriptedTypesForFiles(files, typeKeys) =

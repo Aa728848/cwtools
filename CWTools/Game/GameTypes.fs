@@ -79,6 +79,22 @@ type StagedScriptedTypes =
       infoService: obj
       completionService: obj }
 
+/// Staged full rules refresh: the heavy rebuild runs against a lookup clone without
+/// holding the write lock; commit absorbs the clone's fields under a brief write lock.
+/// Reference-typed fields are boxed to keep this type free of service dependencies.
+type StagedCacheRefresh =
+    { refreshedLookup: obj
+      /// Commit-time ReferenceEquals guards: the live state must still match these
+      baseTypeDefInfo: obj
+      baseVarDefInfo: obj
+      baseConfigRules: obj
+      newTempTypeMap: obj
+      newTempEnumMap: obj
+      newRulesDataGenerated: bool
+      ruleService: obj
+      infoService: obj
+      completionService: obj }
+
 type IGame =
     abstract ParserErrors: unit -> (string * string * FParsec.Position) list
     abstract ValidationErrors: unit -> CWError list
@@ -95,6 +111,10 @@ type IGame =
     abstract TypeReferenceIndex: unit -> Map<string * string, range list>
     abstract ReplaceConfigRules: (string * string) list -> unit
     abstract RefreshCaches: unit -> unit
+    /// Lockless build phase of a staged full cache refresh; None when not supported.
+    abstract PrepareRefreshCaches: unit -> StagedCacheRefresh option
+    /// Write-locked commit; false when a guard fails and a locked RefreshCaches is needed.
+    abstract CommitRefreshCaches: StagedCacheRefresh -> bool
     abstract RefreshScriptedTypes: string list -> bool
     abstract RemoveScriptedTypes: string list -> bool
     /// Lockless build phase of an incremental scripted-type refresh; None when not applicable.

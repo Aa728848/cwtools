@@ -2,9 +2,12 @@ module CWTools.Rules.RulesHelpers
 
 open System
 open System.Collections.Generic
+open System.Collections.Frozen
 open System.IO
+open CSharpHelpers
 open CWTools.Games
 open CWTools.Process
+open CWTools.Rules.RulesWrapper
 open CWTools.Utilities
 open CWTools.Utilities.Utils2
 open FSharp.Collections.ParallelSeq
@@ -437,3 +440,41 @@ let generateModifierRulesFromTypes (typedefs: TypeDefinition list) =
                 st.modifiers
                 |> List.map (fun m -> modifierRuleFromNameAndTypeDef (td.name + "." + st.name) m))
         ))
+
+/// Alias-key completion map shared by RuleValidationService/InfoService/CompletionService.
+/// The three services previously each computed an identical copy in their constructors;
+/// computing it once per service rebuild and passing it in cuts that to a single pass.
+let computeAliasKeyMap
+    (rootRules: RulesWrapper)
+    (types: FrozenDictionary<string, PrefixOptimisedStringSet>)
+    (enums: FrozenDictionary<string, string * PrefixOptimisedStringSet>)
+    : Map<string, HashSet<StringToken>> =
+    let ruleToCompletionListHelper =
+        function
+        | LeafRule(SpecificField(SpecificValue x), _), _ -> seq { yield x.lower }
+        | NodeRule(SpecificField(SpecificValue x), _), _ -> seq { yield x.lower }
+        | LeafRule(NewField.TypeField(TypeType.Simple t), _), _
+        | NodeRule(NewField.TypeField(TypeType.Simple t), _), _ ->
+            types.TryFind(t)
+            |> Option.map (fun s -> s.IdValues |> Seq.map _.lower)
+            |> Option.defaultValue Seq.empty
+        | LeafRule(NewField.TypeField(TypeType.Complex(p, t, suff)), _), _
+        | NodeRule(NewField.TypeField(TypeType.Complex(p, t, suff)), _), _ ->
+            types.TryFind(t)
+            |> Option.map (fun s ->
+                s.IdValues
+                |> Seq.map (fun i ->
+                    let s = StringResource.stringManager.GetStringForID i.normal
+                    StringResource.stringManager.InternIdentifierToken(p + s + suff).lower))
+            |> Option.defaultValue Seq.empty
+        | LeafRule(NewField.ValueField(Enum e), _), _
+        | NodeRule(NewField.ValueField(Enum e), _), _ ->
+            enums.TryFind(e)
+            |> Option.map (fun (_, s) -> s.IdValues |> Seq.map _.lower)
+            |> Option.defaultValue Seq.empty
+        | _ -> Seq.empty
+
+    rootRules.Aliases
+    |> Map.toList
+    |> List.map (fun (key, rules) -> key, (rules |> Seq.collect ruleToCompletionListHelper |> HashSet<StringToken>))
+    |> Map.ofList

@@ -585,6 +585,8 @@ type CK2Game(setupSettings: CK2Settings) =
                   debugMode = false } //refreshRuleCaches game (Some { ruleFiles = rules; validateRules = true; debugRulesOnly = false; debugMode = false})
 
         member _.RefreshCaches() = game.RefreshCaches()
+        member _.PrepareRefreshCaches() = game.PrepareRefreshCaches()
+        member _.CommitRefreshCaches(staged) = game.CommitRefreshCaches(staged)
 
         member _.RefreshScriptedTypes _ = false
 

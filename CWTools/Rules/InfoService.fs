@@ -62,7 +62,8 @@ type InfoService
         processLocalisation:
             Lang * Collections.Map<string, CWTools.Localisation.Entry> -> Lang * Collections.Map<string, LocEntry>,
         validateLocalisation: LocEntry -> ScopeContext -> ValidationResult,
-        ?extendedConfigMetadata: ExtendedConfigMetadata
+        ?extendedConfigMetadata: ExtendedConfigMetadata,
+        ?aliasKeyMapOverride: Map<string, HashSet<StringToken>>
     ) =
 
     let extendedConfigMetadata = defaultArg extendedConfigMetadata ExtendedConfigMetadata.empty
@@ -92,10 +93,13 @@ type InfoService
                 map[v] <- ResizeArray<string>()
                 map[v].Add subtype)
 
-    let invertedTypeMap: IDictionary<string, ResizeArray<string>> =
-        let map = Dictionary<string, ResizeArray<string>>()
-        types |> Seq.iter (fun pair -> inner map pair.Key pair.Value)
-        map
+    // O(total type ids) inversion is only needed by type-localisation validation, so build it
+    // lazily to keep it off the per-save service rebuild path.
+    let invertedTypeMap: Lazy<IDictionary<string, ResizeArray<string>>> =
+        lazy
+            (let map = Dictionary<string, ResizeArray<string>>()
+             types |> Seq.iter (fun pair -> inner map pair.Key pair.Value)
+             map :> IDictionary<string, ResizeArray<string>>)
 
     let defaultKeys =
         localisation
@@ -133,10 +137,13 @@ type InfoService
         | _ -> Seq.empty
 
     let aliasKeyMap =
-        rootRules.Aliases
-        |> Map.toList
-        |> List.map (fun (key, rules) -> key, (rules |> Seq.collect ruleToCompletionListHelper |> HashSet<StringToken>))
-        |> Map.ofList
+        match aliasKeyMapOverride with
+        | Some precomputed -> precomputed
+        | None ->
+            rootRules.Aliases
+            |> Map.toList
+            |> List.map (fun (key, rules) -> key, (rules |> Seq.collect ruleToCompletionListHelper |> HashSet<StringToken>))
+            |> Map.ofList
 
     let aliasParamMarkers =
         let rec collectRule ((ruleType, _): NewRule) =
@@ -1745,7 +1752,7 @@ type InfoService
                 let value = leaf.ValueText
 
                 if types |> Seq.exists (fun pair -> pair.Key == t && pair.Value.Contains(value)) then
-                    (FieldValidators.validateTypeLocalisation typedefs invertedTypeMap localisation t value leaf)
+                    (FieldValidators.validateTypeLocalisation typedefs invertedTypeMap.Value localisation t value leaf)
                     <&&> res
                 else
                     res
@@ -1753,7 +1760,7 @@ type InfoService
                 let value = leaf.Key
 
                 if types |> Seq.exists (fun pair -> pair.Key == t && pair.Value.Contains(value)) then
-                    (FieldValidators.validateTypeLocalisation typedefs invertedTypeMap localisation t value leaf)
+                    (FieldValidators.validateTypeLocalisation typedefs invertedTypeMap.Value localisation t value leaf)
                     <&&> res
                 else
                     res
@@ -1778,7 +1785,7 @@ type InfoService
                 let value = leafvalue.ValueText
 
                 if types |> Seq.exists (fun pair -> pair.Key == t && pair.Value.Contains(value)) then
-                    (FieldValidators.validateTypeLocalisation typedefs invertedTypeMap localisation t value leafvalue)
+                    (FieldValidators.validateTypeLocalisation typedefs invertedTypeMap.Value localisation t value leafvalue)
                     <&&> res
                 else
                     res
@@ -1790,7 +1797,7 @@ type InfoService
                 let value = node.Key
 
                 if types |> Seq.exists (fun pair -> pair.Key == t && pair.Value.Contains(value)) then
-                    (FieldValidators.validateTypeLocalisation typedefs invertedTypeMap localisation t value node)
+                    (FieldValidators.validateTypeLocalisation typedefs invertedTypeMap.Value localisation t value node)
                     <&&> res
                 else
                     res
@@ -1829,6 +1836,11 @@ type InfoService
     member _.GetDefinedVariables(entity: Entity) = singleFold getDefVarInEntity entity
     member _.GetSavedEventTargets(entity: Entity) = getSavedScopesInEntityFolder entity
     member _.GetTypeLocalisationErrors(entity: Entity) = validateLocalisationFromTypes entity
+
+    /// Force the lazy type-localisation inverted map. Called from staged prepare paths so
+    /// the O(total type ids) build happens off the write lock instead of on the first
+    /// write-locked validation.
+    member _.WarmTypeLocalisationIndex() = invertedTypeMap.Force() |> ignore
 
     member _.GetEffectBlocks(entity: Entity) =
         (singleFold getEffectsInEntity entity), (singleFold getTriggersInEntity entity)

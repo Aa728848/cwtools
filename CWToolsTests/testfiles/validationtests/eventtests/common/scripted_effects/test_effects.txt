@@ -31,3 +31,13 @@ saveGCulture = {
 country_effect_test = {
 	set_country_flag = test
 }
+
+param_value_completion_test = {
+	if = {
+		limit = {
+			#@ 14 yes
+			is_at_war = $war$
+		}
+		set_country_flag = param_test
+	}
+}

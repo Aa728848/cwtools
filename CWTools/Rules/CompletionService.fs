@@ -44,6 +44,22 @@ type private CompletionLinkItem =
       desc: string option
       kind: CompletionCategory }
 
+/// Materialized type id lists keyed by trie instance. Incremental commits reuse unchanged
+/// tries, so cached lists survive service rebuilds and only changed types re-materialize —
+/// keeping the first completion after a save off the slow path. Weak table: entries die
+/// with their tries.
+module private CompletionValueListCache =
+    open System.Runtime.CompilerServices
+
+    let private listsByTrie =
+        ConditionalWeakTable<PrefixOptimisedStringSet, string list>()
+
+    let private factory =
+        ConditionalWeakTable<PrefixOptimisedStringSet, string list>.CreateValueCallback(fun set ->
+            set.StringValues |> List.ofSeq)
+
+    let getOrAdd (set: PrefixOptimisedStringSet) : string list = listsByTrie.GetValue(set, factory)
+
 
 type CompletionService
     (
@@ -66,7 +82,8 @@ type CompletionService
         processLocalisation:
             Lang * Collections.Map<string, CWTools.Localisation.Entry> -> Lang * Collections.Map<string, LocEntry>,
         validateLocalisation: LocEntry -> ScopeContext -> CWTools.Validation.ValidationResult,
-        ?extendedConfigMetadata: ExtendedConfigMetadata
+        ?extendedConfigMetadata: ExtendedConfigMetadata,
+        ?aliasKeyMapOverride: Map<string, HashSet<StringToken>>
     ) =
 
     let extendedConfigMetadata = defaultArg extendedConfigMetadata ExtendedConfigMetadata.empty
@@ -76,10 +93,13 @@ type CompletionService
     //let typesMap = types |> (Map.map (fun _ s -> StringSet.Create(InsensitiveStringComparer(), (s |> List.map fst))))
     let enumsMap = enums // |> Map.toSeq |> PSeq.map (fun (k, s) -> k, StringSet.Create(InsensitiveStringComparer(), s)) |> Map.ofSeq
 
-    let types: FrozenDictionary<string, string list> =
-        (types
-         |> Seq.map (fun pair -> KeyValuePair(pair.Key, pair.Value.StringValues |> List.ofSeq)))
-            .ToFrozenDictionary()
+    // Materialize a type's id list on first use instead of copying every type's values at
+    // construction time; the shared trie-keyed cache keeps unchanged types' lists warm
+    // across the per-save service rebuilds.
+    let tryFindTypeValueList (t: string) : string list option =
+        match typesMap.TryFind t with
+        | Some set -> Some(CompletionValueListCache.getOrAdd set)
+        | None -> None
 
     let defaultKeys =
         localisation
@@ -119,10 +139,13 @@ type CompletionService
 
 
     let aliasKeyMap =
-        rootRules.Aliases
-        |> Map.toList
-        |> List.map (fun (key, rules) -> key, (rules |> Seq.collect ruleToCompletionListHelper |> HashSet<StringToken>))
-        |> Map.ofList
+        match aliasKeyMapOverride with
+        | Some precomputed -> precomputed
+        | None ->
+            rootRules.Aliases
+            |> Map.toList
+            |> List.map (fun (key, rules) -> key, (rules |> Seq.collect ruleToCompletionListHelper |> HashSet<StringToken>))
+            |> Map.ofList
 
     let aliasParamMarkers =
         let rec collectRule ((ruleType, _): NewRule) =
@@ -234,9 +257,9 @@ type CompletionService
             FieldValidators.getValidValues v
             |> Option.bind Array.tryHead
             |> Option.defaultValue "x"
-        | TypeField(TypeType.Simple t) -> types.TryFind(t) |> Option.bind List.tryHead |> Option.defaultValue "x"
+        | TypeField(TypeType.Simple t) -> tryFindTypeValueList t |> Option.bind List.tryHead |> Option.defaultValue "x"
         | TypeField(TypeType.Complex(p, t, s)) ->
-            types.TryFind(t)
+            tryFindTypeValueList t
             |> Option.bind List.tryHead
             |> Option.map (fun n -> p + n + s)
             |> Option.defaultValue "x"
@@ -373,46 +396,60 @@ type CompletionService
         let variableFieldNonGlobal = scopedEffects @ vars
         valueFieldAll, valueFieldNonGlobal, scopeFieldAll, scopeFieldNonGlobal, variableFieldAll, variableFieldNonGlobal
 
+    // The snippet body depends only on the rule set, not on the key being inserted;
+    // enumerating a type with thousands of ids previously rebuilt the identical body per id.
+    // Keyed by rule-array reference; rule arrays are stable for a service's lifetime.
+    let snippetBodyCache =
+        System.Collections.Concurrent.ConcurrentDictionary<NewRule array, string>(HashIdentity.Reference)
+
+    let snippetBodyForRules (rules: NewRule array) =
+        let build (rules: NewRule array) =
+            let filterToCompletion =
+                function
+                | LeafRule(SpecificField(SpecificValue _), _) -> true
+                | NodeRule(SpecificField(SpecificValue _), _) -> true
+                | _ -> false
+
+            let ruleToDistinctKey =
+                function
+                | LeafRule(SpecificField(SpecificValue s), _) -> StringResource.stringManager.GetStringForID s.normal
+                | NodeRule(SpecificField(SpecificValue s), _) -> StringResource.stringManager.GetStringForID s.normal
+                | _ -> ""
+
+            let rulePrint (i: int) =
+                function
+                | LeafRule(SpecificField(SpecificValue s), r) ->
+                    $"\t%s{StringResource.stringManager.GetStringForID s.normal} = ${{%i{i + 1}:%s{fieldToCompletionList r}}}\n"
+                | NodeRule(SpecificField(SpecificValue s), _) ->
+                    sprintf "\t%s = ${%i:%s}\n" (StringResource.stringManager.GetStringForID s.normal) (i + 1) "{ }"
+                | _ -> ""
+
+            let requiredRules =
+                rules
+                |> Seq.filter (fun (f, o) -> o.min >= 1 && filterToCompletion f)
+                |> Seq.distinctBy (fun (f, _) -> ruleToDistinctKey f)
+                |> Seq.mapi (fun i (f, _) -> rulePrint i f)
+                |> String.concat ""
+
+            if requiredRules = "" then "\t${0}\n" else requiredRules
+        // Callers pass fresh [||] literals in a few places; keying those would grow the
+        // cache by one dead entry per completion item.
+        if rules.Length = 0 then
+            "\t${0}\n"
+        else
+            snippetBodyCache.GetOrAdd(rules, build)
+
     let createSnippetForClause
         (scoreFunction: string -> int)
         (rules: NewRule array)
         (description: string option)
         (key: string)
         =
-        let filterToCompletion =
-            function
-            | LeafRule(SpecificField(SpecificValue _), _) -> true
-            | NodeRule(SpecificField(SpecificValue _), _) -> true
-            | _ -> false
-
-        let ruleToDistinctKey =
-            function
-            | LeafRule(SpecificField(SpecificValue s), _) -> StringResource.stringManager.GetStringForID s.normal
-            | NodeRule(SpecificField(SpecificValue s), _) -> StringResource.stringManager.GetStringForID s.normal
-            | _ -> ""
-
-        let rulePrint (i: int) =
-            function
-            | LeafRule(SpecificField(SpecificValue s), r) ->
-                $"\t%s{StringResource.stringManager.GetStringForID s.normal} = ${{%i{i + 1}:%s{fieldToCompletionList r}}}\n"
-            | NodeRule(SpecificField(SpecificValue s), _) ->
-                sprintf "\t%s = ${%i:%s}\n" (StringResource.stringManager.GetStringForID s.normal) (i + 1) "{ }"
-            | _ -> ""
-
-        let requiredRules =
-            rules
-            |> Seq.filter (fun (f, o) -> o.min >= 1 && filterToCompletion f)
-            |> Seq.distinctBy (fun (f, _) -> ruleToDistinctKey f)
-            |> Seq.mapi (fun i (f, _) -> rulePrint i f)
-            |> String.concat ""
-
-        let requiredRules = if requiredRules = "" then "\t${0}\n" else requiredRules
-
         let score = scoreFunction key
 
         CompletionResponse.Snippet(
             key,
-            $"%s{key} = {{\n%s{requiredRules}}}",
+            $"%s{key} = {{\n%s{snippetBodyForRules rules}}}",
             description,
             Some score,
             CompletionCategory.Other
@@ -698,14 +735,14 @@ type CompletionService
                 //TODO: Scopes better
                 | NodeRule(SubtypeField _, _) -> [||]
                 | NodeRule(TypeField(TypeType.Simple t), innerRules) ->
-                    types.TryFind(t)
+                    tryFindTypeValueList t
                     |> Option.map (fun ts ->
                         ts
                         |> Seq.map (fun e -> createSnippetForClausei innerRules o.description e)
                         |> Seq.toArray)
                     |> Option.defaultValue [||]
                 | NodeRule(TypeField(TypeType.Complex(p, t, s)), innerRules) ->
-                    types.TryFind(t)
+                    tryFindTypeValueList t
                     |> Option.map (fun ts ->
                         ts
                         |> Seq.map (fun e -> createSnippetForClausei innerRules o.description (p + e + s))
@@ -738,11 +775,11 @@ type CompletionService
                 //TODO: Scopes
                 | LeafRule(SubtypeField _, _) -> [||]
                 | LeafRule(TypeField(TypeType.Simple t), _) ->
-                    types.TryFind(t)
+                    tryFindTypeValueList t
                     |> Option.map (fun ts -> ts |> Seq.map keyvalue |> Seq.toArray)
                     |> Option.defaultValue [||]
                 | LeafRule(TypeField(TypeType.Complex(p, t, s)), _) ->
-                    types.TryFind(t)
+                    tryFindTypeValueList t
                     |> Option.map (fun ts -> ts |> Seq.map (fun e -> keyvalue (p + e + s)) |> Seq.toArray)
                     |> Option.defaultValue [||]
                 | LeafRule(VariableGetField v, _) ->
@@ -757,12 +794,12 @@ type CompletionService
                 | LeafValueRule lv ->
                     match lv with
                     | NewField.TypeField(TypeType.Simple t) ->
-                        types.TryFind(t)
+                        tryFindTypeValueList t
                         |> Option.defaultValue []
                         |> Seq.map CompletionResponse.CreateSimple
                         |> Seq.toArray
                     | NewField.TypeField(TypeType.Complex(p, t, s)) ->
-                        types.TryFind(t)
+                        tryFindTypeValueList t
                         |> Option.map (fun ns -> List.map (fun n -> p + n + s) ns)
                         |> Option.defaultValue []
                         |> Seq.map CompletionResponse.CreateSimple
@@ -790,7 +827,7 @@ type CompletionService
                 | _ -> [||]
         //TODO: Add leafvalue
         let typeCompletionItems (typeName: string) (suffixPatterns: string list) =
-            let values = types.TryFind(typeName) |> Option.defaultValue []
+            let values = tryFindTypeValueList typeName |> Option.defaultValue []
 
             Seq.append values (FieldValidators.typeSuffixPatternBaseValues values suffixPatterns)
             |> Seq.distinctBy (fun value -> value.ToLowerInvariant())
@@ -851,7 +888,7 @@ type CompletionService
                 let raw = value.Trim().Trim('"')
 
                 let typedValues typeName =
-                    types.TryFind(typeName) |> Option.defaultValue []
+                    tryFindTypeValueList typeName |> Option.defaultValue []
 
                 let localisationValues prefix =
                     defaultKeys
@@ -912,7 +949,7 @@ type CompletionService
                 | NewField.TypeField(TypeType.Simple t) ->
                     typeCompletionItems t options.typeSuffixPatterns
                 | NewField.TypeField(TypeType.Complex(p, t, s)) ->
-                    types.TryFind(t)
+                    tryFindTypeValueList t
                     |> Option.map (fun ns -> List.map (fun n -> p + n + s) ns)
                     |> Option.defaultValue []
                     |> Seq.map CompletionResponse.CreateSimple
@@ -1270,7 +1307,12 @@ type CompletionService
 
         let items =
             match path |> List.tryLast, path.Length with
-            | Some(_, count, Some x, _, _), _ when x.Length > 0 && x.StartsWith("@" + magicCharString) ->
+            // The cursor (magic char) sits inside a value token starting with '@': offer the
+            // scripted-variable list. Matching any partially typed token (not just a bare '@')
+            // mirrors validation, which accepts an '@' value for every ValueField.
+            | Some(_, count, Some x, _, _), _ when
+                x.Length > 0 && x.StartsWith "@" && x.Contains magicCharString
+                ->
                 let localVars =
                     CWTools.Validation.Stellaris.STLValidation.getDefinedVariables entity.entity
                     |> List.filter (fun v -> not (v.StartsWith("@[")) && not (v.StartsWith(@"@\[")))  // 过滤掉表达式
@@ -1482,7 +1524,11 @@ type CompletionService
 
         let items =
             match inlinePath |> List.tryLast, inlinePath.Length with
-            | Some(_, count, Some x, _, _), _ when x.Length > 0 && x.StartsWith("@" + magicCharString) ->
+            // Same as the non-inline path: any '@'-prefixed token with the cursor inside it
+            // gets the scripted-variable list, mirroring validation.
+            | Some(_, count, Some x, _, _), _ when
+                x.Length > 0 && x.StartsWith "@" && x.Contains magicCharString
+                ->
                 let localVars = CWTools.Validation.Stellaris.STLValidation.getDefinedVariables inlineEntity.entity
                                 |> List.filter (fun v -> not (v.StartsWith("@[")) && not (v.StartsWith(@"@\[")))  // 过滤掉表达式
                 let allVars = effectiveGlobalVars @ localVars

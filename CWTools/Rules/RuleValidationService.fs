@@ -39,7 +39,8 @@ type RuleValidationService
         processLocalisation:
             Lang * Collections.Map<string, CWTools.Localisation.Entry> -> Lang * Collections.Map<string, LocEntry>,
         validateLocalisation: LocEntry -> ScopeContext -> ValidationResult,
-        ?extendedConfigMetadata: ExtendedConfigMetadata
+        ?extendedConfigMetadata: ExtendedConfigMetadata,
+        ?aliasKeyMapOverride: Map<string, HashSet<StringToken>>
     ) =
 
     let extendedConfigMetadata = defaultArg extendedConfigMetadata ExtendedConfigMetadata.empty
@@ -97,10 +98,13 @@ type RuleValidationService
 
 
     let aliasKeyMap =
-        rootRules.Aliases
-        |> Map.toList
-        |> List.map (fun (key, rules) -> key, (rules |> Seq.collect ruleToCompletionListHelper |> HashSet<StringToken>))
-        |> Map.ofList
+        match aliasKeyMapOverride with
+        | Some precomputed -> precomputed
+        | None ->
+            rootRules.Aliases
+            |> Map.toList
+            |> List.map (fun (key, rules) -> key, (rules |> Seq.collect ruleToCompletionListHelper |> HashSet<StringToken>))
+            |> Map.ofList
 
     // let isValidValue (value : Value) =
     //     let key = value.ToString().Trim([|'"'|])

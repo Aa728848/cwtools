@@ -2737,3 +2737,117 @@ on_destroy_planet_with_GE_PLANET_KILLER_DELUGE_unqueued = {
 //                 m |> List.map (fun x -> x.categories) |> List.distinct |> List.sort |> printfn "%A"
 //             |Failure(e ,_, _) -> Expect.isFalse true e
 //     ]
+
+
+[<Tests>]
+let stagedRefreshTests =
+    testList
+        "staged refresh"
+        [ testWithCapturedLogs "lookup shallow clone and absorb"
+          <| fun () ->
+              let original = Lookup()
+              original.scriptedVariables <- [ "@a", "1" ]
+              original.typeDefInfo <- Map.ofList [ "t", [||] ]
+              let clone = original.ShallowClone()
+              clone.scriptedVariables <- [ "@b", "2" ]
+              clone.typeDefInfo <- Map.ofList [ "t2", [||] ]
+              Expect.equal original.scriptedVariables [ "@a", "1" ] "clone mutation must not touch the original"
+              Expect.isTrue (original.typeDefInfo.ContainsKey "t") "original typeDefInfo untouched"
+              original.AbsorbFieldsFrom clone
+              Expect.equal original.scriptedVariables [ "@b", "2" ] "absorb copies simple fields"
+              Expect.isTrue (original.typeDefInfo.ContainsKey "t2") "absorb copies map fields"
+              Expect.isFalse (original.typeDefInfo.ContainsKey "t") "absorb replaces, not merges"
+
+          testWithCapturedLogs "prepare/commit refresh matches locked refresh"
+          <| fun () ->
+              let configtext =
+                  [ "./testfiles/localisationtests/test.cwt", File.ReadAllText "./testfiles/localisationtests/test.cwt"
+                    "./testfiles/localisationtests/localisation.cwt",
+                    File.ReadAllText "./testfiles/localisationtests/localisation.cwt" ]
+
+              let settings = emptyStellarisSettings "./testfiles/localisationtests/gamefiles"
+
+              let settings =
+                  { settings with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = false
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+
+              let sortedTypeIds (types: Map<string, TypeDefInfo array>) =
+                  types |> Map.map (fun _ v -> v |> Array.map _.id |> Array.sort)
+
+              let staged = stl.PrepareRefreshCaches()
+              Expect.isSome staged "prepare should produce a staged refresh"
+              Expect.isTrue (stl.CommitRefreshCaches staged.Value) "commit guards should hold with no interleaved writes"
+              let typesAfterStaged = sortedTypeIds (stl.Types())
+              let triggersAfterStaged = stl.ScriptedTriggers() |> List.length
+              stl.RefreshCaches()
+              Expect.equal typesAfterStaged (sortedTypeIds (stl.Types())) "staged refresh must produce the same type index as a locked refresh"
+              Expect.equal triggersAfterStaged (stl.ScriptedTriggers() |> List.length) "staged refresh must produce the same trigger set"
+
+              // A second prepare whose guards are invalidated must refuse to commit.
+              let staged2 = stl.PrepareRefreshCaches()
+              Expect.isSome staged2 "second prepare should succeed"
+              stl.RefreshCaches()
+              Expect.isFalse (stl.CommitRefreshCaches staged2.Value) "commit must refuse when the live state moved after prepare" ]
+
+
+[<Tests>]
+let paramSlotCompletionTests =
+    testList
+        "param slot completion"
+        [ testWithCapturedLogs "complete at dollar-param value slot in definition"
+          <| fun () ->
+              let configtext = configFilesFromDir "./testfiles/stellarisconfig"
+
+              let configtext =
+                  ("./testfiles/validationtests/trigger_docs.log",
+                   File.ReadAllText "./testfiles/validationtests/trigger_docs.log")
+                  :: configtext
+
+              let settings = emptyStellarisSettings "./testfiles/validationtests/eventtests"
+
+              let settings =
+                  { settings with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = false
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+
+              let defFile =
+                  stl.AllEntities()
+                  |> Seq.map (fun struct (e, _) -> e.filepath)
+                  |> Seq.find (fun f -> f.Replace('\\', '/').EndsWith("common/scripted_effects/test_effects.txt"))
+
+              let defText = File.ReadAllText defFile
+              let m = System.Text.RegularExpressions.Regex.Match(defText, "=\\s*\"?\\$war(\\|[^$\\r\\n]*)?\\$")
+              Expect.isTrue m.Success "fixture should contain a $war$ value usage"
+              let dollarIdx = defText.IndexOf('$', m.Index)
+              let mutable line = 0
+              let mutable lineStart = 0
+
+              for i in 0 .. dollarIdx - 1 do
+                  if defText.[i] = '\n' then
+                      line <- line + 1
+                      lineStart <- i + 1
+
+              let col = dollarIdx - lineStart
+              let pos = mkPos (line + 1) (col + 1)
+
+              let labels =
+                  stl.Complete pos defFile defText
+                  |> List.map (function
+                      | Simple(l, _, _) -> l
+                      | Detailed(l, _, _, _) -> l
+                      | Snippet(l, _, _, _, _) -> l)
+
+              Expect.contains labels "yes" $"Expected bool completion at the $war$ slot, got %A{labels |> List.truncate 30}" ]
