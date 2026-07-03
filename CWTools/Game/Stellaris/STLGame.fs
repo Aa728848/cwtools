@@ -141,7 +141,12 @@ module STLGameFunctions =
     let normaliseRefreshPath (filepath: string) =
         filepath.Replace('\\', '/').ToLowerInvariant()
 
+    let isInlineScriptRefreshPath (filepath: string) =
+        normaliseRefreshPath filepath
+        |> fun path -> path.Contains("/common/inline_scripts/")
+
     let incrementalTypeKeysForFiles (game: GameObject<STLComputedData, STLLookup>) files =
+        let files = files |> List.filter (isInlineScriptRefreshPath >> not)
         let fileSet = files |> List.map normaliseRefreshPath |> Set.ofList
         let indexedTypeKeys =
             game.Lookup.typeDefInfo

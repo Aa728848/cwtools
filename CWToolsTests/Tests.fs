@@ -1555,7 +1555,75 @@ let inlineScriptCompletionRegressionTests =
               Expect.contains refreshedCallers callerFilename "Save refresh should find the inline caller"
               stl.RefreshCaches()
               stl.ForceDynamicParameterData(2000, 2000) |> ignore
-              assertParameterErrors "post-save deferred validation" ]
+              assertParameterErrors "post-save deferred validation"
+
+          testWithCapturedLogs "inline save does not incrementally drop caller-generated type ids" <| fun () ->
+              let folder =
+                  Path.Combine(Path.GetTempPath(), "cwtools-inline-generated-types-" + Guid.NewGuid().ToString("N"))
+
+              try
+                  let inlineDir = Path.Combine(folder, "common", "inline_scripts", "generated")
+                  let callerDir = Path.Combine(folder, "common", "starbase_modules")
+                  Directory.CreateDirectory inlineDir |> ignore
+                  Directory.CreateDirectory callerDir |> ignore
+
+                  let inlineFilename = Path.Combine(inlineDir, "module.txt")
+                  let callerFilename = Path.Combine(callerDir, "caller.txt")
+                  let inlineText = "$TYPE$_module = { on_destroyed = { has_starbase_module = $TYPE$_module } }"
+                  let callerText = "inline_script = { script = generated/module TYPE = demo }"
+
+                  File.WriteAllText(inlineFilename, inlineText)
+                  File.WriteAllText(callerFilename, callerText)
+
+                  let rules =
+                      "types = {
+                           type[starbase_module] = {
+                               path = \"game/common/starbase_modules\"
+                           }
+                       }
+                       starbase_module = {
+                           on_destroyed = {
+                               has_starbase_module = <starbase_module>
+                           }
+                       }"
+
+                  let settings =
+                      { emptyStellarisSettings folder with
+                          rules =
+                              Some
+                                  { ruleFiles = [ "inline-generated-types.cwt", rules ]
+                                    validateRules = true
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+
+                  let stl = STLGame(settings) :> IGame<STLComputedData>
+
+                  let assertNoGeneratedTypeError phase =
+                      let errors = stl.ValidateFile false callerFilename
+                      let generatedTypeErrors =
+                          errors
+                          |> List.filter (fun error ->
+                              error.code = "CW274"
+                              || error.message.Contains("Expected value of type starbase_module, got 'demo_module'"))
+
+                      Expect.isEmpty
+                          generatedTypeErrors
+                          $"{phase}: caller-generated type IDs should stay available to inline validation, got %A{generatedTypeErrors}"
+
+                  assertNoGeneratedTypeError "initial validation"
+
+                  stl.UpdateFile false inlineFilename (Some inlineText) |> ignore
+                  let staged = stl.PrepareScriptedTypes [ inlineFilename ]
+                  Expect.isNone staged "Inline script templates depend on callers and must fall back to full type refresh"
+
+                  let refreshedCallers = stl.RefreshInlineScriptCallers [ "generated/module.txt" ]
+                  Expect.contains refreshedCallers callerFilename "Save refresh should find the caller that expands the inline template"
+                  stl.RefreshCaches()
+
+                  assertNoGeneratedTypeError "post-save refresh"
+              finally
+                  if Directory.Exists folder then
+                      Directory.Delete(folder, true) ]
 
 [<Tests>]
 let scriptedBracketParameterRegressionTests =
