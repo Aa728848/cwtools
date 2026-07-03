@@ -69,6 +69,20 @@ module internal FieldValidators =
     let inline getLowerKey (ids: StringTokens) = stringManager.GetLowerStringForIDs(ids)
     let inline getOriginalKey (ids: StringTokens) = stringManager.GetStringForIDs ids
 
+    let stripPrefixedValueText (value: string) =
+        let value = trimQuote value
+        let colonIndex = value.IndexOf(':')
+
+        if colonIndex > 0 && colonIndex + 1 < value.Length && value.[colonIndex + 1] <> '\\' && value.[colonIndex + 1] <> '/' then
+            value.Substring(colonIndex + 1)
+        else
+            value
+
+    let stripPrefixedValueIds (ids: StringTokens) =
+        getOriginalKey ids
+        |> stripPrefixedValueText
+        |> stringManager.InternIdentifierToken
+
     let private tryResolveScopedTriggerValue
         (linkMap: EffectMap)
         (valueTriggerMap: EffectMap)
@@ -1577,6 +1591,8 @@ module internal FieldValidators =
                     keyIDs
                     leafornode
                     errors
+            | PrefixedField inner ->
+                checkField p severity ctx inner (stripPrefixedValueIds keyIDs) leafornode errors
             | ScalarField _ -> errors
             | SpecificField(SpecificValue v) ->
                 if keyIDs.lower = v.lower then
@@ -1679,6 +1695,7 @@ module internal FieldValidators =
             | ParameterField -> checkParameterNE keyIDs
             | ParameterValueField -> checkLooseExpressionNE keyIDs
             | LocalisationParameterField -> checkParameterNE keyIDs
+            | PrefixedField inner -> checkFieldNE p severity ctx inner (stripPrefixedValueIds keyIDs)
             | TypeMarkerField(dummy, _) -> dummy = keyIDs.lower
             | ScalarField _ -> true
             | SpecificField(SpecificValue v) -> v.lower = keyIDs.lower

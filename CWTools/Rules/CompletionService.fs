@@ -24,6 +24,7 @@ type CompletionContext =
     | NodeRHS
     | LeafLHS
     | LeafRHS
+    | LeafValueRHS
 
 
 type private CompletionScopeOutput =
@@ -517,23 +518,25 @@ type CompletionService
                 | true -> (l.Key, countChildren node l.Key, Some l.Key, LeafLHS, None) :: stack
                 | false -> (l.Key, countChildren node l.Key, Some l.ValueText, LeafRHS, None) :: stack
             | None ->
-                let clauseChildren =
-                    nodesArr |> Array.choose (function
-                        | ValueClauseC vc -> Some (vc :> IClause)
-                        | NodeC n -> Some (n :> IClause)
-                        | _ -> None)
-                match tryFindByPosBinary pos clauseChildren (fun c -> c.Position) with
-                | Some vc ->
-                    match
-                        (vc.Position.StartLine = pos.Line)
-                        && ((vc.Position.StartColumn + vc.Key.Length + 1) > pos.Column)
-                    with
-                    | true -> getRulePath pos ((vc.Key, countChildren node vc.Key, None, NodeLHS, None) :: stack) vc
-                    | false -> getRulePath pos ((vc.Key, countChildren node vc.Key, None, NodeRHS, None) :: stack) vc
-                | None -> stack
-    // match node.LeafValues |> Seq.tryFind (fun lv -> rangeContainsPos lv.Position pos) with
-    // | Some lv -> (lv.Key, countChildren node lv.Key, Some lv.ValueText)::stack
-    // | None -> stack
+                let leafValueChildren =
+                    nodesArr |> Array.choose (function | LeafValueC lv -> Some lv | _ -> None)
+                match tryFindByPosBinary pos leafValueChildren (fun lv -> lv.Position) with
+                | Some lv -> (lv.Key, 0, Some lv.ValueText, LeafValueRHS, None) :: stack
+                | None ->
+                    let clauseChildren =
+                        nodesArr |> Array.choose (function
+                            | ValueClauseC vc -> Some (vc :> IClause)
+                            | NodeC n -> Some (n :> IClause)
+                            | _ -> None)
+                    match tryFindByPosBinary pos clauseChildren (fun c -> c.Position) with
+                    | Some vc ->
+                        match
+                            (vc.Position.StartLine = pos.Line)
+                            && ((vc.Position.StartColumn + vc.Key.Length + 1) > pos.Column)
+                        with
+                        | true -> getRulePath pos ((vc.Key, countChildren node vc.Key, None, NodeLHS, None) :: stack) vc
+                        | false -> getRulePath pos ((vc.Key, countChildren node vc.Key, None, NodeRHS, None) :: stack) vc
+                    | None -> stack
 
     and getCompletionFromPath
         (scoreFunction: ScopeContext -> _ list -> CompletionScopeOutput -> CompletionScopeExpectation -> string -> int)
@@ -929,7 +932,16 @@ type CompletionService
                 |> Seq.map CompletionResponse.CreateSimple
                 |> Seq.toArray
 
-        let fieldToRules (field: NewField) (value: string) (scopeContext: ScopeContext) (options: Options) =
+        let splitPrefixedValue (value: string) =
+            let value = value.Trim().Trim('"')
+            let colonIndex = value.IndexOf(':')
+
+            if colonIndex > 0 then
+                value.Substring(0, colonIndex + 1), value.Substring(colonIndex + 1)
+            else
+                "", value
+
+        let rec fieldToRules (field: NewField) (value: string) (scopeContext: ScopeContext) (options: Options) =
             //            log (sprintf "%A %A" field value)
             //            eprintfn "%A" value
             match options.completionType with
@@ -969,6 +981,9 @@ type CompletionService
                         |> Option.map (snd >> Set.toArray)
                         |> Option.defaultValue [||]
                         |> Array.map CompletionResponse.CreateSimple
+                | NewField.PrefixedField inner ->
+                    let _, innerValue = splitPrefixedValue value
+                    fieldToRules inner innerValue scopeContext options
                 | NewField.FilepathField(prefix, extension) -> fileCompletionItems prefix extension options
                 | NewField.FilenameField prefix -> filenameCompletionItems prefix
                 | NewField.ScopeField x ->
@@ -1110,6 +1125,33 @@ type CompletionService
                     let res = fs |> Array.collect (fun (_, f, o) -> fieldToRules f value scopeContext o)
                     //log "res %A" res
                     res
+            | [ (_, _, Some value, LeafValueRHS) ] ->
+                match
+                    expandedRules
+                    |> Array.choose (function
+                        | LeafValueRule f, o -> Some(f, o)
+                        | _ -> None)
+                with
+                | [||] -> expandedRules |> Array.collect (convRuleToCompletion value 0 scopeContext)
+                | fs ->
+                    let hasPrefix =
+                        let value = value.Trim().Trim('"')
+                        value.IndexOf(':') > 0
+
+                    let prefixedFields =
+                        fs
+                        |> Array.filter (fun (field, _) ->
+                            match field with
+                            | PrefixedField _ -> true
+                            | _ -> false)
+
+                    let fs =
+                        if hasPrefix && prefixedFields.Length > 0 then
+                            prefixedFields
+                        else
+                            fs
+
+                    fs |> Array.collect (fun (f, o) -> fieldToRules f value scopeContext o)
             | (key, count, _, NodeRHS) :: rest ->
                 match
                     expandedRules

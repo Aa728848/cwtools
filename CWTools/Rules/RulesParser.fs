@@ -452,7 +452,7 @@ module private RulesParserImpl =
     let fastEndsWith (x: string) y =
         x.EndsWith(y, StringComparison.OrdinalIgnoreCase)
 
-    let internal processKey parseScope anyScope scopeGroup =
+    let rec internal processKey parseScope anyScope scopeGroup =
         function
         | "$any" -> ScalarField ScalarValue
         | "scalar" -> ScalarField ScalarValue
@@ -710,6 +710,11 @@ module private RulesParserImpl =
         | "$parameter" -> ParameterField
         | "$parameter_value" -> ParameterValueField
         | "$localisation_parameter" -> LocalisationParameterField
+        | x when fastStartsWith x "prefix_field[" ->
+            match getSettingFromString x "prefix_field" with
+            | Some inner when not (String.IsNullOrWhiteSpace inner) ->
+                PrefixedField(processKey parseScope anyScope scopeGroup (inner.Trim()))
+            | _ -> ScalarField ScalarValue
         | "ignore_field" -> IgnoreMarkerField
         | x ->
             // eprintfn "ps %s" x
@@ -2059,7 +2064,13 @@ module RulesConsistencyValidation =
         | LeafRule(_, TypeField(TypeType.Simple(name = name)))
         | LeafRule(_, TypeField(TypeType.Complex(name = name)))
         | LeafValueRule(TypeField(TypeType.Simple(name = name)))
-        | LeafValueRule(TypeField(TypeType.Complex(name = name))) -> name :: acc
+        | LeafValueRule(TypeField(TypeType.Complex(name = name)))
+        | LeafRule(PrefixedField(TypeField(TypeType.Simple(name = name))), _)
+        | LeafRule(PrefixedField(TypeField(TypeType.Complex(name = name))), _)
+        | LeafRule(_, PrefixedField(TypeField(TypeType.Simple(name = name))))
+        | LeafRule(_, PrefixedField(TypeField(TypeType.Complex(name = name))))
+        | LeafValueRule(PrefixedField(TypeField(TypeType.Simple(name = name))))
+        | LeafValueRule(PrefixedField(TypeField(TypeType.Complex(name = name)))) -> name :: acc
         | _ -> acc
 
     let checkForUndefinedTypes (rules: RootRule seq) (typedefs: TypeDefinition list) =

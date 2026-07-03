@@ -219,6 +219,7 @@ and NewField =
     | ParameterField
     | ParameterValueField
     | LocalisationParameterField
+    | PrefixedField of inner: NewField
     | MarkerField of Marker
     | JominiGuiField
     | IgnoreMarkerField
