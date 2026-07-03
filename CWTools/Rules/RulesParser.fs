@@ -485,6 +485,11 @@ module private RulesParserImpl =
         | x when fastStartsWith x "date_field[" || fastStartsWith x "date_field(" -> ValueField Date
         | "datetime_field" -> ValueField DateTime
         | x when fastStartsWith x "datetime_field[" || fastStartsWith x "datetime_field(" -> ValueField DateTime
+        | x when fastStartsWith x "prefix_field[" ->
+            match getSettingFromString x "prefix_field" with
+            | Some inner when not (String.IsNullOrWhiteSpace inner) ->
+                PrefixedField(processKey parseScope anyScope scopeGroup (inner.Trim()))
+            | _ -> ScalarField ScalarValue
         | x when fastStartsWith x "<" && fastEndsWith x ">" -> TypeField(TypeType.Simple(x.Trim([| '<'; '>' |])))
         | x when x.Contains '<' && x.Contains '>' ->
             let x = x.Trim('"')
@@ -710,11 +715,6 @@ module private RulesParserImpl =
         | "$parameter" -> ParameterField
         | "$parameter_value" -> ParameterValueField
         | "$localisation_parameter" -> LocalisationParameterField
-        | x when fastStartsWith x "prefix_field[" ->
-            match getSettingFromString x "prefix_field" with
-            | Some inner when not (String.IsNullOrWhiteSpace inner) ->
-                PrefixedField(processKey parseScope anyScope scopeGroup (inner.Trim()))
-            | _ -> ScalarField ScalarValue
         | "ignore_field" -> IgnoreMarkerField
         | x ->
             // eprintfn "ps %s" x

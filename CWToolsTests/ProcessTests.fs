@@ -157,6 +157,11 @@ let plsConfigCompatibilityTests =
               | AbsoluteFilepathField, FilenameField(Some "gfx/interface") -> ()
               | other -> failtestf "Expected PLS path reference fields, got %A" other
 
+              match parseField "prefix_field[localisation]", parseField "prefix_field[<sprite>]" with
+              | PrefixedField(LocalisationField(false, false)),
+                PrefixedField(TypeField(TypeType.Simple "sprite")) -> ()
+              | other -> failtestf "Expected prefixed fields, got %A" other
+
           testCase "parses open and closed value field ranges"
           <| fun () ->
               match parseField "value_field[0.0..inf)" with
