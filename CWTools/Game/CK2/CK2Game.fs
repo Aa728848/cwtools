@@ -577,6 +577,10 @@ type CK2Game(setupSettings: CK2Settings) =
 
         member _.InfoAtPos pos file text = game.InfoAtPos pos file text
 
+        member _.OverrideModeAtPath file = game.OverrideModeAtPath file
+
+        member _.OverrideModes() = game.OverrideModes()
+
         member _.ReplaceConfigRules rules =
             game.ReplaceConfigRules
                 { ruleFiles = rules

@@ -473,6 +473,22 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 file
                 text
 
+    member _.OverrideModeAtPath(file: string) =
+        let logicalPath =
+            (try
+                fileManager.ConvertPathToLogicalPath file
+             with _ ->
+                file)
+
+        ExtendedConfigMetadata.tryFindPriorityForPath logicalPath lookup.extendedConfigMetadata
+
+    member _.OverrideModes() =
+        lookup.extendedConfigMetadata.priorities
+        |> Map.toSeq
+        |> Seq.map snd
+        |> Seq.sortBy (fun p -> p.path)
+        |> Seq.toArray
+
     member _.ReplaceConfigRules rules = rulesManager.LoadBaseConfig rules
     member _.RefreshCaches() = updateRulesCache ()
 

@@ -1,5 +1,6 @@
 namespace CWTools.Rules
 
+open System
 open System.Runtime.CompilerServices
 open CWTools.Common
 open CWTools.Utilities
@@ -314,6 +315,35 @@ module ExtendedConfigMetadata =
           databaseObjectTypes =
             Map.fold (fun s k v -> Map.add k v s) left.databaseObjectTypes right.databaseObjectTypes
           onActions = Map.fold (fun s k v -> Map.add k v s) left.onActions right.onActions }
+
+    let private normalizePath (value: string) =
+        if String.IsNullOrWhiteSpace value then
+            ""
+        else
+            value.Replace('\\', '/').Trim().TrimStart('/').TrimEnd('/')
+
+    let tryFindPriorityForPath (path: string) (metadata: ExtendedConfigMetadata) =
+        let normalizedPath = normalizePath path
+
+        if normalizedPath = "" then
+            None
+        else
+            metadata.priorities
+            |> Map.toSeq
+            |> Seq.choose (fun (_, priority) ->
+                let configuredPath = normalizePath priority.path
+
+                if configuredPath = "" then
+                    None
+                else
+                    let matches =
+                        normalizedPath.Equals(configuredPath, StringComparison.OrdinalIgnoreCase)
+                        || normalizedPath.StartsWith(configuredPath + "/", StringComparison.OrdinalIgnoreCase)
+
+                    if matches then Some(configuredPath.Length, priority) else None)
+            |> Seq.sortByDescending fst
+            |> Seq.tryHead
+            |> Option.map snd
 
 type EnumDefinition =
     { key: string

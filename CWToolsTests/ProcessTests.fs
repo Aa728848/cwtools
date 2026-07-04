@@ -244,6 +244,8 @@ let plsConfigCompatibilityTests =
                       "\n"
                       [ "priorities = {"
                         "    type[law] = replace"
+                        "    \"common/governments\" = FIOS"
+                        "    \"common/governments/civics\" = LIOS"
                         "}"
                         "system_scopes = {"
                         "    ## Country scope"
@@ -283,6 +285,13 @@ let plsConfigCompatibilityTests =
                       config
 
               Expect.equal metadata.priorities.["type[law]"].strategy "replace" "Priority strategy should be parsed"
+              Expect.equal metadata.priorities.["common/governments"].strategy "FIOS" "Path priority should be parsed"
+              Expect.equal
+                  (ExtendedConfigMetadata.tryFindPriorityForPath
+                      "common/governments/civics/00_civics.txt"
+                      metadata)
+                  (Some metadata.priorities.["common/governments/civics"])
+                  "Path priority lookup should prefer the longest matching prefix"
               Expect.equal metadata.systemScopes.["country"].baseId (Some "scope") "System scope base_id should be parsed"
               Expect.equal metadata.locales.["l_turkish"].supports (Some true) "Locale support flag should be parsed"
               Expect.sequenceEqual metadata.locales.["l_turkish"].codes [| "tr"; "turkish" |] "Locale codes should be parsed"
