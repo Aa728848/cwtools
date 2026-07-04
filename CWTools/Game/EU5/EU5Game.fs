@@ -284,6 +284,8 @@ type EU5Game(setupSettings: EU5Settings) =
 
         member _.OverrideModes() = game.OverrideModes()
 
+        member _.OverrideModesInfo() = game.OverrideModesInfo()
+
         member _.ReplaceConfigRules rules =
             game.ReplaceConfigRules
                 { ruleFiles = rules

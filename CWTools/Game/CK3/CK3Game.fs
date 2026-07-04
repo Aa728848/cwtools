@@ -288,6 +288,8 @@ type CK3Game(setupSettings: CK3Settings) =
 
         member _.OverrideModes() = game.OverrideModes()
 
+        member _.OverrideModesInfo() = game.OverrideModesInfo()
+
         member _.ReplaceConfigRules rules =
             game.ReplaceConfigRules
                 { ruleFiles = rules

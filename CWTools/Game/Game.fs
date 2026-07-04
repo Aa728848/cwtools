@@ -489,6 +489,13 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         |> Seq.sortBy (fun p -> p.path)
         |> Seq.toArray
 
+    member _.OverrideModesInfo() =
+        lookup.extendedConfigMetadata.overrideModesInfo
+        |> Map.toSeq
+        |> Seq.map snd
+        |> Seq.sortBy (fun m -> m.id)
+        |> Seq.toArray
+
     member _.ReplaceConfigRules rules = rulesManager.LoadBaseConfig rules
     member _.RefreshCaches() = updateRulesCache ()
 

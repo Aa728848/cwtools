@@ -247,6 +247,13 @@ let plsConfigCompatibilityTests =
                         "    \"common/governments\" = FIOS"
                         "    \"common/governments/civics\" = LIOS"
                         "}"
+                        "override_modes_info = {"
+                        "    LIOS = {"
+                        "        ## Last In, Only Served."
+                        "        ## How to override vanilla: redefine the same key in a later file."
+                        "        name = \"Last In, Only Served\""
+                        "    }"
+                        "}"
                         "system_scopes = {"
                         "    ## Country scope"
                         "    country = {"
@@ -292,6 +299,18 @@ let plsConfigCompatibilityTests =
                       metadata)
                   (Some metadata.priorities.["common/governments/civics"])
                   "Path priority lookup should prefer the longest matching prefix"
+
+              Expect.equal
+                  metadata.overrideModesInfo.["LIOS"].name
+                  (Some "Last In, Only Served")
+                  "Override mode info name should be parsed"
+              Expect.isTrue
+                  (metadata.overrideModesInfo.["LIOS"].description.IsSome)
+                  "Override mode info description should be parsed from comments"
+              Expect.stringContains
+                  metadata.overrideModesInfo.["LIOS"].description.Value
+                  "redefine the same key"
+                  "Override mode info description should preserve multi-line ## comments inside the mode block"
               Expect.equal metadata.systemScopes.["country"].baseId (Some "scope") "System scope base_id should be parsed"
               Expect.equal metadata.locales.["l_turkish"].supports (Some true) "Locale support flag should be parsed"
               Expect.sequenceEqual metadata.locales.["l_turkish"].codes [| "tr"; "turkish" |] "Locale codes should be parsed"

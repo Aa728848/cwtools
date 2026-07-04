@@ -1924,6 +1924,14 @@ module private RulesParserImpl =
                 if String.IsNullOrWhiteSpace text then None else Some text
               description = descriptionFromComments comments }
 
+        let parseOverrideModeInfo comments (node: Node) =
+            node.Key,
+            { id = node.Key
+              name =
+                let text = node.TagText "name"
+                if String.IsNullOrWhiteSpace text then None else Some text
+              description = descriptionFromComments comments }
+
         let parseLocale comments (node: Node) =
             let codes =
                 node.Child "codes"
@@ -1979,6 +1987,16 @@ module private RulesParserImpl =
             |> Option.map (fun n -> n.Leaves |> Seq.map parsePriority |> Map.ofSeq)
             |> Option.defaultValue Map.empty
 
+        let overrideModesInfo =
+            root.Child "override_modes_info"
+            |> Option.map (fun n ->
+                childComments n
+                |> Seq.choose (function
+                    | NodeC child, comments -> Some(parseOverrideModeInfo (comments @ directComments child) child)
+                    | _ -> None)
+                |> Map.ofSeq)
+            |> Option.defaultValue Map.empty
+
         let systemScopes =
             root.Child "system_scopes"
             |> Option.map (fun n ->
@@ -2020,6 +2038,7 @@ module private RulesParserImpl =
             |> Option.defaultValue Map.empty
 
         { priorities = priorities
+          overrideModesInfo = overrideModesInfo
           systemScopes = systemScopes
           locales = locales
           databaseObjectTypes = databaseObjectTypes

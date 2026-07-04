@@ -353,6 +353,8 @@ type IRGame(setupSettings: IRSettings) =
 
         member _.OverrideModes() = game.OverrideModes()
 
+        member _.OverrideModesInfo() = game.OverrideModesInfo()
+
         member _.ReplaceConfigRules rules =
             game.ReplaceConfigRules
                 { ruleFiles = rules

@@ -268,6 +268,14 @@ type ConfigPriority =
     { path: string
       strategy: string }
 
+/// Human-readable info for an override/load-order mode (LIOS, FIOS, DUPL, ...),
+/// sourced from the optional CWT `override_modes_info` block. Parsed the same
+/// way as `SystemScopeConfig` (node key + `## ` comment description + `name` tag).
+type ConfigOverrideModeInfo =
+    { id: string
+      name: string option
+      description: string option }
+
 type SystemScopeConfig =
     { id: string
       baseId: string option
@@ -295,6 +303,7 @@ type ExtendedOnActionConfig =
 
 type ExtendedConfigMetadata =
     { priorities: Map<string, ConfigPriority>
+      overrideModesInfo: Map<string, ConfigOverrideModeInfo>
       systemScopes: Map<string, SystemScopeConfig>
       locales: Map<string, LocaleConfig>
       databaseObjectTypes: Map<string, DatabaseObjectTypeConfig>
@@ -303,6 +312,7 @@ type ExtendedConfigMetadata =
 module ExtendedConfigMetadata =
     let empty =
         { priorities = Map.empty
+          overrideModesInfo = Map.empty
           systemScopes = Map.empty
           locales = Map.empty
           databaseObjectTypes = Map.empty
@@ -310,6 +320,8 @@ module ExtendedConfigMetadata =
 
     let merge left right =
         { priorities = Map.fold (fun s k v -> Map.add k v s) left.priorities right.priorities
+          overrideModesInfo =
+            Map.fold (fun s k v -> Map.add k v s) left.overrideModesInfo right.overrideModesInfo
           systemScopes = Map.fold (fun s k v -> Map.add k v s) left.systemScopes right.systemScopes
           locales = Map.fold (fun s k v -> Map.add k v s) left.locales right.locales
           databaseObjectTypes =

@@ -323,6 +323,8 @@ type VIC2Game(setupSettings: VIC2Settings) =
 
         member _.OverrideModes() = game.OverrideModes()
 
+        member _.OverrideModesInfo() = game.OverrideModesInfo()
+
         member _.ReplaceConfigRules rules =
             game.ReplaceConfigRules
                 { ruleFiles = rules

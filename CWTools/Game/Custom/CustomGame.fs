@@ -280,6 +280,8 @@ type CustomGame(setupSettings: CustomSettings, gameFolderName: string) =
 
         member _.OverrideModes() = game.OverrideModes()
 
+        member _.OverrideModesInfo() = game.OverrideModesInfo()
+
         member _.ReplaceConfigRules rules =
             game.ReplaceConfigRules
                 { ruleFiles = rules
