@@ -592,6 +592,8 @@ module CommonValidation =
             let entityMap =
                 res |> Seq.map (fun struct (e, d) -> e.filepath, struct (e, d)) |> Map.ofSeq
 
+            let scriptedVariableValues = lu.scriptedVariables |> Map.ofList
+
             let findParams (pos: range) =
                 match entityMap |> Map.tryFind pos.FileName with
                 | Some struct (e, _) ->
@@ -606,7 +608,19 @@ module CommonValidation =
                     findChild e.entity
                 | None -> None
                 //|> Option.map (fun s -> eprintfn "vsep %A %A" s.Key key; s)
-                |> Option.map (fun s -> s.Values |> List.map (fun l -> "$" + l.Key + "$", l.ValueText))
+                |> Option.map (fun s ->
+                    s.Values
+                    |> List.map (fun l ->
+                        let rawValue = l.ValueText
+                        let resolvedValue =
+                            if rawValue.StartsWith("@", StringComparison.Ordinal)
+                               && not (rawValue.StartsWith("@[", StringComparison.Ordinal))
+                               && not (rawValue.StartsWith(@"@\[", StringComparison.Ordinal)) then
+                                match scriptedVariableValues |> Map.tryFind rawValue with
+                                | Some numericValue -> numericValue
+                                | None -> rawValue
+                            else rawValue
+                        "$" + l.Key + "$", resolvedValue))
 
             let findSE (pos: range) =
                 match entityMap |> Map.tryFind pos.FileName with

@@ -1019,8 +1019,13 @@ type RuleValidationService
                                 [ { location = source
                                     message = "Related source" } ] })
 
+            let actualSeverity =
+                match cwErrors with
+                | [] -> severity
+                | _ -> cwErrors |> List.map (fun e -> e.severity) |> List.min
+
             let markerError =
-                invManual (ErrorCodes.InlineScriptResultsInError severity) source "inline_script" None
+                invManual (ErrorCodes.InlineScriptResultsInError actualSeverity) source "inline_script" None
 
             let markerError =
                 { markerError with

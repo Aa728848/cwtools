@@ -1181,7 +1181,17 @@ type ResourceManager<'T when 'T :> ComputedData>
 
                             let values =
                                 n.Leaves
-                                |> Seq.map (fun l -> "$" + l.Key + "$", l.ValueText)
+                                |> Seq.map (fun l ->
+                                    let rawValue = l.ValueText
+                                    let resolvedValue =
+                                        if rawValue.StartsWith("@", StringComparison.Ordinal)
+                                           && not (rawValue.StartsWith("@[", StringComparison.Ordinal))
+                                           && not (rawValue.StartsWith(@"@\[", StringComparison.Ordinal)) then
+                                            match scriptedVariableValues.Value |> Map.tryFind rawValue with
+                                            | Some numericValue -> numericValue
+                                            | None -> rawValue
+                                        else rawValue
+                                    "$" + l.Key + "$", resolvedValue)
                                 // 只过滤空 key，允许空 value（空值会被替换为空字符串）
                                 // 这样 wg_crisis$CURRENT$.100 当 CURRENT 为空时能正确解析为 wg_crisis.100
                                 |> Seq.where (fun (k, v) -> k.Length > 0)

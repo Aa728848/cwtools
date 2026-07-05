@@ -62,6 +62,18 @@ module internal FieldValidators =
     let firstCharEqualsAmp (key: StringToken) =
         (stringManager.GetMetadataForID key).startsWithAmp
 
+    /// Check if the string value contains an embedded @variable reference
+    /// (e.g., "prefix_@var_suffix"), indicating an unresolved scripted variable
+    /// that can only be evaluated at runtime.
+    let containsEmbeddedAtVariable (s: string) =
+        let mutable i = 0
+        let mutable found = false
+        while i < s.Length - 1 && not found do
+            if s.[i] = '@' && (Char.IsLetter(s.[i + 1]) || s.[i + 1] = '_') then
+                found <- true
+            i <- i + 1
+        found
+
     let getStringMetadata (key: StringToken) = (stringManager.GetMetadataForID key)
     // let firstCharEqualsAmp (s : string) = s.Length > 0 && (s.[0] = '@')// || s.[0] = '$')
     let inline trimQuote (s: string) = s.Trim('\"')
