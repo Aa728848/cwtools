@@ -444,6 +444,7 @@ type RuleValidationService
                     match stringManager.GetStringForID key.normal with
                     | "percentage"
                     | "amount"
+                    | "distance"
                     | "count"
                     | "steps"
                     | "value" -> true
