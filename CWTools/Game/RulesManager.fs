@@ -382,6 +382,82 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     let normalizeParameterKey (key: string) =
         key.Trim().Trim('$') |> parameterName
 
+    /// Resolve inline [[PARAM]content] conditional blocks within a string.
+    /// Handles cases where [[PARAM]content] is embedded within a larger
+    /// identifier token (e.g., "prefix[[PARAM]_suffix]").
+    let rec resolveInlineBracketConditionals (values: Map<string, string>) (text: string) =
+        if text.IndexOf("[[") < 0 then
+            text
+        else
+            let sb = System.Text.StringBuilder(text.Length)
+            let mutable i = 0
+
+            while i < text.Length do
+                if i + 1 < text.Length && text.[i] = '[' && text.[i + 1] = '[' then
+                    let mutable j = i + 2
+                    while j < text.Length && (text.[j] = ' ' || text.[j] = '\t') do
+                        j <- j + 1
+                    let negated = j < text.Length && text.[j] = '!'
+                    if negated then j <- j + 1
+                    while j < text.Length && (text.[j] = ' ' || text.[j] = '\t') do
+                        j <- j + 1
+                    let nameStart = j
+                    while j < text.Length
+                          && text.[j] <> ']'
+                          && text.[j] <> ' '
+                          && text.[j] <> '\t'
+                          && text.[j] <> '\r'
+                          && text.[j] <> '\n' do
+                        j <- j + 1
+                    let paramName = text.Substring(nameStart, j - nameStart)
+                    while j < text.Length && (text.[j] = ' ' || text.[j] = '\t') do
+                        j <- j + 1
+
+                    if paramName.Length > 0
+                       && (System.Char.IsLetterOrDigit(paramName.[0]) || paramName.[0] = '_')
+                       && j < text.Length
+                       && text.[j] = ']' then
+                        let contentStart = j + 1
+                        let mutable depth = 1
+                        let mutable k = contentStart
+
+                        while k < text.Length && depth > 0 do
+                            if k + 1 < text.Length && text.[k] = '[' && text.[k + 1] = '[' then
+                                depth <- depth + 1
+                                k <- k + 2
+                                while k < text.Length && text.[k] <> ']' do
+                                    k <- k + 1
+                                if k < text.Length then
+                                    k <- k + 1
+                            elif text.[k] = ']' then
+                                depth <- depth - 1
+                                if depth > 0 then
+                                    k <- k + 1
+                            else
+                                k <- k + 1
+
+                        if depth = 0 then
+                            let content = text.Substring(contentStart, k - contentStart)
+                            let presentAndEnabled =
+                                match values |> Map.tryFind paramName with
+                                | Some v when not (String.Equals(v.Trim(), "no", StringComparison.OrdinalIgnoreCase)) -> true
+                                | _ -> false
+                            let includeContent = if negated then not presentAndEnabled else presentAndEnabled
+                            if includeContent then
+                                sb.Append(resolveInlineBracketConditionals values content) |> ignore
+                            i <- k + 1
+                        else
+                            sb.Append(text.[i]) |> ignore
+                            i <- i + 1
+                    else
+                        sb.Append(text.[i]) |> ignore
+                        i <- i + 1
+                else
+                    sb.Append(text.[i]) |> ignore
+                    i <- i + 1
+
+            sb.ToString()
+
     let replaceScriptedParameters (parameters: (string * string) seq) (text: string) =
         let values =
             parameters
@@ -390,8 +466,10 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 if String.IsNullOrWhiteSpace name then None else Some(name, value))
             |> Map.ofSeq
 
+        let afterBrackets = resolveInlineBracketConditionals values text
+
         scriptedParameterPattern.Replace(
-            text,
+            afterBrackets,
             MatchEvaluator(fun m ->
                 let name = m.Groups.[1].Value
                 match values |> Map.tryFind name with

@@ -104,6 +104,9 @@ module CommonValidation =
                     match items.[index] with
                     | LeafValueC lv when bracketParameterName lv.ValueText |> Option.isSome ->
                         findClose (depth + 1) (index + 1)
+                    | NodeC node when (node.KeyPrefix |> Option.bind bracketParameterName |> Option.isSome)
+                                       || (bracketParameterName node.Key |> Option.isSome) ->
+                        findClose (depth + 1) (index + 1)
                     | child when isBracketClose child ->
                         if depth = 1 then Some index else findClose (depth - 1) (index + 1)
                     | _ ->
@@ -115,7 +118,8 @@ module CommonValidation =
                 else
                     match items.[index] with
                     | LeafValueC lv when bracketParameterName lv.ValueText |> Option.isSome -> None
-                    | NodeC node when node.KeyPrefix |> Option.bind bracketParameterName |> Option.isSome -> None
+                    | NodeC node when (node.KeyPrefix |> Option.bind bracketParameterName |> Option.isSome)
+                                       || (bracketParameterName node.Key |> Option.isSome) -> None
                     | child when childHasGluedClose child -> Some index
                     | _ -> findGluedClose (index + 1)
 
@@ -165,13 +169,142 @@ module CommonValidation =
                             else
                                 loop (index + 1) acc
                         | None ->
-                            loop (index + 1) (items.[index] :: acc)
+                            // Also check if the key itself starts with [[ (glued key case)
+                            // e.g., [[ag_location]variable = { ... }]
+                            match bracketParameterName node.Key with
+                            | Some(name, negated) ->
+                                // The real key follows after [[PARAM] — strip the conditional prefix
+                                let prefixEnd = node.Key.IndexOf(']')
+                                let realKey =
+                                    if prefixEnd >= 0 && prefixEnd + 1 < node.Key.Length then
+                                        node.Key.Substring(prefixEnd + 1)
+                                    else
+                                        node.Key
+                                // Look for the closing ] in subsequent siblings
+                                match findClose 1 (index + 1) with
+                                | Some closeIndex ->
+                                    if parameterAllowsBlock name negated then
+                                        node.Key <- realKey
+                                        let block =
+                                            items.[index + 1 .. closeIndex - 1]
+                                            |> processChildren
+                                            |> Array.toList
+                                        loop (closeIndex + 1) ((block |> List.rev) @ (NodeC node :: acc))
+                                    else
+                                        loop (closeIndex + 1) acc
+                                | None ->
+                                    match findGluedClose (index + 1) with
+                                    | Some gluedIndex ->
+                                        stripChildGluedClose items.[gluedIndex]
+                                        if parameterAllowsBlock name negated then
+                                            node.Key <- realKey
+                                            let block =
+                                                items.[index + 1 .. gluedIndex]
+                                                |> processChildren
+                                                |> Array.toList
+                                            loop (gluedIndex + 1) ((block |> List.rev) @ (NodeC node :: acc))
+                                        else
+                                            loop (gluedIndex + 1) acc
+                                    | None ->
+                                        // No matching close found — check if this node itself
+                                        // has the closing ] glued to its last value
+                                        if parameterAllowsBlock name negated then
+                                            node.Key <- realKey
+                                            loop (index + 1) (NodeC node :: acc)
+                                        else
+                                            loop (index + 1) acc
+                            | None ->
+                                loop (index + 1) (items.[index] :: acc)
                     | _ ->
                         loop (index + 1) (items.[index] :: acc)
 
             loop 0 []
 
         processChildren children
+
+    /// Resolve inline [[PARAM]content] conditional blocks within a string.
+    /// Handles cases where [[PARAM]content] is embedded within a larger
+    /// identifier token (e.g., "prefix[[PARAM]_suffix]"), which the AST-level
+    /// applyBracketConditionals cannot reach because the parser treats the
+    /// entire string as a single token.
+    let rec private resolveInlineBracketConditionals (values: Map<string, string>) (text: string) =
+        if text.IndexOf("[[") < 0 then
+            text
+        else
+            let sb = System.Text.StringBuilder(text.Length)
+            let mutable i = 0
+
+            while i < text.Length do
+                if i + 1 < text.Length && text.[i] = '[' && text.[i + 1] = '[' then
+                    // Attempt to parse [[PARAM] or [[!PARAM]
+                    let mutable j = i + 2
+                    while j < text.Length && (text.[j] = ' ' || text.[j] = '\t') do
+                        j <- j + 1
+                    let negated = j < text.Length && text.[j] = '!'
+                    if negated then j <- j + 1
+                    while j < text.Length && (text.[j] = ' ' || text.[j] = '\t') do
+                        j <- j + 1
+                    let nameStart = j
+                    while j < text.Length
+                          && text.[j] <> ']'
+                          && text.[j] <> ' '
+                          && text.[j] <> '\t'
+                          && text.[j] <> '\r'
+                          && text.[j] <> '\n' do
+                        j <- j + 1
+                    let paramName = text.Substring(nameStart, j - nameStart)
+                    while j < text.Length && (text.[j] = ' ' || text.[j] = '\t') do
+                        j <- j + 1
+
+                    if paramName.Length > 0
+                       && (Char.IsLetterOrDigit(paramName.[0]) || paramName.[0] = '_')
+                       && j < text.Length
+                       && text.[j] = ']' then
+                        // Valid [[PARAM] found — scan for matching closing ]
+                        let contentStart = j + 1
+                        let mutable depth = 1
+                        let mutable k = contentStart
+
+                        while k < text.Length && depth > 0 do
+                            if k + 1 < text.Length && text.[k] = '[' && text.[k + 1] = '[' then
+                                // Nested [[PARAM] — increase depth and skip past
+                                // the inner param name + its closing ]
+                                depth <- depth + 1
+                                k <- k + 2
+                                while k < text.Length && text.[k] <> ']' do
+                                    k <- k + 1
+                                if k < text.Length then
+                                    k <- k + 1
+                            elif text.[k] = ']' then
+                                depth <- depth - 1
+                                if depth > 0 then
+                                    k <- k + 1
+                            else
+                                k <- k + 1
+
+                        if depth = 0 then
+                            let content = text.Substring(contentStart, k - contentStart)
+                            let presentAndEnabled =
+                                match values |> Map.tryFind paramName with
+                                | Some v when not (String.Equals(v.Trim(), "no", StringComparison.OrdinalIgnoreCase)) -> true
+                                | _ -> false
+                            let includeContent = if negated then not presentAndEnabled else presentAndEnabled
+                            if includeContent then
+                                sb.Append(resolveInlineBracketConditionals values content) |> ignore
+                            i <- k + 1
+                        else
+                            // Unmatched brackets — treat as literal text
+                            sb.Append(text.[i]) |> ignore
+                            i <- i + 1
+                    else
+                        // Not a valid [[PARAM] pattern — treat as literal
+                        sb.Append(text.[i]) |> ignore
+                        i <- i + 1
+                else
+                    sb.Append(text.[i]) |> ignore
+                    i <- i + 1
+
+            sb.ToString()
 
     let private replaceScriptedParameters (parameters: (string * string) seq) (text: string) =
         let values =
@@ -181,8 +314,13 @@ module CommonValidation =
                 if String.IsNullOrWhiteSpace name then None else Some(name, value))
             |> Map.ofSeq
 
+        // First resolve inline [[PARAM]content] conditional blocks
+        // (consistent with AST-level order: brackets first, then $PARAM$)
+        let afterBrackets = resolveInlineBracketConditionals values text
+
+        // Then replace $PARAM$ references
         scriptedParameterPattern.Replace(
-            text,
+            afterBrackets,
             MatchEvaluator(fun m ->
                 let name = m.Groups.[1].Value
                 match values |> Map.tryFind name with
