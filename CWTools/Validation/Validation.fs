@@ -95,7 +95,7 @@ type ErrorCodes =
     static member UndefinedVariable =
         fun variable ->
             { ID = "CW101"
-              Severity = Severity.Error
+              Severity = Severity.Warning
               Message = sprintf "%s is not defined" variable }
 
     static member UndefinedTrigger =
