@@ -15,7 +15,7 @@ module YAMLLocalisationParser =
           entries: IReadOnlyCollection<Entry> }
 
     let inline isLocValueChar (c: char) =
-        c = '\t' || not (System.Char.IsControl c)
+        c <> '\r' && c <> '\n'
 
     let key = many1Satisfy ((=) ':' >> not) .>> skipChar ':' .>> spaces <?> "key"
 

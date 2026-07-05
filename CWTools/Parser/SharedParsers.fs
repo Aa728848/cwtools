@@ -91,10 +91,10 @@ module internal SharedParsers =
            magicChar |]
 
     let isUnicodeTokenChar c =
-        c > '\u007f' && not (System.Char.IsWhiteSpace c) && not (System.Char.IsControl c)
+        c > '\u007f' && not (System.Char.IsWhiteSpace c)
 
     let isAnyOfIdCharArray = isAnyOf idCharArray
-    let isIdChar = fun c -> isLetter c || isDigit c || isAnyOfIdCharArray c || isUnicodeTokenChar c
+    let isIdChar = fun c -> isLetter c || isDigit c || isAnyOfIdCharArray c || isUnicodeTokenChar c || c = '\u0011' || c = '\u0013'
 
     let valueCharArray =
         [| '_'
@@ -129,7 +129,7 @@ module internal SharedParsers =
            magicChar |]
 
     let isAnyValueChar = isAnyOf valueCharArray
-    let isValueChar = fun c -> isLetter c || isDigit c || isAnyValueChar c || isUnicodeTokenChar c
+    let isValueChar = fun c -> isLetter c || isDigit c || isAnyValueChar c || isUnicodeTokenChar c || c = '\u0011' || c = '\u0013'
 
     // Utility parsers
     // =======
