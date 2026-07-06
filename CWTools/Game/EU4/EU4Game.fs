@@ -143,7 +143,7 @@ module EU4GameFunctions =
             AliasRule(
                 "modifier",
                 NewRule(
-                    LeafRule(processField c.tag, ValueField(ValueType.Float(-1E+12M, 1E+12M))),
+                    LeafRule(processField c.tag, ValueField(ValueType.Float(RulesParserConstants.floatFieldDefaultMinimum, RulesParserConstants.floatFieldDefaultMaximum))),
                     Options.DefaultOptions
                 )
             ))

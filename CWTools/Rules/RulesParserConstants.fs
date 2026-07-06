@@ -1,4 +1,4 @@
-﻿namespace CWTools.Rules
+namespace CWTools.Rules
 
 open System
 
@@ -13,7 +13,7 @@ module RulesParserConstants =
     let CardinalityDefaultMaximum = 10000
 
     [<Literal>]
-    let floatFieldDefaultMinimum = -1E+12M
+    let floatFieldDefaultMinimum = -9E+18M
 
     [<Literal>]
-    let floatFieldDefaultMaximum = 1E+12M
+    let floatFieldDefaultMaximum = 9E+18M

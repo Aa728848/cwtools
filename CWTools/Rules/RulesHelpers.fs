@@ -427,7 +427,7 @@ let private modifierRuleFromNameAndTypeDef (nameWithSubtypes: string) (m: TypeMo
         else
             TypeField(TypeType.Complex(m.prefix, nameWithSubtypes, m.suffix))
 
-    AliasRule("modifier", NewRule(LeafRule(lhs, ValueField(ValueType.Float(-1E+12M, 1E+12M))), modifierOptions))
+    AliasRule("modifier", NewRule(LeafRule(lhs, ValueField(ValueType.Float(RulesParserConstants.floatFieldDefaultMinimum, RulesParserConstants.floatFieldDefaultMaximum))), modifierOptions))
 
 let generateModifierRulesFromTypes (typedefs: TypeDefinition list) =
     typedefs

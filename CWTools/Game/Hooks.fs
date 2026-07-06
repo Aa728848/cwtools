@@ -1,4 +1,4 @@
-﻿module CWTools.Game.Hooks
+module CWTools.Game.Hooks
 
 open CWTools.Common
 open CWTools.Games
@@ -126,7 +126,7 @@ let private addModifiersWithScopes (lookup: Lookup) =
      |> Seq.map (fun c ->
          AliasRule(
              "modifier",
-             NewRule(LeafRule(processField c.tag, ValueField(ValueType.Float(-1E+12M, 1E+12M))), modifierOptions c)
+             NewRule(LeafRule(processField c.tag, ValueField(ValueType.Float(RulesParserConstants.floatFieldDefaultMinimum, RulesParserConstants.floatFieldDefaultMaximum))), modifierOptions c)
          )))
         .Concat(RulesHelpers.generateModifierRulesFromTypes (lookup.typeDefs))
     |> Array.ofSeq
