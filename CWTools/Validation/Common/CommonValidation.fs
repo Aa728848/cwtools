@@ -422,13 +422,13 @@ module CommonValidation =
                 let paramName = normalizeParameterKey key
 
                 let replacementParams =
-                    if String.IsNullOrWhiteSpace paramName || String.IsNullOrWhiteSpace value then
+                    if String.IsNullOrWhiteSpace paramName then
                         replacementParams
                     else
                         ($"${paramName}$", value) :: replacementParams
 
                 let parameterNames =
-                    if String.IsNullOrWhiteSpace paramName || String.IsNullOrWhiteSpace value then
+                    if String.IsNullOrWhiteSpace paramName then
                         parameterNames
                     else
                         paramName :: parameterNames
@@ -436,11 +436,6 @@ module CommonValidation =
                 let errors =
                     if String.IsNullOrWhiteSpace paramName then
                         scriptValueCallError referenceDetails "Script value call contains an empty parameter name"
-                        :: errors
-                    elif String.IsNullOrWhiteSpace value then
-                        scriptValueCallError
-                            referenceDetails
-                            (sprintf "Script value parameter %s is missing a value" paramName)
                         :: errors
                     else
                         errors

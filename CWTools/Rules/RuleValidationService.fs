@@ -971,7 +971,8 @@ type RuleValidationService
 
                      match
                          changeScope.Invoke(false, true, linkMap, valueTriggerMap, wildCardLinks, varSet, key, scope),
-                         (stringManager.GetMetadataForID node.KeyId.lower).containsDoubleDollar
+                         (let m = stringManager.GetMetadataForID node.KeyId.lower
+                          m.containsDoubleDollar || m.startsWithSquareBracket)
                      with
                      | _, true ->
                          let newCtx =
