@@ -389,6 +389,18 @@ type RuleValidationService
             let key = leaf.Key
             let keyIds = leaf.KeyId
 
+            let key, keyIds =
+                let metadata = (stringManager.GetMetadataForID keyIds.lower)
+                if metadata.startsWithSquareBracket && key.StartsWith("[[") && key.Contains("]") then
+                    let prefixEnd = key.IndexOf(']')
+                    if prefixEnd >= 0 && prefixEnd + 1 < key.Length then
+                        let real = key.Substring(prefixEnd + 1)
+                        real, stringManager.InternIdentifierToken real
+                    else
+                        key, keyIds
+                else
+                    key, keyIds
+
             let inline createDefault () =
                 // 跳过以 @ 开头的变量引用，以及 key 中包含 $...$ 参数模式的条目
                 // 如果通过 inline_script 参数注入了代码块而变成了 key，则跳过（含有 "=" 或 "{"）或者被替换为空字符串
@@ -509,6 +521,18 @@ type RuleValidationService
         let inline nodeFun innerErrors (node: Node) =
             let key = node.Key
             let keyIds = node.KeyId
+
+            let key, keyIds =
+                let metadata = (stringManager.GetMetadataForID keyIds.lower)
+                if metadata.startsWithSquareBracket && key.StartsWith("[[") && key.Contains("]") then
+                    let prefixEnd = key.IndexOf(']')
+                    if prefixEnd >= 0 && prefixEnd + 1 < key.Length then
+                        let real = key.Substring(prefixEnd + 1)
+                        real, stringManager.InternIdentifierToken real
+                    else
+                        key, keyIds
+                else
+                    key, keyIds
 
             let createDefault () =
                 // 跳过 key 中包含 $...$ 参数模式的条目（如 inline_script 模板中的参数化键）

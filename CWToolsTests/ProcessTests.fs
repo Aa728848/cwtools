@@ -3508,4 +3508,76 @@ let nestedEventTargetTests =
               Expect.contains
                   saves
                   "ganthuata"
-                  $"call-site scan should substitute the global save parameter, got %A{saves}" ]
+                  $"call-site scan should substitute the global save parameter, got %A{saves}"
+          testCase "validate clause with conditional parameter prefix matches actual rule"
+          <| fun () ->
+              let config =
+                  "types = {\n\
+                       type[scripted_trigger] = {\n\
+                           path = \"game/common/scripted_triggers\"\n\
+                       }\n\
+                   }\n\
+                   alias[trigger:distance] = {\n\
+                       source = scope[any]\n\
+                       type = scalar\n\
+                       use_bypasses = bool\n\
+                       min_distance = int\n\
+                       max_distance = int\n\
+                   }\n\
+                   scripted_trigger = {\n\
+                       alias_name[trigger] = alias_match_left[trigger]\n\
+                   }\n"
+
+              let input =
+                  "my_trigger = {\n\
+                       [[ag_distance_max]distance = {\n\
+                           source = root\n\
+                           type = euclidean\n\
+                           use_bypasses = yes\n\
+                           min_distance = 1\n\
+                           max_distance = 5\n\
+                       }\n\
+                   }\n"
+
+              UtilityParser.initializeScopes None None
+
+              let rules, types, _, _, _ =
+                  parseConfig
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      "rules.cwt"
+                      config
+
+              match CKParser.parseString input "common/scripted_triggers/test.txt" with
+              | Success(r, _, _) ->
+                  let node =
+                      STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+
+                  let rulesWrapper = RulesWrapper(rules |> List.toArray)
+
+                  let validationService =
+                      RuleValidationService(
+                          rulesWrapper,
+                          types,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          [||],
+                          FrozenSet.Empty,
+                          effectMap,
+                          effectMap,
+                          (scopeManager.ParseScope () "Any"),
+                          changeScope,
+                          defaultContext,
+                          STL STLLang.Default,
+                          processLocalisationLazy.Value,
+                          validateLocalisationLazy.Value
+                      )
+
+                  let errors = validationService.ManualRuleValidate("common/scripted_triggers/test.txt", node)
+                  match errors with
+                  | OK -> ()
+                  | Invalid(_, es) -> failtest $"Expected no errors, but got %A{es}"
+              | Failure(err, _, _) -> failwith err ]

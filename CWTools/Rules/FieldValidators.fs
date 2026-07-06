@@ -1455,6 +1455,21 @@ module internal FieldValidators =
         (leafornode: IKeyPos)
         errors
         =
+        let keyIDs =
+            let metadata = (stringManager.GetMetadataForID keyIDs.lower)
+            if metadata.startsWithSquareBracket then
+                let keyStr = stringManager.GetStringForIDs keyIDs
+                if keyStr.StartsWith("[[") && keyStr.Contains("]") then
+                    let prefixEnd = keyStr.IndexOf(']')
+                    if prefixEnd >= 0 && prefixEnd + 1 < keyStr.Length then
+                        stringManager.InternIdentifierToken (keyStr.Substring(prefixEnd + 1))
+                    else
+                        keyIDs
+                else
+                    keyIDs
+            else
+                keyIDs
+
         let metadataForId = (stringManager.GetMetadataForID keyIDs.lower)
 
         if metadataForId.containsDoubleDollar || metadataForId.startsWithSquareBracket then
@@ -1640,6 +1655,21 @@ module internal FieldValidators =
         (field: NewField)
         (keyIDs: StringTokens)
         =
+        let keyIDs =
+            let metadata = (stringManager.GetMetadataForID keyIDs.lower)
+            if metadata.startsWithSquareBracket then
+                let keyStr = stringManager.GetStringForIDs keyIDs
+                if keyStr.StartsWith("[[") && keyStr.Contains("]") then
+                    let prefixEnd = keyStr.IndexOf(']')
+                    if prefixEnd >= 0 && prefixEnd + 1 < keyStr.Length then
+                        stringManager.InternIdentifierToken (keyStr.Substring(prefixEnd + 1))
+                    else
+                        keyIDs
+                else
+                    keyIDs
+            else
+                keyIDs
+
         let metadataForId = (stringManager.GetMetadataForID keyIDs.lower)
 
         if metadataForId.containsDoubleDollar || metadataForId.startsWithSquareBracket then
