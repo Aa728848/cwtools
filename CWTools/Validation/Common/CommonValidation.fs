@@ -107,6 +107,8 @@ module CommonValidation =
                     | NodeC node when (node.KeyPrefix |> Option.bind bracketParameterName |> Option.isSome)
                                        || (bracketParameterName node.Key |> Option.isSome) ->
                         findClose (depth + 1) (index + 1)
+                    | LeafC leaf when bracketParameterName leaf.Key |> Option.isSome ->
+                        findClose (depth + 1) (index + 1)
                     | child when isBracketClose child ->
                         if depth = 1 then Some index else findClose (depth - 1) (index + 1)
                     | _ ->
@@ -120,6 +122,7 @@ module CommonValidation =
                     | LeafValueC lv when bracketParameterName lv.ValueText |> Option.isSome -> None
                     | NodeC node when (node.KeyPrefix |> Option.bind bracketParameterName |> Option.isSome)
                                        || (bracketParameterName node.Key |> Option.isSome) -> None
+                    | LeafC leaf when bracketParameterName leaf.Key |> Option.isSome -> None
                     | child when childHasGluedClose child -> Some index
                     | _ -> findGluedClose (index + 1)
 
@@ -215,6 +218,49 @@ module CommonValidation =
                                             loop (index + 1) acc
                             | None ->
                                 loop (index + 1) (items.[index] :: acc)
+                    | LeafC leaf ->
+                        // Handle glued key case for Leaves: [[PARAM]key = value
+                        match bracketParameterName leaf.Key with
+                        | Some(name, negated) ->
+                            let prefixEnd = leaf.Key.IndexOf(']')
+                            let realKey =
+                                if prefixEnd >= 0 && prefixEnd + 1 < leaf.Key.Length then
+                                    leaf.Key.Substring(prefixEnd + 1)
+                                else
+                                    leaf.Key
+                            match findClose 1 (index + 1) with
+                            | Some closeIndex ->
+                                if parameterAllowsBlock name negated then
+                                    leaf.Key <- realKey
+                                    let block =
+                                        items.[index + 1 .. closeIndex - 1]
+                                        |> processChildren
+                                        |> Array.toList
+                                    loop (closeIndex + 1) ((block |> List.rev) @ (LeafC leaf :: acc))
+                                else
+                                    loop (closeIndex + 1) acc
+                            | None ->
+                                match findGluedClose (index + 1) with
+                                | Some gluedIndex ->
+                                    stripChildGluedClose items.[gluedIndex]
+                                    if parameterAllowsBlock name negated then
+                                        leaf.Key <- realKey
+                                        let block =
+                                            items.[index + 1 .. gluedIndex]
+                                            |> processChildren
+                                            |> Array.toList
+                                        loop (gluedIndex + 1) ((block |> List.rev) @ (LeafC leaf :: acc))
+                                    else
+                                        loop (gluedIndex + 1) acc
+                                | None ->
+                                    // No matching close — the leaf itself is the entire conditional content
+                                    if parameterAllowsBlock name negated then
+                                        leaf.Key <- realKey
+                                        loop (index + 1) (LeafC leaf :: acc)
+                                    else
+                                        loop (index + 1) acc
+                        | None ->
+                            loop (index + 1) (items.[index] :: acc)
                     | _ ->
                         loop (index + 1) (items.[index] :: acc)
 

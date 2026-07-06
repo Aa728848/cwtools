@@ -1,4 +1,4 @@
-﻿module ProcessTests
+module ProcessTests
 
 open System.Collections.Frozen
 open Expecto
@@ -3077,6 +3077,49 @@ let dynamicParameterScanTests =
                   let ps = Compute.EU4.getScriptValueParams node
                   Expect.contains ps "BASE" $"should extract BASE, got %A{ps}"
                   Expect.contains ps "FACTOR" $"should strip default from $FACTOR|2$, got %A{ps}"
+              | Failure(e, _, _) -> Expect.isTrue false e
+          testCase "scripted_effect [[PARAM]content] extraction at start"
+          <| fun () ->
+              let input =
+                  "test_effect = {\n\
+                            [[ag_failed]\n\
+                                set_variable = { which = result value = -1 }\n\
+                            ]\n\
+                            }"
+
+              match CKParser.parseString input "test.txt" with
+              | Success(r, _, _) ->
+                  let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+                  let ps = Compute.EU4.getScriptedEffectParams node
+                  Expect.contains ps "ag_failed" $"should extract ag_failed from [[ag_failed], got %A{ps}"
+              | Failure(e, _, _) -> Expect.isTrue false e
+          testCase "scripted_effect [[PARAM]content] extraction embedded in string"
+          <| fun () ->
+              let input =
+                  "test_effect = {\n\
+                            set_variable = { which = result[[ag_failed]_failed] value = 1 }\n\
+                            }"
+
+              match CKParser.parseString input "test.txt" with
+              | Success(r, _, _) ->
+                  let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+                  let ps = Compute.EU4.getScriptedEffectParams node
+                  Expect.contains ps "ag_failed" $"should extract ag_failed from embedded [[ag_failed]_failed], got %A{ps}"
+              | Failure(e, _, _) -> Expect.isTrue false e
+          testCase "scripted_effect [[!PARAM]content] negated extraction"
+          <| fun () ->
+              let input =
+                  "test_effect = {\n\
+                            [[!no_effect]\n\
+                                do_something = yes\n\
+                            ]\n\
+                            }"
+
+              match CKParser.parseString input "test.txt" with
+              | Success(r, _, _) ->
+                  let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+                  let ps = Compute.EU4.getScriptedEffectParams node
+                  Expect.contains ps "no_effect" $"should extract no_effect from [[!no_effect], got %A{ps}"
               | Failure(e, _, _) -> Expect.isTrue false e ]
 
 [<Tests>]

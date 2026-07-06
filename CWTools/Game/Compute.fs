@@ -97,11 +97,16 @@ module EU4 =
                 if i % 2 = 1 then
                     parameterName s :: acc
                 else acc) acc
-        // 提取 [[PARAM] 和 [[!PARAM] 条件块中的参数名
+        // 提取 [[PARAM] 和 [[!PARAM] 条件块中的参数名（扫描字符串中所有 [[ 出现位置）
         let getBracketText (s: string) acc =
-            match bracketParameterName s with
-            | Some paramName -> paramName :: acc
-            | None -> acc
+            let mutable acc = acc
+            let mutable idx = s.IndexOf("[[")
+            while idx >= 0 do
+                match bracketParameterName (s.Substring(idx)) with
+                | Some paramName -> acc <- paramName :: acc
+                | None -> ()
+                idx <- s.IndexOf("[[", idx + 2)
+            acc
         let extractText (s: string) acc = getDollarText s (getBracketText s acc)
         let fNode =
             (fun (x: Node) acc ->
@@ -129,9 +134,14 @@ module EU4 =
                     parameterName s :: acc
                 else acc) acc
         let getBracketText (s: string) acc =
-            match bracketParameterName s with
-            | Some paramName -> paramName :: acc
-            | None -> acc
+            let mutable acc = acc
+            let mutable idx = s.IndexOf("[[")
+            while idx >= 0 do
+                match bracketParameterName (s.Substring(idx)) with
+                | Some paramName -> acc <- paramName :: acc
+                | None -> ()
+                idx <- s.IndexOf("[[", idx + 2)
+            acc
         let extractText (s: string) acc = getDollarText s (getBracketText s acc)
         let fNode =
             (fun (x: Node) acc ->
@@ -352,11 +362,16 @@ module Jomini =
                 if i % 2 = 1 then
                     parameterName s :: acc
                 else acc) acc
-        // 提取 [[PARAM] 和 [[!PARAM] 条件块中的参数名
+        // 提取 [[PARAM] 和 [[!PARAM] 条件块中的参数名（扫描字符串中所有 [[ 出现位置）
         let getBracketText (s: string) acc =
-            match bracketParameterName s with
-            | Some paramName -> paramName :: acc
-            | None -> acc
+            let mutable acc = acc
+            let mutable idx = s.IndexOf("[[")
+            while idx >= 0 do
+                match bracketParameterName (s.Substring(idx)) with
+                | Some paramName -> acc <- paramName :: acc
+                | None -> ()
+                idx <- s.IndexOf("[[", idx + 2)
+            acc
         let extractText (s: string) acc = getDollarText s (getBracketText s acc)
         let fNode =
             (fun (x: Node) acc ->
@@ -384,9 +399,14 @@ module Jomini =
                     parameterName s :: acc
                 else acc) acc
         let getBracketText (s: string) acc =
-            match bracketParameterName s with
-            | Some paramName -> paramName :: acc
-            | None -> acc
+            let mutable acc = acc
+            let mutable idx = s.IndexOf("[[")
+            while idx >= 0 do
+                match bracketParameterName (s.Substring(idx)) with
+                | Some paramName -> acc <- paramName :: acc
+                | None -> ()
+                idx <- s.IndexOf("[[", idx + 2)
+            acc
         let extractText (s: string) acc = getDollarText s (getBracketText s acc)
         let fNode =
             (fun (x: Node) acc ->
