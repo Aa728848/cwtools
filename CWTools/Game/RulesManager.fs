@@ -544,11 +544,85 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         // Materialize all entities once to avoid repeated Seq creation (5+ calls previously)
         let allEntitiesList = resources.AllEntities() |> Seq.toList
 
+        let collectMaxUtilitySlots (entities: Entity list) =
+            let mutable maxLarge = 0
+            let mutable maxMedium = 0
+            let mutable maxSmall = 0
+            let mutable maxAux = 0
+
+            let rec visitNode (node: Node) =
+                for leaf in node.Leaves do
+                    let key = leaf.Key
+                    let valueText = leaf.ValueText
+                    match leaf.Value with
+                    | Value.Int i ->
+                        if key.Equals("large_utility_slots", StringComparison.OrdinalIgnoreCase) then
+                            maxLarge <- max maxLarge i
+                        elif key.Equals("medium_utility_slots", StringComparison.OrdinalIgnoreCase) then
+                            maxMedium <- max maxMedium i
+                        elif key.Equals("small_utility_slots", StringComparison.OrdinalIgnoreCase) then
+                            maxSmall <- max maxSmall i
+                        elif key.Equals("aux_utility_slots", StringComparison.OrdinalIgnoreCase) then
+                            maxAux <- max maxAux i
+                    | _ ->
+                        let parsed, num = System.Int32.TryParse(valueText)
+                        if parsed then
+                            if key.Equals("large_utility_slots", StringComparison.OrdinalIgnoreCase) then
+                                maxLarge <- max maxLarge num
+                            elif key.Equals("medium_utility_slots", StringComparison.OrdinalIgnoreCase) then
+                                maxMedium <- max maxMedium num
+                            elif key.Equals("small_utility_slots", StringComparison.OrdinalIgnoreCase) then
+                                maxSmall <- max maxSmall num
+                            elif key.Equals("aux_utility_slots", StringComparison.OrdinalIgnoreCase) then
+                                maxAux <- max maxAux num
+
+                for child in node.Nodes do
+                    visitNode child
+
+            for e in entities do
+                visitNode e.entity
+
+            maxLarge, maxMedium, maxSmall, maxAux
+
         /// Enums
         let complexEnumDefs =
             getEnumsFromComplexEnums complexEnums (allEntitiesList |> Seq.map structFst)
 
         let allEnums = simpleEnums @ complexEnumDefs
+
+        let allEnums =
+            if settings.stellarisScopeTriggers then
+                let maxL, maxM, maxS, maxA = collectMaxUtilitySlots (allEntitiesList |> List.map structFst)
+                allEnums
+                |> List.map (fun e ->
+                    if e.key.Equals("utility_component_slots", StringComparison.OrdinalIgnoreCase) then
+                        let existingSet = e.values |> HashSet
+                        let extraValues = [
+                            for i in 1 .. maxL do
+                                let v = $"LARGE_UTILITY_{i}"
+                                if not (existingSet.Contains v) then yield v
+                            for i in 1 .. maxM do
+                                let v = $"MEDIUM_UTILITY_{i}"
+                                if not (existingSet.Contains v) then yield v
+                            for i in 1 .. maxS do
+                                let v = $"SMALL_UTILITY_{i}"
+                                if not (existingSet.Contains v) then yield v
+                            for i in 1 .. maxA do
+                                let v = $"AUX_UTILITY_{i}"
+                                if not (existingSet.Contains v) then yield v
+                        ]
+                        if List.isEmpty extraValues then
+                            e
+                        else
+                            let newValues = Array.append e.values (extraValues |> List.toArray)
+                            let newValuesWithRange = 
+                                Array.append e.valuesWithRange (extraValues |> List.map (fun v -> v, None) |> List.toArray)
+                            { e with values = newValues; valuesWithRange = newValuesWithRange }
+                    else
+                        e
+                )
+            else
+                allEnums
 
         let newEnumDefs =
             allEnums
