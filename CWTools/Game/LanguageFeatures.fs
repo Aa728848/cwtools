@@ -186,6 +186,124 @@ module LanguageFeatures =
               validate = true }
 
 
+    let private isCompletionKeyChar c =
+        Char.IsLetterOrDigit c
+        || c = '_'
+        || c = '.'
+        || c = ':'
+        || c = '@'
+        || c = '-'
+        || c = '?'
+        || c = magicChar
+
+    let private commentStartOutsideQuotes (line: string) =
+        let mutable quote = false
+        let mutable escaped = false
+        let mutable result = -1
+        let mutable i = 0
+        while result < 0 && i < line.Length do
+            let c = line.[i]
+            if escaped then
+                escaped <- false
+            elif c = '\\' && quote then
+                escaped <- true
+            elif c = '"' then
+                quote <- not quote
+            elif c = '#' && not quote then
+                result <- i
+            i <- i + 1
+        result
+
+    let private braceDepthBeforeCursor (split: string array) currentLineIdx column =
+        let mutable depth = 0
+        let mutable quote = false
+        let mutable escaped = false
+
+        for lineIdx = 0 to currentLineIdx do
+            if lineIdx >= 0 && lineIdx < split.Length then
+                let line = split.[lineIdx]
+                let limit =
+                    if lineIdx = currentLineIdx then min column line.Length else line.Length
+                let mutable i = 0
+                let mutable stopped = false
+                while i < limit && not stopped do
+                    let c = line.[i]
+                    if escaped then
+                        escaped <- false
+                    elif c = '\\' && quote then
+                        escaped <- true
+                    elif c = '"' then
+                        quote <- not quote
+                    elif c = '#' && not quote then
+                        stopped <- true
+                    elif not quote then
+                        match c with
+                        | '{' -> depth <- depth + 1
+                        | '}' -> depth <- max 0 (depth - 1)
+                        | _ -> ()
+                    i <- i + 1
+
+        depth
+
+    let private tryRepairIncompleteLhsCompletionText
+        (split: string array)
+        (filetextWithMagic: string)
+        currentLineIdx
+        (pos: pos)
+        =
+        if currentLineIdx < 0 || currentLineIdx >= split.Length then None
+        else
+            let originalLine = split.[currentLineIdx]
+            let column = min pos.Column originalLine.Length
+            let commentStart = commentStartOutsideQuotes originalLine
+            let beforeCursor = originalLine.Substring(0, column)
+            let afterCursor = originalLine.Substring(column)
+            let afterCursorBeforeComment =
+                if commentStart >= column then
+                    originalLine.Substring(column, commentStart - column)
+                elif commentStart < 0 then
+                    afterCursor
+                else
+                    ""
+
+            let isCommentLine = originalLine.TrimStart().StartsWith("#")
+            let hasEqualsBeforeCursor = beforeCursor.Contains("=")
+            let hasEqualsAfterCursor = afterCursorBeforeComment.Contains("=")
+            let inBlock = braceDepthBeforeCursor split currentLineIdx column > 0
+
+            if isCommentLine || hasEqualsBeforeCursor || hasEqualsAfterCursor || not inBlock then
+                None
+            else
+                let linesWithMagic = filetextWithMagic.Split('\n')
+                if currentLineIdx >= linesWithMagic.Length then None
+                else
+                    let lineWithMagic = linesWithMagic.[currentLineIdx]
+                    let magicIndex =
+                        if column < lineWithMagic.Length && lineWithMagic.[column] = magicChar then
+                            column
+                        else
+                            lineWithMagic.IndexOf(magicChar)
+
+                    if magicIndex < 0 then None
+                    else
+                        let mutable tokenStart = magicIndex
+                        while tokenStart > 0 && isCompletionKeyChar lineWithMagic.[tokenStart - 1] do
+                            tokenStart <- tokenStart - 1
+
+                        let mutable tokenEnd = magicIndex + 1
+                        while tokenEnd < lineWithMagic.Length && isCompletionKeyChar lineWithMagic.[tokenEnd] do
+                            tokenEnd <- tokenEnd + 1
+
+                        let lineForRepair, tokenEnd =
+                            if tokenStart = magicIndex && tokenEnd = magicIndex + 1 then
+                                lineWithMagic.Insert(magicIndex, "x"), tokenEnd + 1
+                            else
+                                lineWithMagic, tokenEnd
+
+                        let repairedLine = lineForRepair.Insert(tokenEnd, " = { }")
+                        linesWithMagic.[currentLineIdx] <- repairedLine
+                        Some(String.concat "\n" linesWithMagic)
+
     let private scriptCompletion
         (fileManager: FileManager)
         (completionService: CompletionService option)
@@ -217,22 +335,25 @@ module LanguageFeatures =
         // The filetext here already has the magic char inserted at cursor position,
         // so we hash the modified text (it changes on every cursor move, but stays
         // stable for TriggerForIncompleteCompletions re-requests at the same position).
-        let contentHash = filetext.GetHashCode()
-        let resource = lazy (makeEntityResourceInput fileManager filepath filetext)
-        let cachedEntityOpt =
+        let processResourceTextCached (text: string) =
+            let contentHash = text.GetHashCode()
+            let resource = lazy (makeEntityResourceInput fileManager filepath text)
             match completionEntityCache.TryGetValue(filepath) with
             | true, struct (cachedHash, cachedEntity) when cachedHash = contentHash ->
                 Some cachedEntity
-            | _ -> None
-        let processResourceCached () =
-            match cachedEntityOpt with
-            | Some e -> Some e
-            | None ->
-                match resourceManager.ManualProcessResource (resource.Value) with
+            | _ ->
+                match resourceManager.ManualProcessResource resource.Value with
                 | Some e ->
                     completionEntityCache.[filepath] <- struct (contentHash, e)
                     Some e
                 | None -> None
+
+        let processResourceCached () =
+            processResourceTextCached filetext
+
+        let processRepairedResourceCached () =
+            tryRepairIncompleteLhsCompletionText split filetext currentLineIdx pos
+            |> Option.bind processResourceTextCached
 
         // 检测当前文件是否是 inline_script 文件
         let isInlineScriptFile =
@@ -1248,21 +1369,37 @@ module LanguageFeatures =
                     
                     let globalVars = getGlobalScriptVars ()
                     
-                    // 使用常规补全逻辑
-                    let entityOpt = processResourceCached ()
+                    let completeWithEntity (completion: CompletionService) (infoOpt: InfoService option) (e: Entity) =
+                        match infoOpt with
+                        | Some info ->
+                            log (sprintf "completion %s %s" (fileManager.ConvertPathToLogicalPath filepath) filepath)
 
-                    match
-                        Path.GetExtension filepath, entityOpt, completionService, infoService
-                    with
-                    | ".yml", _, Some completion, _ -> completion.LocalisationComplete(pos, filetext) |> List.ofArray
-                    | _, Some e, Some completion, Some info ->
-                        log (sprintf "completion %s %s" (fileManager.ConvertPathToLogicalPath filepath) filepath)
-
-                        match info.GetInfo(pos, e) with
-                        | Some(ctx, _) -> completion.Complete(pos, e, Some ctx, Some globalVars)
+                            match info.GetInfo(pos, e) with
+                            | Some(ctx, _) -> completion.Complete(pos, e, Some ctx, Some globalVars)
+                            | None -> completion.Complete(pos, e, None, Some globalVars)
                         | None -> completion.Complete(pos, e, None, Some globalVars)
-                    | _, Some e, Some completion, None -> completion.Complete(pos, e, None, Some globalVars)
-                    | _, _, _, _ -> []
+
+                    let completeWithRepairFallback (completion: CompletionService) (infoOpt: InfoService option) =
+                        let originalItems =
+                            processResourceCached ()
+                            |> Option.map (completeWithEntity completion infoOpt)
+                            |> Option.defaultValue []
+
+                        if not (List.isEmpty originalItems) then
+                            originalItems
+                        else
+                            processRepairedResourceCached ()
+                            |> Option.map (completeWithEntity completion infoOpt)
+                            |> Option.defaultValue []
+
+                    // 使用常规补全逻辑
+                    match
+                        Path.GetExtension filepath, completionService, infoService
+                    with
+                    | ".yml", Some completion, _ -> completion.LocalisationComplete(pos, filetext) |> List.ofArray
+                    | _, Some completion, Some info -> completeWithRepairFallback completion (Some info)
+                    | _, Some completion, None -> completeWithRepairFallback completion None
+                    | _, _, _ -> []
 
     let completion
         (fileManager: FileManager)

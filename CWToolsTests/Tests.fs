@@ -1710,7 +1710,9 @@ country_event = {
 
           testWithCapturedLogs "scripted effect definition body does not complete own call-site params" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
-              let configtext = configFilesFromDir folder
+              let configtext =
+                  configFilesFromDir folder
+                  @ [ "scripted_effect_completion.cwt", "scripted_effect = { alias_name[effect] = alias_match_left[effect] }" ]
 
               let settings =
                   { emptyStellarisSettings folder with
@@ -1735,6 +1737,37 @@ test_scripted_effect_params = {
 
               Expect.isFalse (labels |> List.contains "test_lhs") "A scripted effect definition body should not be treated as a call-site parameter block"
               Expect.isFalse (labels |> List.contains "test_rhs") "A scripted effect definition body should keep normal effect completion"
+              Expect.contains labels "set_ship_flag" (sprintf "A scripted effect definition body should complete normal effects, got %A" (labels |> List.truncate 50))
+
+          testWithCapturedLogs "scripted effect definition tail completes normal effects" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
+              let configtext =
+                  configFilesFromDir folder
+                  @ [ "scripted_effect_completion.cwt", "scripted_effect = { alias_name[effect] = alias_match_left[effect] }" ]
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let filename = Path.GetFullPath(Path.Combine(folder, "common", "scripted_effects", "test.txt"))
+              let filetext, pos =
+                  cursorAtMarker
+                      """
+test_scripted_effect_none = {
+    set_country_flag = yes
+    s|
+}
+"""
+
+              let labels = stl.Complete pos filename filetext |> List.map label
+
+              Expect.contains labels "set_ship_flag" (sprintf "A scripted effect definition body tail should complete normal effects, got %A" (labels |> List.truncate 50))
 
           testWithCapturedLogs "nested scripted effect calls inside definitions still complete params" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
