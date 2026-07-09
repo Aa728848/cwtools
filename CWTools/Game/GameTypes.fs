@@ -79,6 +79,13 @@ type StagedScriptedTypes =
       infoService: obj
       completionService: obj }
 
+type StagedTypeIndex =
+    { typeDefInfo: Map<string, TypeDefInfo array>
+      tempTypeMap: Map<string, CWTools.Utilities.Utils2.PrefixOptimisedStringSet>
+      typeDefInfoForValidation: Map<string, struct (string * range) array>
+      /// lookup.typeDefInfo reference the fold was seeded from; commit-time ReferenceEquals guard
+      baseTypeDefInfo: Map<string, TypeDefInfo array> }
+
 /// Staged full rules refresh: the heavy rebuild runs against a lookup clone without
 /// holding the write lock; commit absorbs the clone's fields under a brief write lock.
 /// Reference-typed fields are boxed to keep this type free of service dependencies.
@@ -94,6 +101,11 @@ type StagedCacheRefresh =
       ruleService: obj
       infoService: obj
       completionService: obj }
+
+type IIncrementalTypeIndex =
+    abstract PrepareTypeIndex: string list -> StagedTypeIndex option
+    abstract CommitTypeIndex: StagedTypeIndex -> bool
+    abstract RemoveTypeIndex: string list -> bool
 
 type IGame =
     abstract ParserErrors: unit -> (string * string * FParsec.Position) list

@@ -530,6 +530,19 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             true
         | None -> false
 
+    member _.PrepareTypeIndexForFiles(files, typeKeys) =
+        rulesManager.PrepareTypeIndex(files, typeKeys)
+
+    member _.CommitTypeIndexForFiles(staged) =
+        rulesManager.CommitTypeIndex(staged)
+
+    member this.RemoveTypeIndexForFiles(files, typeKeys) =
+        for file in files do
+            this.RemoveFile file |> ignore
+        match rulesManager.PrepareTypeIndex(files, typeKeys) with
+        | Some staged -> this.CommitTypeIndexForFiles staged
+        | None -> false
+
     member _.InitialConfigRules() = initialConfigRules ()
     member private _.DebugSettings = debugSettings
 

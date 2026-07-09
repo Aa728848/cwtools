@@ -878,3 +878,16 @@ type STLGame(setupSettings: StellarisSettings) =
 
         member _.GetEmbeddedMetadata() =
             getEmbeddedMetadata lookup game.LocalisationManager game.ResourceManager
+
+    interface IIncrementalTypeIndex with
+        member _.PrepareTypeIndex files =
+            let typeKeys = incrementalTypeKeysForFiles game files
+            if typeKeys.IsEmpty then None
+            else game.PrepareTypeIndexForFiles(files, typeKeys)
+
+        member _.CommitTypeIndex staged = game.CommitTypeIndexForFiles staged
+
+        member _.RemoveTypeIndex files =
+            let typeKeys = incrementalTypeKeysForFiles game files
+            if typeKeys.IsEmpty then false
+            else game.RemoveTypeIndexForFiles(files, typeKeys)

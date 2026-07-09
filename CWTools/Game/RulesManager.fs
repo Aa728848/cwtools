@@ -1030,7 +1030,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         logInfo $"Refresh scripted types: files=%d{files.Length}, typeKeys=%d{typeKeys.Length}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
         ruleValidationService, infoService, completionService
 
-    let prepareScriptedTypes (files: string list) (typeKeys: string list) : StagedScriptedTypes option =
+    let prepareTypeIndex (files: string list) (typeKeys: string list) : StagedTypeIndex option =
         let timer = System.Diagnostics.Stopwatch.StartNew()
         let typeKeys = typeKeys |> List.distinct
         let typeKeySet = typeKeys |> Set.ofList
@@ -1103,23 +1103,41 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
         let newTypeDefInfoForValidation = typeDefInfoForValidationFrom newTypeDefInfo
 
-        let ruleValidationService, infoService, completionService =
-            buildServices rulesWrapper newTempTypeMap loc allFiles
-
-        // Pay the lazy inverted-map cost here (read lock) rather than on the first
-        // write-locked validation after commit.
-        infoService.WarmTypeLocalisationIndex()
-
-        logInfo $"Prepare scripted types: files=%d{files.Length}, typeKeys=%d{typeKeys.Length}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
+        logInfo $"Prepare type index: files=%d{files.Length}, typeKeys=%d{typeKeys.Length}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
 
         Some
             { typeDefInfo = newTypeDefInfo
               tempTypeMap = newTempTypeMap
               typeDefInfoForValidation = newTypeDefInfoForValidation
-              baseTypeDefInfo = baseTypeDefInfo
-              ruleService = box ruleValidationService
-              infoService = box infoService
-              completionService = box completionService }
+              baseTypeDefInfo = baseTypeDefInfo }
+
+    let prepareScriptedTypes (files: string list) (typeKeys: string list) : StagedScriptedTypes option =
+        let timer = System.Diagnostics.Stopwatch.StartNew()
+
+        match prepareTypeIndex files typeKeys with
+        | None -> None
+        | Some stagedIndex ->
+            let rulesWrapper = rulesWrapperFor lookup.configRules
+            let loc = currentLoc ()
+            let allFiles = currentFiles ()
+
+            let ruleValidationService, infoService, completionService =
+                buildServices rulesWrapper stagedIndex.tempTypeMap loc allFiles
+
+            // Pay the lazy inverted-map cost here (read lock) rather than on the first
+            // write-locked validation after commit.
+            infoService.WarmTypeLocalisationIndex()
+
+            logInfo $"Prepare scripted types: files=%d{files.Length}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
+
+            Some
+                { typeDefInfo = stagedIndex.typeDefInfo
+                  tempTypeMap = stagedIndex.tempTypeMap
+                  typeDefInfoForValidation = stagedIndex.typeDefInfoForValidation
+                  baseTypeDefInfo = stagedIndex.baseTypeDefInfo
+                  ruleService = box ruleValidationService
+                  infoService = box infoService
+                  completionService = box completionService }
 
     let commitScriptedTypes (staged: StagedScriptedTypes) =
         if not (System.Object.ReferenceEquals(lookup.typeDefInfo, staged.baseTypeDefInfo)) then
@@ -1133,6 +1151,15 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 staged.infoService :?> InfoService,
                 staged.completionService :?> CompletionService
             )
+
+    let commitTypeIndex (staged: StagedTypeIndex) =
+        if not (System.Object.ReferenceEquals(lookup.typeDefInfo, staged.baseTypeDefInfo)) then
+            false
+        else
+            lookup.typeDefInfo <- staged.typeDefInfo
+            tempTypeMap <- staged.tempTypeMap
+            lookup.typeDefInfoForValidation <- staged.typeDefInfoForValidation
+            true
 
     // Staged full refresh: run the heavy refreshConfig against a shallow clone of the
     // lookup so it can execute without the write lock. Shared manager state (tempTypeMap
@@ -1201,5 +1228,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member _.PrepareRefreshConfig() = prepareRefreshConfig ()
     member _.CommitRefreshConfig(staged) = commitRefreshConfig staged
     member _.RefreshScriptedTypes(files, typeKeys) = refreshScriptedTypes files typeKeys
+    member _.PrepareTypeIndex(files, typeKeys) = prepareTypeIndex files typeKeys
+    member _.CommitTypeIndex(staged) = commitTypeIndex staged
     member _.PrepareScriptedTypes(files, typeKeys) = prepareScriptedTypes files typeKeys
     member _.CommitScriptedTypes(staged) = commitScriptedTypes staged
