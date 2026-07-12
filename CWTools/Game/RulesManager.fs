@@ -556,14 +556,16 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     let valueText = leaf.ValueText
                     match leaf.Value with
                     | Value.Int i ->
-                        if key.Equals("large_utility_slots", StringComparison.OrdinalIgnoreCase) then
-                            maxLarge <- max maxLarge i
-                        elif key.Equals("medium_utility_slots", StringComparison.OrdinalIgnoreCase) then
-                            maxMedium <- max maxMedium i
-                        elif key.Equals("small_utility_slots", StringComparison.OrdinalIgnoreCase) then
-                            maxSmall <- max maxSmall i
-                        elif key.Equals("aux_utility_slots", StringComparison.OrdinalIgnoreCase) then
-                            maxAux <- max maxAux i
+                        if i >= 0L && i <= int64 Int32.MaxValue then
+                            let value = int i
+                            if key.Equals("large_utility_slots", StringComparison.OrdinalIgnoreCase) then
+                                maxLarge <- max maxLarge value
+                            elif key.Equals("medium_utility_slots", StringComparison.OrdinalIgnoreCase) then
+                                maxMedium <- max maxMedium value
+                            elif key.Equals("small_utility_slots", StringComparison.OrdinalIgnoreCase) then
+                                maxSmall <- max maxSmall value
+                            elif key.Equals("aux_utility_slots", StringComparison.OrdinalIgnoreCase) then
+                                maxAux <- max maxAux value
                     | _ ->
                         let parsed, num = System.Int32.TryParse(valueText)
                         if parsed then

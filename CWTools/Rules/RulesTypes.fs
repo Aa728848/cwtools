@@ -64,7 +64,7 @@ type ValueType =
     | Enum of enumc: string
     | Float of minmax: (decimal * decimal)
     | Bool
-    | Int of minmaxi: struct (int * int)
+    | Int of minmaxi: struct (int64 * int64)
     | Percent
     | Date
     | DateTime

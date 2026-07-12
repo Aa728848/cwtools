@@ -4,10 +4,10 @@ open System
 
 module RulesParserConstants =
     [<Literal>]
-    let IntFieldDefaultMinimum = Int32.MinValue
+    let IntFieldDefaultMinimum = -92_000_000_000_000L
 
     [<Literal>]
-    let IntFieldDefaultMaximum = Int32.MaxValue
+    let IntFieldDefaultMaximum = 92_000_000_000_000L
 
     [<Literal>]
     let CardinalityDefaultMaximum = 10000

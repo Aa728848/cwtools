@@ -153,7 +153,7 @@ module private RulesParserImpl =
             let parseInt (s: string) =
                 let s = s.Trim()
 
-                match s, Int32.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture) with
+                match s, Int64.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture) with
                 | "inf", _ -> Some RulesParserConstants.IntFieldDefaultMaximum
                 | "-inf", _ -> Some RulesParserConstants.IntFieldDefaultMinimum
                 | _, (true, num) -> Some num

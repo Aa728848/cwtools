@@ -216,7 +216,7 @@ module internal SharedParsers =
 
     let valueBNo = skipString "no" .>> nextCharSatisfiesNot isValueChar >>% Bool(false)
 
-    let valueInt = pint64 .>> nextCharSatisfiesNot isValueChar |>> int |>> Int
+    let valueInt = pint64 .>> nextCharSatisfiesNot isValueChar |>> Int
     let valueFloat = pfloat .>> nextCharSatisfiesNot isValueChar |>> decimal |>> Float
 
     let hsvI =

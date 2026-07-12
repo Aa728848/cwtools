@@ -186,7 +186,7 @@ module internal FieldValidators =
                     inv (ErrorCodes.ConfigRulesUnexpectedValue $"Expecting yes or no, got %s{key}" severity) leafornode
                     <&&&> errors
             | ValueType.Int(min, max) ->
-                match TryParser.parseIntWithDecimal key with
+                match TryParser.parseInt64WithDecimal key with
                 | ValueSome i ->
                     if i <= max && i >= min then
                         errors
@@ -353,7 +353,7 @@ module internal FieldValidators =
         (match vt with
          | ValueType.Bool -> key == "yes" || key == "no"
          | ValueType.Int(min, max) ->
-             match TryParser.parseIntWithDecimal key with
+             match TryParser.parseInt64WithDecimal key with
              | ValueSome i -> i <= max && i >= min
              | ValueNone ->
                  match enumsMap.TryFind "static_values" with
@@ -1236,7 +1236,7 @@ module internal FieldValidators =
 
             match
                 TryParser.parseDecimalSpan key,
-                TryParser.parseIntSpan key,
+                TryParser.parseInt64Span key,
                 changeScope.Invoke(false, true, linkMap, valueTriggerMap, wildcardLinks, varSet, key, scope)
             with
             | _, ValueSome i, _ when isInt && min <= decimal i && max >= decimal i -> errors
@@ -1292,7 +1292,7 @@ module internal FieldValidators =
 
             match
                 TryParser.parseDecimalSpan key,
-                TryParser.parseIntSpan key,
+                TryParser.parseInt64Span key,
                 changeScope.Invoke(false, true, linkMap, valueTriggerMap, wildcardLinks, varSet, key, scope)
             with
             | _, ValueSome i, _ -> isInt && min <= decimal i && max >= decimal i
@@ -1339,7 +1339,7 @@ module internal FieldValidators =
                 tryResolveScopedTriggerValue linkMap valueTriggerMap wildcardLinks varSet changeScope scope key
                 |> Option.defaultValue scopeResult
 
-        match firstCharEqualsAmp ids.lower || key.IndexOf('$') >= 0, TryParser.parseDecimalSpan key, TryParser.parseIntSpan key, scopeResult with
+        match firstCharEqualsAmp ids.lower || key.IndexOf('$') >= 0, TryParser.parseDecimalSpan key, TryParser.parseInt64Span key, scopeResult with
         | true, _, _, _ -> errors
         | _, _, ValueSome i, _ when isInt && min <= decimal i && max >= decimal i -> errors
         | _, ValueSome f, _, _ when min <= f && max >= f -> errors
@@ -1402,7 +1402,7 @@ module internal FieldValidators =
                 tryResolveScopedTriggerValue linkMap valueTriggerMap wildcardLinks varSet changeScope scope (key.AsSpan())
                 |> Option.defaultValue scopeResult
 
-        match firstCharEqualsAmp ids.lower || key.IndexOf('$') >= 0, TryParser.parseDecimal key, TryParser.parseInt key, scopeResult with
+        match firstCharEqualsAmp ids.lower || key.IndexOf('$') >= 0, TryParser.parseDecimal key, TryParser.parseInt64 key, scopeResult with
         | true, _, _, _ -> true
         | _, _, ValueSome i, _ -> isInt && min <= decimal i && max >= decimal i
         | _, ValueSome f, _, _ -> min <= f && max >= f

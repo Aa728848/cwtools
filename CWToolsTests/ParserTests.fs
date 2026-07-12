@@ -141,3 +141,17 @@ let unicodeParserRegressionTests =
                       (Some scriptPath)
                       "Unicode path punctuation should be preserved"
               | Failure(error, _, _) -> failtestf "Parsing Unicode script failed: %s" error ]
+
+[<Tests>]
+let largeIntegerRegressionTests =
+    testList
+        "large integer regression"
+        [ testCase "preserves Stellaris integers up to the game limit"
+          <| fun () ->
+              match CKParser.parseString "@large = 80000000000000" "large_integer.txt" with
+              | Success(statements, _, _) ->
+                  let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero statements
+                  Expect.equal (node.Tag "@large") (Some(Value.Int 80_000_000_000_000L)) "large integer must not wrap to Int32"
+                  Expect.equal CWTools.Rules.RulesParserConstants.IntFieldDefaultMaximum 92_000_000_000_000L "default int rule max must match the game"
+                  Expect.equal CWTools.Rules.RulesParserConstants.IntFieldDefaultMinimum -92_000_000_000_000L "default int rule min must match the game"
+              | Failure(error, _, _) -> failtestf "Parsing large integer failed: %s" error ]

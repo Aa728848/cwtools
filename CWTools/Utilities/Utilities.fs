@@ -106,6 +106,22 @@ module TryParser =
                 CultureInfo.InvariantCulture
             ))
 
+    let parseInt64: string -> _ =
+        tryParseWith (fun s -> Int64.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture))
+
+    let parseInt64Span (s: ReadOnlySpan<char>) =
+        match Int64.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture) with
+        | true, v -> ValueSome v
+        | false, _ -> ValueNone
+
+    let parseInt64WithDecimal: string -> _ =
+        tryParseWith (fun s ->
+            Int64.TryParse(
+                s,
+                Globalization.NumberStyles.AllowDecimalPoint ||| Globalization.NumberStyles.Integer,
+                CultureInfo.InvariantCulture
+            ))
+
     let parseSingle: string -> _ = tryParseWith System.Single.TryParse
 
     let parseDouble: string -> _ =

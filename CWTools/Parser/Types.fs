@@ -61,7 +61,7 @@ module Types =
         | String of StringTokens
         | QString of StringTokens
         | Float of decimal
-        | Int of int
+        | Int of int64
         | Bool of bool
         | Clause of Statement list
 

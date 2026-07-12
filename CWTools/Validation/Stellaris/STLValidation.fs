@@ -911,7 +911,7 @@ module STLValidation =
                 let isWeightZero =
                     t.Tag "weight"
                     |> (function
-                    | Some(Value.Int 0) -> true
+                    | Some(Value.Int 0L) -> true
                     | _ -> false)
 
                 let isWeightFactorZero =
@@ -973,8 +973,9 @@ module STLValidation =
 
                     let component_slots = s.Childs "component_slot" |> List.ofSeq |> List.map inner
 
-                    let createUtilSlot (prefix: string) (size: string) (i: int) =
-                        List.init i (fun i -> prefix + sprintf "%i" (i + 1), ("utility", size))
+                    let createUtilSlot (prefix: string) (size: string) (i: int64) =
+                        if i < 0L || i > 10_000L then []
+                        else List.init (int i) (fun index -> prefix + sprintf "%i" (index + 1), ("utility", size))
 
                     let smalls =
                         s.Tag "small_utility_slots"
