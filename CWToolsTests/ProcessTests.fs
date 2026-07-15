@@ -3265,7 +3265,8 @@ let nestedEventTargetTests =
                   EffectMap.FromList
                       [ mkLink "owner" [ planet; galacticObject; star; ship ] country
                         mkLink "solar_system" [ planet; star ] galacticObject
-                        mkLink "star" [ galacticObject ] star ]
+                        mkLink "star" [ galacticObject ] star
+                        mkLink "event_target:surveyed_planet" scopeManager.AllScopes planet ]
 
               let resolve root current (key: string) =
                   let context =
@@ -3294,6 +3295,36 @@ let nestedEventTargetTests =
                   (resolve country planet "event_target:target_system.star.owner?")
                   country
                   "event target scope chains should allow optional legacy links"
+              Expect.equal
+                  (resolve country ship "event_target:surveyed_planet")
+                  planet
+                  "a known saved event target should resolve to its exact scope"
+              Expect.equal
+                  (resolve country ship "event_target:surveyed_planet.owner")
+                  country
+                  "links after a known saved event target should use its exact scope"
+              Expect.equal
+                  (resolve country ship "event_target:unknown_target")
+                  scopeManager.AnyScope
+                  "an unknown event target should keep the conservative Any fallback"
+
+              let lookup = Lookup()
+
+              lookup.savedEventTargets <-
+                  ResizeArray(
+                      [ "unique_planet", range.Zero, planet
+                        "unique_planet", range.Zero, planet
+                        "ambiguous_target", range.Zero, planet
+                        "ambiguous_target", range.Zero, country ]
+                  )
+
+              let savedLinks = STLGameFunctions.savedEventTargetLinks lookup
+              Expect.equal savedLinks.Length 1 "only the target with one project-wide scope should get an exact link"
+              Expect.equal (savedLinks[0].Name.GetString()) "event_target:unique_planet" "the exact link should use event_target syntax"
+
+              match savedLinks[0] with
+              | :? ScopedEffect as link -> Expect.equal link.Target (Some planet) "the exact link should retain the saved scope"
+              | other -> failtestf "saved event target link should be scoped, got %A" other
           testCase "event target parameter values normalize after substitution"
           <| fun () ->
               let input =

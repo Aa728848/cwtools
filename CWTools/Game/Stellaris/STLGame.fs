@@ -67,6 +67,41 @@ module STLGameFunctions =
           eventTargets = eventTargets
           setVariables = definedVariables }
 
+    /// Build exact links only for saved event-target names that have one
+    /// unambiguous scope across the loaded project. Ambiguous names deliberately
+    /// keep the legacy Any fallback until context-sensitive propagation can
+    /// distinguish their call paths.
+    let savedEventTargetLinks (lookup: Lookup) =
+        lookup.savedEventTargets
+        |> Seq.filter (fun (name, _, scope) ->
+            not (String.IsNullOrWhiteSpace name)
+            && not (name.Contains '$')
+            && not (scope.Equals scopeManager.AnyScope))
+        |> Seq.groupBy (fun (name, _, _) -> name.ToLowerInvariant())
+        |> Seq.choose (fun (_, targets) ->
+            let targets = targets |> Seq.toArray
+            let scopes = targets |> Array.map (fun (_, _, scope) -> scope) |> Array.distinct
+
+            match targets, scopes with
+            | [||], _ -> None
+            | _, [| scope |] ->
+                let name, _, _ = targets[0]
+
+                Some(
+                    ScopedEffect(
+                        "event_target:" + name,
+                        scopeManager.AllScopes,
+                        scope,
+                        EffectType.Link,
+                        "Saved event target",
+                        "",
+                        true
+                    )
+                    :> Effect
+                )
+            | _ -> None)
+        |> List.ofSeq
+
     let updateScriptedTriggers (game: GameObject) =
         let vanillaTriggers =
             let se = game.Lookup.triggers
@@ -502,7 +537,8 @@ module STLGameFunctions =
             lookup.triggers
             @ lookup.effects
             @ (updateEventTargetLinks embeddedSettings
-               @ addDataEventTargetLinks lookup embeddedSettings false)
+               @ addDataEventTargetLinks lookup embeddedSettings false
+               @ savedEventTargetLinks lookup)
 
     let afterInit (game: GameObject) =
         let ts = updateScriptedTriggers (game)

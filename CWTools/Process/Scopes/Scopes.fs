@@ -425,7 +425,7 @@ module Scopes =
                                 eventTargetLinkMatch,
                                 valueScopeMatch
                             with
-                            | true, _, _ ->
+                            | true, None, _ ->
                                 (context, struct (true, true)),
                                 NewScope(
                                     { Root = source.Root
