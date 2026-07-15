@@ -1181,6 +1181,7 @@ module private RulesParserImpl =
                           typeKeyField = typekeyfilter
                           typeKeyRegex = typeKeyRegex
                           pushScope = pushScope
+                          replaceScopes = replaceScopes parseScope comments
                           localisation = []
                           startsWith = startsWith
                           displayName = displayName

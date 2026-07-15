@@ -215,6 +215,7 @@ type VIC2Game(setupSettings: VIC2Settings) =
           anyScope = scopeManager.AnyScope
           scopeGroups = scopeManager.ScopeGroups
           changeScope = changeScope
+          scopeContextOverride = fun _ _ -> None
           defaultContext = defaultContext
           defaultLang = VIC2 VIC2Lang.English
           oneToOneScopesNames = oneToOneScopesNames

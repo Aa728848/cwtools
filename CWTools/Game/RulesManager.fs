@@ -50,6 +50,7 @@ type RuleManagerSettings<'T, 'L when 'T :> ComputedData and 'L :> Lookup> =
       anyScope: Scope
       scopeGroups: Collections.Map<string, Scope list>
       changeScope: ChangeScope
+      scopeContextOverride: IClause -> ScopeContext -> ScopeContext option
       defaultContext: ScopeContext
       defaultLang: Lang
       oneToOneScopesNames: string list
@@ -299,7 +300,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             processLoc,
             validateLoc,
             extendedConfigMetadata = lookup.extendedConfigMetadata,
-            ?aliasKeyMapOverride = aliasKeyMap
+            ?aliasKeyMapOverride = aliasKeyMap,
+            scopeContextOverride = settings.scopeContextOverride
         )
 
     let buildServices rulesWrapper (typeMapSource: Map<string, PrefixOptimisedStringSet>) loc files =
@@ -343,7 +345,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 processLoc,
                 validateLoc,
                 extendedConfigMetadata = lookup.extendedConfigMetadata,
-                aliasKeyMapOverride = aliasKeyMap
+                aliasKeyMapOverride = aliasKeyMap,
+                scopeContextOverride = settings.scopeContextOverride
             )
 
         let completionService =
@@ -726,7 +729,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 settings.defaultLang,
                 processLoc,
                 validateLoc,
-                extendedConfigMetadata = lookup.extendedConfigMetadata
+                extendedConfigMetadata = lookup.extendedConfigMetadata,
+                scopeContextOverride = settings.scopeContextOverride
             )
 
 

@@ -107,6 +107,16 @@ type IIncrementalTypeIndex =
     abstract CommitTypeIndex: StagedTypeIndex -> bool
     abstract RemoveTypeIndex: string list -> bool
 
+type ScopeInferenceInfo =
+    { kind: string
+      candidates: string list
+      resolvedScope: string
+      certainty: string
+      evidence: string list }
+
+type IScopeInferenceProvider =
+    abstract ScopeInferenceAtPos: pos -> string -> string -> ScopeContext -> ScopeInferenceInfo option
+
 type IGame =
     abstract ParserErrors: unit -> (string * string * FParsec.Position) list
     abstract ValidationErrors: unit -> CWError list

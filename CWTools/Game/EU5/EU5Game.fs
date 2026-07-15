@@ -174,6 +174,7 @@ type EU5Game(setupSettings: EU5Settings) =
           anyScope = scopeManager.AnyScope
           scopeGroups = scopeManager.ScopeGroups
           changeScope = changeScope
+          scopeContextOverride = fun _ _ -> None
           defaultContext = Scopes.defaultContext
           defaultLang = EU5 EU5Lang.English
           oneToOneScopesNames = CWTools.Process.Scopes.EU5.oneToOneScopesNames

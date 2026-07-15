@@ -474,6 +474,7 @@ type CK2Game(setupSettings: CK2Settings) =
           anyScope = scopeManager.AnyScope
           scopeGroups = scopeManager.ScopeGroups
           changeScope = changeScope
+          scopeContextOverride = fun _ _ -> None
           defaultContext = defaultContext
           defaultLang = CK2 CK2Lang.Default
           oneToOneScopesNames = oneToOneScopesNames

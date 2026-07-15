@@ -144,6 +144,10 @@ type ReferenceRequirement =
     | RefRequired
     | RefRequiredUnlessSubtyped
 
+type SubTypeScope =
+    | SubTypePushScope of Scope
+    | SubTypeReplaceScopes of ReplaceScopes
+
 type SubTypeDefinition =
     { name: string
       displayName: string option
@@ -153,6 +157,7 @@ type SubTypeDefinition =
       typeKeyRegex: string option
       startsWith: string option
       pushScope: Scope option
+      replaceScopes: ReplaceScopes option
       localisation: TypeLocalisation list
       onlyIfNot: string list
       modifiers: TypeModifier list }

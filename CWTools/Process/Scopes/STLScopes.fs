@@ -34,8 +34,27 @@ module STL =
 
     let oneToOneScopesNames = List.map fst oneToOneScopes
 
-    let changeScope: ChangeScope =
+    let private baseChangeScope: ChangeScope =
         Scopes.createChangeScope oneToOneScopes (Scopes.simpleVarPrefixFun "var:") true
+
+    /// A Carrier is the physical host reached from a planet or a ship. Preserve
+    /// an already exact host across carrier-aware links/effects; colony and
+    /// otherwise ambiguous sources remain the synthetic Carrier union.
+    let changeScope: ChangeScope =
+        ChangeScope(fun varLhs skipEffect links valueTriggers wildcards vars key source ->
+            match baseChangeScope.Invoke(varLhs, skipEffect, links, valueTriggers, wildcards, vars, key, source) with
+            | NewScope(target, ignored, hint) when
+                String.Equals(target.CurrentScope.ToString(), "Carrier", StringComparison.OrdinalIgnoreCase)
+                && (String.Equals(source.CurrentScope.ToString(), "Planet", StringComparison.OrdinalIgnoreCase)
+                    || String.Equals(source.CurrentScope.ToString(), "Ship", StringComparison.OrdinalIgnoreCase))
+                ->
+                let scopes =
+                    match target.Scopes with
+                    | [] -> [ source.CurrentScope ]
+                    | _ :: tail -> source.CurrentScope :: tail
+
+                NewScope({ target with Scopes = scopes }, ignored, hint)
+            | result -> result)
 
     let sourceScope (effects: Map<StringLowerToken, Scope list>) (key: string) =
         let key =

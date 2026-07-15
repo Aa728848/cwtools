@@ -385,6 +385,6 @@ links = {
 	}
 	carrier = {
 		input_scopes = { planet Ship colony }
-		output_scope = Planet
+		output_scope = Carrier
 	}
 }

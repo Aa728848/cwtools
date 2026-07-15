@@ -171,6 +171,7 @@ type CustomGame(setupSettings: CustomSettings, gameFolderName: string) =
           anyScope = scopeManager.AnyScope
           scopeGroups = scopeManager.ScopeGroups
           changeScope = changeScope
+          scopeContextOverride = fun _ _ -> None
           defaultContext = CWTools.Process.Scopes.Scopes.defaultContext
           defaultLang = Custom CustomLang.English
           oneToOneScopesNames = CWTools.Process.Scopes.IR.oneToOneScopesNames

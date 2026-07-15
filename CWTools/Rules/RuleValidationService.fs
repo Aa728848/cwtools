@@ -40,10 +40,15 @@ type RuleValidationService
             Lang * Collections.Map<string, CWTools.Localisation.Entry> -> Lang * Collections.Map<string, LocEntry>,
         validateLocalisation: LocEntry -> ScopeContext -> ValidationResult,
         ?extendedConfigMetadata: ExtendedConfigMetadata,
-        ?aliasKeyMapOverride: Map<string, HashSet<StringToken>>
+        ?aliasKeyMapOverride: Map<string, HashSet<StringToken>>,
+        ?scopeContextOverride: IClause -> ScopeContext -> ScopeContext option
     ) =
 
     let extendedConfigMetadata = defaultArg extendedConfigMetadata ExtendedConfigMetadata.empty
+    let scopeContextOverride = defaultArg scopeContextOverride (fun _ _ -> None)
+
+    let applyScopeContextOverride (node: IClause) (context: ScopeContext) =
+        scopeContextOverride node context |> Option.defaultValue context
 
     let linkMap = links
     let valueTriggerMap = valueTriggers
@@ -956,6 +961,10 @@ type RuleValidationService
                     | None -> newctx
                 | None -> ctx
 
+        let newCtx =
+            { newCtx with
+                scopes = applyScopeContextOverride node newCtx.scopes }
+
         let oldErrors = errors
         let errors = OK
 
@@ -1002,12 +1011,15 @@ type RuleValidationService
                          let newCtx =
                              { newCtx with
                                  scopes =
-                                     { newCtx.scopes with
-                                         Scopes = anyScope :: newCtx.scopes.Scopes } }
+                                     applyScopeContextOverride node
+                                         { newCtx.scopes with
+                                             Scopes = anyScope :: newCtx.scopes.Scopes } }
 
                          applyClauseField enforceCardinality options.severity newCtx rules node errors
                      | NewScope(newScopes, _, _), _ ->
-                         let newCtx = { newCtx with scopes = newScopes }
+                         let newCtx =
+                             { newCtx with
+                                 scopes = applyScopeContextOverride node newScopes }
                          applyClauseField enforceCardinality options.severity newCtx rules node errors
                      | NotFound, _ ->
                          inv (ErrorCodes.ConfigRulesInvalidScopeCommand(key.ToString())) node
@@ -1019,8 +1031,9 @@ type RuleValidationService
                          let newCtx =
                              { newCtx with
                                  scopes =
-                                     { newCtx.scopes with
-                                         Scopes = anyScope :: newCtx.scopes.Scopes } }
+                                     applyScopeContextOverride node
+                                         { newCtx.scopes with
+                                             Scopes = anyScope :: newCtx.scopes.Scopes } }
 
                          applyClauseField enforceCardinality options.severity newCtx rules node errors
                      | VarNotFound v, _ ->
@@ -1180,21 +1193,29 @@ type RuleValidationService
             s.onlyIfNot |> List.exists (fun s2 -> List.contains s2 allSubtypes) |> not
 
         let res = res |> List.filter checkOnlyNotIf
-        let firstPushScope = res |> List.tryPick (fun s -> s.pushScope)
-        firstPushScope, res |> List.map (fun s -> s.name)
+        let firstScope =
+            res
+            |> List.tryPick (fun s ->
+                match s.replaceScopes, s.pushScope with
+                | Some scopes, _ -> Some(SubTypeReplaceScopes scopes)
+                | None, Some scope -> Some(SubTypePushScope scope)
+                | None, None -> None)
+
+        firstScope, res |> List.map (fun s -> s.name)
 
     let rootId = stringManager.InternIdentifierToken "root"
 
     let applyNodeRuleRoot (typedef: TypeDefinition) (rules: NewRule array) (options: Options) (node: IClause) =
-        let pushScope, subtypes = testSubtype typedef.subtypes node
+        let subtypeScope, subtypes = testSubtype typedef.subtypes node
 
         let startingScopeContext =
-            match Option.orElse pushScope options.pushScope, options.replaceScopes with
-            | Some ps, _ ->
+            match subtypeScope, options.pushScope, options.replaceScopes with
+            | Some(SubTypePushScope ps), _, _ ->
                 { Root = ps
                   From = []
                   Scopes = [ ps ] }
-            | _, Some rs ->
+            | Some(SubTypeReplaceScopes rs), _, _
+            | None, _, Some rs ->
                 let replaceContext =
                     { Root = rs.root |> Option.orElse rs.this |> Option.defaultValue anyScope
                       From = rs.froms |> Option.defaultValue []
@@ -1205,7 +1226,13 @@ type RuleValidationService
                         Scopes = rs.this.Value :: replaceContext.Scopes }
                 else
                     replaceContext
-            | None, None -> defaultContext
+            | None, Some ps, _ ->
+                { Root = ps
+                  From = []
+                  Scopes = [ ps ] }
+            | None, None, None -> defaultContext
+
+        let startingScopeContext = applyScopeContextOverride node startingScopeContext
 
         let context =
             { subtypes = subtypes

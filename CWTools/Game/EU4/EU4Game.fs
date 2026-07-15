@@ -412,6 +412,7 @@ type EU4Game(setupSettings: EU4Settings) =
           anyScope = scopeManager.AnyScope
           scopeGroups = scopeManager.ScopeGroups
           changeScope = changeScope
+          scopeContextOverride = fun _ _ -> None
           defaultContext = defaultContext
           defaultLang = EU4 EU4Lang.Default
           oneToOneScopesNames = oneToOneScopesNames

@@ -119,7 +119,7 @@ types = {
 		subtype[colony] = {
 		}
 		## type_key_filter = carrier_event
-		## push_scope = planet
+		## push_scope = carrier
 		## display_name = Colony Carrier Event
 		## abbreviation = CCE
 		subtype[carrier] = {

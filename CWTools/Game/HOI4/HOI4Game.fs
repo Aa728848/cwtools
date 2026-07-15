@@ -401,6 +401,7 @@ type HOI4Game(setupSettings: HOI4Settings) =
           anyScope = scopeManager.AnyScope
           scopeGroups = scopeManager.ScopeGroups
           changeScope = changeScope
+          scopeContextOverride = fun _ _ -> None
           defaultContext = defaultContext
           defaultLang = HOI4 HOI4Lang.Default
           oneToOneScopesNames = oneToOneScopesNames

@@ -246,6 +246,7 @@ type IRGame(setupSettings: IRSettings) =
           anyScope = scopeManager.AnyScope
           scopeGroups = scopeManager.ScopeGroups
           changeScope = changeScope
+          scopeContextOverride = fun _ _ -> None
           defaultContext = defaultContext
           defaultLang = IR IRLang.English
           oneToOneScopesNames = oneToOneScopesNames

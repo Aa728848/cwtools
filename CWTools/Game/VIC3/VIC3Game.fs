@@ -174,6 +174,7 @@ type VIC3Game(setupSettings: VIC3Settings) =
           anyScope = scopeManager.AnyScope
           scopeGroups = scopeManager.ScopeGroups
           changeScope = changeScope
+          scopeContextOverride = fun _ _ -> None
           defaultContext = CWTools.Process.Scopes.Scopes.defaultContext
           defaultLang = VIC3 VIC3Lang.English
           oneToOneScopesNames = CWTools.Process.Scopes.VIC3.oneToOneScopesNames

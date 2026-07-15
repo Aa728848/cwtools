@@ -63,10 +63,15 @@ type InfoService
             Lang * Collections.Map<string, CWTools.Localisation.Entry> -> Lang * Collections.Map<string, LocEntry>,
         validateLocalisation: LocEntry -> ScopeContext -> ValidationResult,
         ?extendedConfigMetadata: ExtendedConfigMetadata,
-        ?aliasKeyMapOverride: Map<string, HashSet<StringToken>>
+        ?aliasKeyMapOverride: Map<string, HashSet<StringToken>>,
+        ?scopeContextOverride: IClause -> ScopeContext -> ScopeContext option
     ) =
 
     let extendedConfigMetadata = defaultArg extendedConfigMetadata ExtendedConfigMetadata.empty
+    let scopeContextOverride = defaultArg scopeContextOverride (fun _ _ -> None)
+
+    let applyScopeContextOverride (node: IClause) (context: ScopeContext) =
+        scopeContextOverride node context |> Option.defaultValue context
 
     let wildCardLinks =
         links.Values
@@ -309,9 +314,8 @@ type InfoService
 
         memoizeRulesInner memFunction
 
-    let getRulesContextFromOptions (pushScope: Scope option) (subtypes: string list) (typeruleOptions: Options option) =
-        match pushScope, typeruleOptions with
-        | _, Some { replaceScopes = Some rs } ->
+    let getRulesContextFromOptions (subtypeScope: SubTypeScope option) (subtypes: string list) (typeruleOptions: Options option) =
+        let replaceContext rs =
             let replaceContext =
                 { Root = rs.root |> Option.orElse rs.this |> Option.defaultValue anyScope
                   From = rs.froms |> Option.defaultValue []
@@ -327,19 +331,23 @@ type InfoService
                 { subtypes = subtypes
                   scopes = replaceContext
                   warningOnly = false }
-        | _, Some { pushScope = Some ps } ->
+
+        match subtypeScope, typeruleOptions with
+        | Some(SubTypeReplaceScopes rs), _ -> replaceContext rs
+        | Some(SubTypePushScope ps), _ ->
             { subtypes = subtypes
               scopes =
-                { Root = ps
-                  From = []
-                  Scopes = [ ps ] }
+                  { Root = ps
+                    From = []
+                    Scopes = [ ps ] }
               warningOnly = false }
-        | Some ps, _ ->
+        | None, Some { replaceScopes = Some rs } -> replaceContext rs
+        | None, Some { pushScope = Some ps } ->
             { subtypes = subtypes
               scopes =
-                { Root = ps
-                  From = []
-                  Scopes = [ ps ] }
+                  { Root = ps
+                    From = []
+                    Scopes = [ ps ] }
               warningOnly = false }
         | None, _ ->
             { subtypes = subtypes
@@ -484,6 +492,10 @@ type InfoService
                 // | NodeRule (TypeField (TypeType.Simple t), _) -> ctx//, (Some options, Some (t, node.Key), Some (NodeC node))
                 // | NodeRule (_, f) -> newCtx//, (Some options, None, Some (NodeC node))
                 | _ -> newCtx //, (Some options, None, Some (NodeC node))
+
+            let newCtx =
+                { newCtx with
+                    scopes = applyScopeContextOverride node newCtx.scopes }
 
             newCtx, fNode ctx acc node ((field, options))
 
@@ -798,7 +810,8 @@ type InfoService
                     | _ -> None
 
                 let pushScope, subtypes = ruleValidationService.TestSubType(typedef.subtypes, c)
-                getRulesContextFromOptions pushScope subtypes typeruleOptions
+                let ctx = getRulesContextFromOptions pushScope subtypes typeruleOptions
+                { ctx with scopes = applyScopeContextOverride c ctx.scopes }
 
             | _, _ ->
                 { subtypes = []
@@ -949,6 +962,10 @@ type InfoService
                         else
                             ctx
 
+            let newCtx =
+                { newCtx with
+                    scopes = applyScopeContextOverride node newCtx.scopes }
+
             match options.typeHint, field with
             | Some(t, true), _ -> ctx, (Some options, Some(TypeRef(t, node.Key)), Some(NodeC node))
             | _, NodeRule(ScopeField s, f) ->
@@ -974,6 +991,10 @@ type InfoService
                     | ValueFound rh -> newCtx, rh
                     | WrongScope(_, _, _, rh) -> newCtx, rh
                     | _ -> newCtx, None
+
+                let newCtx =
+                    { newCtx with
+                        scopes = applyScopeContextOverride node newCtx.scopes }
 
                 newCtx, (Some options, None, Some(NodeC node))
             | _, NodeRule(TypeMarkerField(_, { name = typename; nameField = None }), _) ->
@@ -1022,7 +1043,8 @@ type InfoService
                     | _ -> None
 
                 let pushScope, subtypes = ruleValidationService.TestSubType(typedef.subtypes, c)
-                getRulesContextFromOptions pushScope subtypes typeruleOptions
+                let ctx = getRulesContextFromOptions pushScope subtypes typeruleOptions
+                { ctx with scopes = applyScopeContextOverride c ctx.scopes }
             | _, _ ->
                 { subtypes = []
                   scopes = defaultContext
@@ -1240,7 +1262,8 @@ type InfoService
                         | _ -> None
 
                     let pushScope, subtypes = ruleValidationService.TestSubType(typedef.subtypes, c)
-                    getRulesContextFromOptions pushScope subtypes typeruleOptions
+                    let ctx = getRulesContextFromOptions pushScope subtypes typeruleOptions
+                    { ctx with scopes = applyScopeContextOverride c ctx.scopes }
 
                 infoServiceFunction
                     fNode

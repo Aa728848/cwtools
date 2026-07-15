@@ -45,6 +45,32 @@ Thread.CurrentThread.CurrentCulture <- CultureInfo("ru-RU")
 Thread.CurrentThread.CurrentUICulture <- CultureInfo("ru-RU")
 // CWTools.Utilities.Utils.loglevel <- CWTools.Utilities.Utils.LogLevel.Verbose
 
+[<Tests>]
+let carrierScopeContractTests =
+    testList
+        "carrier scope contracts"
+        [ test "carrier only inherits contracts shared by planet and ship" {
+              let planet = Scope(10uy)
+              let ship = Scope(11uy)
+              let carrier = Scope(12uy)
+              let country = Scope(13uy)
+              let normalize = STLGameFunctions.normalizeCarrierScopeSet planet ship carrier
+
+              Expect.sequenceEqual
+                  (normalize [ planet; ship; country ])
+                  [ planet; ship; country; carrier ]
+                  "shared planet/ship contracts should accept carrier"
+
+              Expect.sequenceEqual
+                  (normalize [ planet; carrier; country ])
+                  [ planet; country ]
+                  "planet-only contracts must not keep an explicit carrier escape hatch"
+
+              Expect.sequenceEqual
+                  (normalize [ ship; carrier; country ])
+                  [ ship; country ]
+                  "ship-only contracts must not keep an explicit carrier escape hatch" } ]
+
 let emptyEmbeddedSettings =
     { triggers = []
       effects = []
@@ -702,6 +728,321 @@ let configFilesFromDir folder =
     |> List.ofSeq
     |> List.filter (fun f -> Path.GetExtension f = ".cwt")
     |> List.map (fun f -> f, File.ReadAllText f)
+
+[<Tests>]
+let carrierEventScopeValidationTests =
+    testSequenced
+    <| testList
+        "carrier event scope validation"
+        [ testWithCapturedLogs "carrier origins flow through events and common definitions" <| fun () ->
+              let folder =
+                  Path.Combine(Path.GetTempPath(), "cwtools-carrier-origins-" + Guid.NewGuid().ToString("N"))
+
+              let writeFile (relativePath: string) (text: string) =
+                  let path = Path.Combine(folder, relativePath)
+                  Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+                  let text = text.TrimStart().Replace("\r\n", "\n")
+                  File.WriteAllText(path, text)
+                  path, text
+
+              let posOf (needle: string) (text: string) =
+                  let marker = text.IndexOf(needle, StringComparison.Ordinal)
+                  Expect.isGreaterThan marker -1 $"scope marker {needle} was not found"
+                  let before = text.Substring(0, marker)
+                  let line = (before |> Seq.filter ((=) '\n') |> Seq.length) + 1
+                  let lastLineBreak = before.LastIndexOf('\n')
+                  let column = if lastLineBreak < 0 then marker else marker - lastLineBreak - 1
+                  mkPos line column
+
+              try
+                  let eventPath, eventText =
+                      writeFile
+                          (Path.Combine("events", "carrier_origin_events.txt"))
+                          """
+                          namespace = carrier_origin
+
+                          planet_event = {
+                              id = carrier_origin.1
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = { carrier_event = { id = carrier_origin.10 } }
+                          }
+
+                          planet_event = {
+                              id = carrier_origin.3
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = { carrier_event = { id = carrier_origin.50 } }
+                          }
+
+                          carrier_event = {
+                              id = carrier_origin.10
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  set_carrier_flag = planet_chain_marker
+                                  carrier_event = { id = carrier_origin.11 }
+                              }
+                          }
+
+                          carrier_event = {
+                              id = carrier_origin.11
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = { set_carrier_flag = transitive_planet_marker }
+                          }
+
+                          ship_event = {
+                              id = carrier_origin.2
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = { carrier_event = { id = carrier_origin.20 } }
+                          }
+
+                          carrier_event = {
+                              id = carrier_origin.20
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = { set_carrier_flag = ship_chain_marker }
+                          }
+
+                          carrier_event = {
+                              id = carrier_origin.30
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  if = {
+                                      limit = { carrier_is_type = planet }
+                                      set_carrier_flag = narrowed_branch_marker
+                                  }
+                              }
+                          }
+
+                          carrier_event = {
+                              id = carrier_origin.40
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = { set_carrier_flag = planet_on_action_marker }
+                          }
+
+                          carrier_event = {
+                              id = carrier_origin.41
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = { set_carrier_flag = colony_on_action_marker }
+                          }
+
+                          carrier_event = {
+                              id = carrier_origin.50
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  set_carrier_flag = explicit_scope_source_marker
+                                  carrier_event = {
+                                      id = carrier_origin.51
+                                      scopes = { from = owner fromfrom = from }
+                                  }
+                              }
+                          }
+
+                          carrier_event = {
+                              id = carrier_origin.51
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = { set_carrier_flag = explicit_scope_target_marker }
+                          }
+
+                          carrier_event = {
+                              id = carrier_origin.60
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = { carrier_completion_marker = yes }
+                          }
+                          """
+
+                  let projectPath, projectText =
+                      writeFile
+                          (Path.Combine("common", "special_projects", "carrier_origin_projects.txt"))
+                          """
+                          carrier_origin_project = {
+                              key = carrier_origin_project
+                              cost = 1
+                              event_scope = carrier_event
+                              on_success = { set_carrier_flag = project_callback_marker }
+                              on_fail = { set_country_flag = project_fail_marker }
+                          }
+                          """
+
+                  let situationPath, situationText =
+                      writeFile
+                          (Path.Combine("common", "situations", "carrier_origin_situations.txt"))
+                          """
+                          carrier_origin_situation = {
+                              on_start = {
+                                  target = { set_carrier_flag = situation_target_marker }
+                              }
+                          }
+                          """
+
+                  writeFile
+                      (Path.Combine("events", "carrier_origin_common_callers.txt"))
+                      """
+                      namespace = carrier_common
+
+                      planet_event = {
+                          id = carrier_common.1
+                          hide_window = yes
+                          is_triggered_only = yes
+                          immediate = {
+                              enable_special_project = {
+                                  name = carrier_origin_project
+                                  location = this
+                              }
+                              start_situation = {
+                                  type = carrier_origin_situation
+                                  target = this
+                              }
+                          }
+                      }
+                      """
+                  |> ignore
+
+                  let onActionPath, onActionText =
+                      writeFile
+                          (Path.Combine("common", "on_actions", "carrier_origin_on_actions.txt"))
+                          """
+                          on_colonization_started = {
+                              events = { carrier_origin.40 }
+                          }
+                          on_initialize_advanced_colony = {
+                              random_events = { 100 = carrier_origin.41 }
+                          }
+                          """
+
+                  let docsPath = "./testfiles/stellarisconfig/config/logs/trigger_docs.log"
+                  let configtext =
+                      (docsPath, File.ReadAllText docsPath)
+                      :: configFilesFromDir "./testfiles/stellarisconfig"
+
+                  let settings =
+                      { emptyStellarisSettings folder with
+                          rules =
+                              Some
+                                  { ruleFiles = configtext
+                                    validateRules = true
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+
+                  let stl = STLGame(settings) :> IGame<STLComputedData>
+
+                  let completionNeedle = "carrier_completion_marker = yes"
+                  let completionCursor = posOf completionNeedle eventText
+                  let completionText = eventText.Replace(completionNeedle, "")
+                  let completionContext = stl.ScopesAtPos completionCursor eventPath completionText
+                  Expect.isSome completionContext "carrier_event completion should have a scope context"
+                  Expect.isNonEmpty completionContext.Value.Scopes "carrier_event should expose its current scope"
+                  Expect.equal
+                      (completionContext.Value.Scopes.Head.ToString())
+                      "Carrier"
+                      "an unresolved carrier_event should retain the synthetic Carrier union"
+
+                  let completions =
+                      stl.Complete completionCursor eventPath completionText
+                      |> List.map (function
+                          | CompletionResponse.Simple(label, score, _) -> label, score
+                          | CompletionResponse.Detailed(label, _, score, _) -> label, score
+                          | CompletionResponse.Snippet(label, _, _, score, _) -> label, score)
+
+                  let labels = completions |> List.map fst
+                  let scoreFor name =
+                      completions
+                      |> List.tryPick (fun (label, score) -> if label = name then score else None)
+                      |> Option.defaultValue -1
+
+                  Expect.contains labels "set_carrier_flag" "carrier-aware effects should complete in carrier_event"
+                  Expect.isGreaterThan
+                      (scoreFor "set_carrier_flag")
+                      20
+                      "carrier-aware effects should receive an in-scope completion score"
+                  Expect.contains labels "set_planet_flag" "fixture should expose the planet-only effect"
+                  Expect.isTrue
+                      (scoreFor "set_planet_flag" < scoreFor "set_carrier_flag")
+                      "planet-only effects must be demoted because a carrier can be a ship"
+                  Expect.contains labels "set_ship_flag" "fixture should expose the ship-only effect"
+                  Expect.isTrue
+                      (scoreFor "set_ship_flag" < scoreFor "set_carrier_flag")
+                      "ship-only effects must be demoted because a carrier can be a planet"
+
+                  let expectScope expected needle path text message =
+                      let context = stl.ScopesAtPos (posOf needle text) path text
+                      Expect.isSome context message
+                      Expect.isNonEmpty context.Value.Scopes message
+                      Expect.equal (context.Value.Scopes.Head.ToString()) expected message
+
+                  let expectFromScopes expected needle path text message =
+                      let context = stl.ScopesAtPos (posOf needle text) path text
+                      Expect.isSome context message
+                      Expect.equal
+                          (context.Value.From |> List.map string)
+                          expected
+                          message
+
+                  expectScope "Planet" "planet_chain_marker" eventPath eventText "planet callers should narrow carrier_event"
+                  let planetPos = posOf "planet_chain_marker" eventText
+                  let planetContext = stl.ScopesAtPos planetPos eventPath eventText |> Option.get
+                  let inference =
+                      (stl :?> IScopeInferenceProvider).ScopeInferenceAtPos planetPos eventPath eventText planetContext
+                  Expect.isSome inference "query_scope should expose Carrier host provenance"
+                  Expect.equal inference.Value.certainty "exact" "a unique Planet caller should be reported as exact"
+                  Expect.contains inference.Value.candidates "Planet" "Carrier provenance should list Planet as a candidate"
+                  Expect.contains inference.Value.candidates "Ship" "Carrier provenance should list Ship as a candidate"
+                  Expect.isTrue
+                      (inference.Value.evidence |> List.exists (fun item -> item.Contains("Planet caller", StringComparison.Ordinal)))
+                      "Carrier provenance should cite the caller that narrowed the event"
+                  expectFromScopes [ "Planet" ] "planet_chain_marker" eventPath eventText "direct event calls should seed FROM"
+                  expectScope "Planet" "transitive_planet_marker" eventPath eventText "carrier_event chains should retain their origin"
+                  expectFromScopes
+                      [ "Planet"; "Planet" ]
+                      "transitive_planet_marker"
+                      eventPath
+                      eventText
+                      "carrier_event chains should advance FROM and FROMFROM"
+                  expectScope "Ship" "ship_chain_marker" eventPath eventText "ship callers should narrow carrier_event"
+                  expectFromScopes [ "Ship" ] "ship_chain_marker" eventPath eventText "ship event calls should seed a Ship FROM"
+                  expectScope "Planet" "narrowed_branch_marker" eventPath eventText "carrier_is_type should narrow its guarded branch"
+                  expectScope "Planet" "planet_on_action_marker" eventPath eventText "planet on_actions should seed carrier_event"
+                  expectScope "Carrier" "colony_on_action_marker" eventPath eventText "colony on_actions should preserve the planet-or-ship union"
+                  expectFromScopes
+                      [ "Country" ]
+                      "colony_on_action_marker"
+                      eventPath
+                      eventText
+                      "on_action replace_scope should seed the carrier event FROM chain"
+                  expectScope "Planet" "explicit_scope_target_marker" eventPath eventText "explicit event scopes should retain the proven Carrier host"
+                  expectFromScopes
+                      [ "Country"; "Planet" ]
+                      "explicit_scope_target_marker"
+                      eventPath
+                      eventText
+                      "carrier_event scopes should remap FROM and FROMFROM in the caller context"
+                  expectScope "Planet" "project_callback_marker" projectPath projectText "special project creation location should narrow carrier callbacks"
+                  expectFromScopes
+                      [ "Planet" ]
+                      "project_callback_marker"
+                      projectPath
+                      projectText
+                      "special project callbacks should use the creation location as FROM"
+                  expectScope "Country" "project_fail_marker" projectPath projectText "special project failure callbacks should use the owner country"
+                  expectFromScopes
+                      [ "Planet"; "Planet" ]
+                      "project_fail_marker"
+                      projectPath
+                      projectText
+                      "special project failure callbacks should preserve project scope and creation scope as FROM/FROMFROM"
+                  expectScope "Planet" "situation_target_marker" situationPath situationText "situation targets should use start_situation target provenance"
+              finally
+                  if Directory.Exists folder then
+                      Directory.Delete(folder, true) ]
 
 let testFolder folder testsname config configValidate configfile configOnly configLoc stl (culture: string) =
     testWithCapturedLogs (folder + testsname + culture)

@@ -65,6 +65,7 @@ types = {
 		## type_key_filter = on_late_game_pulse_country
 		subtype[on_late_game_pulse_country] = { }
 		## type_key_filter = on_initialize_advanced_colony
+		## replace_scope = { this = colony root = colony from = country }
 		subtype[on_initialize_advanced_colony] = { }
 		## type_key_filter = on_become_advanced_empire
 		subtype[on_become_advanced_empire] = { }
@@ -111,6 +112,7 @@ types = {
 		## type_key_filter = on_system_survey_ship
 		subtype[on_system_survey_ship] = { }
 		## type_key_filter = on_colonization_started
+		## replace_scope = { this = planet root = planet }
 		subtype[on_colonization_started] = { }
 		## type_key_filter = on_colonized
 		subtype[on_colonized] = { }

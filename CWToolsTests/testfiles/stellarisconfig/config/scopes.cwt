@@ -129,6 +129,9 @@ scopes = {
 	Mission = {
 		aliases = { mission }
 	}
+	Carrier = {
+		aliases = { carrier }
+	}
 }
 
 scope_groups = {

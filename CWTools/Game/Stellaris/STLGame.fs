@@ -24,6 +24,7 @@ open CWTools.Games
 open CWTools.Games.Stellaris
 open CWTools.Rules
 open CWTools.Validation.Common.CommonValidation
+open CWTools.Process.Scopes
 open CWTools.Process.Scopes.Scopes
 open System.Text
 open CWTools.Games.LanguageFeatures
@@ -32,6 +33,7 @@ open CWTools.Games.Helpers
 open System.IO
 open CWTools.Process.Localisation
 open System.Linq
+open System.Collections.Generic
 
 module STLGameFunctions =
     type GameObject = GameObject<STLComputedData, STLLookup>
@@ -268,11 +270,81 @@ module STLGameFunctions =
             .Concat(RulesHelpers.generateModifierRulesFromTypes lookup.typeDefs)
             .ToArray()
 
+    /// Carrier is a planet-or-ship runtime host. It can only inherit a contract
+    /// when that contract is valid for both possible host types.
+    let internal normalizeCarrierScopeSet planetScope shipScope carrierScope (scopes: Scope list) =
+        let withoutCarrier = scopes |> List.filter (fun scope -> not (scope.Equals carrierScope))
+        let supports scope = withoutCarrier |> List.exists (fun candidate -> candidate.Equals scope)
+
+        if supports planetScope && supports shipScope then
+            withoutCarrier @ [ carrierScope ]
+        else
+            withoutCarrier
+
+    let private normalizeCarrierScopes (scopes: Scope list) =
+        let tryScopeByName name =
+            scopeManager.AllScopes
+            |> List.tryFind (fun scope ->
+                String.Equals(scopeManager.GetName scope, name, StringComparison.OrdinalIgnoreCase))
+
+        match tryScopeByName "Planet", tryScopeByName "Ship", tryScopeByName "Carrier" with
+        | Some planetScope, Some shipScope, Some carrierScope ->
+            normalizeCarrierScopeSet planetScope shipScope carrierScope scopes
+        | _ -> scopes
+
+    let private normalizeCarrierEffect (effect: Effect) =
+        let scopes = normalizeCarrierScopes effect.Scopes
+
+        match effect with
+        | :? ScopedEffect as scoped ->
+            ScopedEffect(
+                scoped.Name,
+                scopes,
+                scoped.Target,
+                scoped.Type,
+                scoped.Desc,
+                scoped.Usage,
+                scoped.IsScopeChange,
+                scoped.IgnoreChildren,
+                scoped.ScopeOnlyNotEffect,
+                scoped.IsValueScope,
+                scoped.IsWildCard,
+                scoped.RefHint
+            )
+            :> Effect
+        | :? DocEffect as documented ->
+            DocEffect(
+                documented.Name,
+                scopes,
+                documented.Target,
+                documented.Type,
+                documented.Desc,
+                documented.Usage,
+                documented.RefHint
+            )
+            :> Effect
+        | :? ScriptedEffect as scripted ->
+            ScriptedEffect(
+                scripted.Name,
+                scopes,
+                scripted.Type,
+                scripted.Comments,
+                scripted.GlobalEventTargets,
+                scripted.SavedEventTargets,
+                scripted.UsedEventTargets,
+                scripted.FiredOnActions
+            )
+            :> Effect
+        | basic -> Effect(basic.Name, scopes, basic.Type, basic.RefHint)
+
+    let private setCarrierAwareCoreLinks (lookup: Lookup) links =
+        lookup.allCoreLinks <- links |> List.map normalizeCarrierEffect
+
     let addTriggerDocsScopes (lookup: Lookup) (rules: RootRule array) =
         let scriptedOptions (scripted: string) (effect: ScriptedEffect) =
             { Options.DefaultOptions with
                 description = Some effect.Comments
-                requiredScopes = effect.Scopes
+                requiredScopes = normalizeCarrierScopes effect.Scopes
                 typeHint = Some(scripted, true) }
 
         let scriptedValueTriggerOptions (scripted: string) (effect: ScriptedEffect) =
@@ -333,7 +405,7 @@ module STLGameFunctions =
                     |> Option.defaultValue []
                 | x -> x
 
-            { o with requiredScopes = newScopes }
+            { o with requiredScopes = normalizeCarrierScopes newScopes }
 
         let addRequiredScopesT (s: StringTokens) (o: Options) =
             let newScopes =
@@ -344,7 +416,7 @@ module STLGameFunctions =
                     |> Option.defaultValue []
                 | x -> x
 
-            { o with requiredScopes = newScopes }
+            { o with requiredScopes = normalizeCarrierScopes newScopes }
 
         rules
         |> Array.collect (function
@@ -396,7 +468,9 @@ module STLGameFunctions =
 
     let loadConfigRulesHook (rules: RootRule array) (lookup: Lookup) embedded =
         let triggersWithValueTriggers = addValueTriggersToTriggers rules lookup
-        lookup.allCoreLinks <- triggersWithValueTriggers @ lookup.effects @ updateEventTargetLinks embedded //@ addDataEventTargetLinks lookup embedded
+        setCarrierAwareCoreLinks
+            lookup
+            (triggersWithValueTriggers @ lookup.effects @ updateEventTargetLinks embedded) //@ addDataEventTargetLinks lookup embedded
         lookup.coreModifiers <- embedded.modifiers
         let rulesWithMod = rules.Concat(addModifiersWithScopes (lookup)).ToArray()
         let rulesWithEmbeddedScopes = addTriggerDocsScopes lookup rulesWithMod
@@ -522,33 +596,740 @@ module STLGameFunctions =
         lookup.typeDefInfo <- lookup.typeDefInfo |> addModifiersAsTypes lookup
         addDynamicPlanetKillerOnActions lookup resources
 
-        lookup.allCoreLinks <-
-            lookup.triggers
-            @ lookup.effects
-            @ (updateEventTargetLinks embeddedSettings
-               @ addDataEventTargetLinks lookup embeddedSettings false)
+        setCarrierAwareCoreLinks
+            lookup
+            (lookup.triggers
+             @ lookup.effects
+             @ (updateEventTargetLinks embeddedSettings
+                @ addDataEventTargetLinks lookup embeddedSettings false))
 
     let refreshConfigAfterVarDefHook
         (lookup: Lookup)
         (resources: IResourceAPI<_>)
         (embeddedSettings: EmbeddedSettings)
         =
-        lookup.allCoreLinks <-
-            lookup.triggers
-            @ lookup.effects
-            @ (updateEventTargetLinks embeddedSettings
-               @ addDataEventTargetLinks lookup embeddedSettings false
-               @ savedEventTargetLinks lookup)
+        setCarrierAwareCoreLinks
+            lookup
+            (lookup.triggers
+             @ lookup.effects
+             @ (updateEventTargetLinks embeddedSettings
+                @ addDataEventTargetLinks lookup embeddedSettings false
+                @ savedEventTargetLinks lookup))
 
     let afterInit (game: GameObject) =
         let ts = updateScriptedTriggers (game)
-        game.Lookup.allCoreLinks <- ts @ game.Lookup.effects @ game.Lookup.eventTargetLinks
+        setCarrierAwareCoreLinks game.Lookup (ts @ game.Lookup.effects @ game.Lookup.eventTargetLinks)
         let es = updateScriptedEffects (game)
-        game.Lookup.allCoreLinks <- game.Lookup.triggers @ es @ game.Lookup.eventTargetLinks
+        setCarrierAwareCoreLinks game.Lookup (game.Lookup.triggers @ es @ game.Lookup.eventTargetLinks)
         updateStaticodifiers (game)
         updateScriptedLoc (game)
         // updateModifiers(game)
         updateTechnologies (game)
+
+    [<Literal>]
+    let private PlanetHost = 1
+
+    [<Literal>]
+    let private ShipHost = 2
+
+    [<Literal>]
+    let private AnyCarrierHost = 3
+
+    type private CarrierInferenceSnapshot =
+        { version: int
+          eventHosts: Map<string, int>
+          eventEvidence: Map<string, string list>
+          eventFromChains: Map<string, Set<Scope list>>
+          projectCreationScopes: Map<string, Set<Scope>>
+          situationTargetScopes: Map<string, Set<Scope>> }
+
+    type internal CarrierScopeResolver
+        (
+            resources: IResourceAPI<STLComputedData>,
+            lookup: STLLookup,
+            getInfoService: unit -> InfoService option
+        ) =
+
+        let gate = obj ()
+        let mutable building = false
+        let mutable cached: CarrierInferenceSnapshot option = None
+        let emptyVars = CWTools.Utilities.Utils2.PrefixOptimisedStringSet()
+
+        let scopeByName name =
+            scopeManager.AllScopes
+            |> List.tryFind (fun scope ->
+                String.Equals(scopeManager.GetName scope, name, StringComparison.OrdinalIgnoreCase))
+
+        let planetScope () = scopeByName "Planet"
+        let shipScope () = scopeByName "Ship"
+        let carrierScope () = scopeByName "Carrier"
+        let colonyScope () = scopeByName "Colony"
+        let countryScope () = scopeByName "Country"
+
+        let scopeName (scope: Scope) = scopeManager.GetName scope
+
+        let isScope name scope =
+            String.Equals(scopeName scope, name, StringComparison.OrdinalIgnoreCase)
+
+        let hostMaskOfScope scope =
+            if isScope "Planet" scope then PlanetHost
+            elif isScope "Ship" scope then ShipHost
+            elif isScope "Carrier" scope || isScope "Colony" scope then AnyCarrierHost
+            else 0
+
+        let hostScope mask =
+            match mask with
+            | PlanetHost -> planetScope ()
+            | ShipHost -> shipScope ()
+            | AnyCarrierHost -> carrierScope ()
+            | _ -> None
+
+        let setCurrent current (context: ScopeContext) =
+            let scopes =
+                match context.Scopes with
+                | [] -> [ current ]
+                | _ :: tail -> current :: tail
+
+            { context with Scopes = scopes }
+
+        let setCarrierHost current (context: ScopeContext) =
+            let root =
+                if isScope "Carrier" context.Root then current else context.Root
+
+            { setCurrent current context with Root = root }
+
+        let normalizeKey (key: string) =
+            let key = key.Trim().Trim('"').ToLowerInvariant()
+            if key.StartsWith("hidden:") then key.Substring(7) else key
+
+        let cleanValue (value: string) =
+            if isNull value then "" else value.Trim().Trim('"')
+
+        let addScope key scope map =
+            if String.IsNullOrWhiteSpace key || scope.Equals scopeManager.AnyScope || scope.Equals scopeManager.InvalidScope then
+                map
+            else
+                map
+                |> Map.change (key.ToLowerInvariant()) (fun existing ->
+                    existing |> Option.defaultValue Set.empty |> Set.add scope |> Some)
+
+        let addMask key mask map =
+            if String.IsNullOrWhiteSpace key || mask = 0 then map
+            else
+                map
+                |> Map.change (key.ToLowerInvariant()) (fun existing ->
+                    Some((existing |> Option.defaultValue 0) ||| mask))
+
+        let addEvidence key evidence map =
+            if String.IsNullOrWhiteSpace key || String.IsNullOrWhiteSpace evidence then map
+            else
+                map
+                |> Map.change (key.ToLowerInvariant()) (fun existing ->
+                    Some(evidence :: (existing |> Option.defaultValue []) |> List.distinct))
+
+        let addFromChain key (chain: Scope list) map =
+            let chain = chain |> Seq.truncate 4 |> Seq.toList
+            if String.IsNullOrWhiteSpace key || chain.IsEmpty then map
+            else
+                map
+                |> Map.change (key.ToLowerInvariant()) (fun existing ->
+                    existing |> Option.defaultValue Set.empty |> Set.add chain |> Some)
+
+        let chooseScope (scopes: Set<Scope>) =
+            if scopes.Count = 1 then
+                scopes |> Seq.tryHead
+            else
+                let mask = scopes |> Seq.fold (fun acc scope -> acc ||| hostMaskOfScope scope) 0
+                if mask = AnyCarrierHost && scopes |> Seq.forall (fun scope -> hostMaskOfScope scope <> 0) then
+                    carrierScope ()
+                else
+                    Some scopeManager.AnyScope
+
+        let mergeFromChains (chains: Set<Scope list>) =
+            let depth = chains |> Seq.map List.length |> Seq.append [ 0 ] |> Seq.max |> min 4
+            [ 0 .. depth - 1 ]
+            |> List.map (fun index ->
+                chains
+                |> Seq.choose (List.tryItem index)
+                |> Set.ofSeq
+                |> chooseScope
+                |> Option.defaultValue scopeManager.AnyScope)
+
+        let rec allNodes (node: Node) =
+            seq {
+                yield node
+                for child in node.Nodes do
+                    yield! allNodes child
+            }
+
+        let tryPathTo (target: Node) (root: Node) =
+            let rec loop path (node: Node) =
+                if node.Position.Equals target.Position then
+                    Some(List.rev (node :: path))
+                else
+                    node.Nodes
+                    |> Seq.tryPick (fun child ->
+                        if rangeContainsRange child.Position target.Position then
+                            loop (node :: path) child
+                        else
+                            None)
+
+            loop [] root
+
+        let tryStaticContext (entity: Entity) (node: Node) =
+            getInfoService ()
+            |> Option.bind (fun info ->
+                let pos = mkPos node.Position.StartLine (int node.Position.StartColumn)
+                info.GetInfo(pos, entity) |> Option.map fst)
+
+        let contextFromReplaceScopes (replaceScopes: ReplaceScopes) =
+            let root =
+                replaceScopes.root
+                |> Option.orElse replaceScopes.this
+                |> Option.defaultValue scopeManager.AnyScope
+
+            let prevs = replaceScopes.prevs |> Option.defaultValue []
+            let scopes = replaceScopes.this |> Option.map (fun current -> current :: prevs) |> Option.defaultValue prevs
+
+            { Root = root
+              From = replaceScopes.froms |> Option.defaultValue []
+              Scopes = scopes }
+
+        let trySubtypeContext typeName (root: Node) =
+            lookup.typeDefs
+            |> List.tryFind (fun definition -> String.Equals(definition.name, typeName, StringComparison.OrdinalIgnoreCase))
+            |> Option.bind (fun definition ->
+                definition.subtypes
+                |> List.tryFind (fun subtype ->
+                    subtype.typeKeyField
+                    |> Option.exists (fun key -> String.Equals(key, root.Key, StringComparison.OrdinalIgnoreCase)))
+                |> Option.bind (fun subtype ->
+                    match subtype.replaceScopes, subtype.pushScope with
+                    | Some scopes, _ -> Some(contextFromReplaceScopes scopes)
+                    | None, Some scope ->
+                        Some
+                            { Root = scope
+                              From = []
+                              Scopes = [ scope ] }
+                    | None, None -> None))
+
+        let changeContextByKey (key: string) (context: ScopeContext) =
+            match
+                changeScope.Invoke(
+                    false,
+                    true,
+                    lookup.eventTargetLinksMap,
+                    lookup.valueTriggerMap,
+                    [],
+                    emptyVars,
+                    key.AsSpan(),
+                    context
+                )
+            with
+            | ScopeResult.NewScope(newContext, _, _) -> newContext
+            | _ -> context
+
+        let contextAtNodeFromRoot typeName (root: Node) (target: Node) =
+            trySubtypeContext typeName root
+            |> Option.map (fun rootContext ->
+                tryPathTo target root
+                |> Option.map (fun path ->
+                    path
+                    |> List.tail
+                    |> List.rev
+                    |> List.tail
+                    |> List.rev
+                    |> List.fold (fun context node -> changeContextByKey node.Key context) rootContext)
+                |> Option.defaultValue rootContext)
+
+        let resolveExpression (context: ScopeContext) value =
+            let value = cleanValue value
+            if String.IsNullOrWhiteSpace value then context.CurrentScope
+            else (changeContextByKey value context).CurrentScope
+
+        let setChainItem index value chain =
+            let missing = index - List.length chain + 1
+            let padded = if missing > 0 then chain @ List.replicate missing scopeManager.AnyScope else chain
+            padded |> List.mapi (fun itemIndex existing -> if itemIndex = index then value else existing)
+
+        let eventFromChain (context: ScopeContext) (eventCall: Node) =
+            let defaultChain = context.CurrentScope :: context.From
+
+            eventCall.Nodes
+            |> Seq.tryFind (fun child -> normalizeKey child.Key = "scopes")
+            |> Option.map (fun scopes ->
+                [ 0, "from"; 1, "fromfrom"; 2, "fromfromfrom"; 3, "fromfromfromfrom" ]
+                |> List.fold (fun chain (index, key) ->
+                    let expression = scopes.TagText key |> cleanValue
+                    if String.IsNullOrWhiteSpace expression then chain
+                    else setChainItem index (resolveExpression context expression) chain) defaultChain
+                |> Seq.truncate 4
+                |> Seq.toList)
+            |> Option.defaultValue defaultChain
+
+        let rec conditionHostMask negated (node: Node) =
+            let key = normalizeKey node.Key
+
+            if key = "or" || key = "nor" || key = "nand" then
+                0
+            else
+                let direct =
+                    node.Leaves
+                    |> Seq.choose (fun leaf ->
+                        if String.Equals(leaf.Key, "carrier_is_type", StringComparison.OrdinalIgnoreCase) then
+                            match cleanValue leaf.ValueText |> fun value -> value.ToLowerInvariant() with
+                            | "planet" -> Some(if negated then ShipHost else PlanetHost)
+                            | "ship" -> Some(if negated then PlanetHost else ShipHost)
+                            | _ -> None
+                        else
+                            None)
+                    |> Seq.distinct
+                    |> Seq.toList
+
+                let nested =
+                    node.Nodes
+                    |> Seq.map (fun child ->
+                        conditionHostMask (if normalizeKey child.Key = "not" then not negated else negated) child)
+                    |> Seq.filter ((<>) 0)
+                    |> Seq.distinct
+                    |> Seq.toList
+
+                match direct @ nested |> List.distinct with
+                | [ mask ] -> mask
+                | _ -> 0
+
+        let impliedHostMask (node: Node) =
+            let key = normalizeKey node.Key
+            let conditionKeys = set [ "limit"; "trigger"; "potential"; "allow" ]
+
+            if conditionKeys.Contains key then
+                conditionHostMask false node
+            else
+                node.Nodes
+                |> Seq.filter (fun child -> conditionKeys.Contains(normalizeKey child.Key))
+                |> Seq.map (conditionHostMask false)
+                |> Seq.filter ((<>) 0)
+                |> Seq.distinct
+                |> Seq.toList
+                |> function
+                    | [ mask ] -> mask
+                    | _ -> 0
+
+        let callbackKeys =
+            set
+                [ "fail_trigger"
+                  "abort_trigger"
+                  "on_success"
+                  "on_progress_25"
+                  "on_progress_50"
+                  "on_progress_75"
+                  "on_start"
+                  "on_fail"
+                  "on_cancel" ]
+
+        let hasLogicalPathSegment (segment: string) (entity: Entity) =
+            let logicalPath = entity.logicalpath.Replace('\\', '/').TrimStart('/')
+            let segment = segment.Trim('/').TrimEnd('/') + "/"
+
+            logicalPath.StartsWith(segment, StringComparison.OrdinalIgnoreCase)
+            || logicalPath.Contains("/" + segment, StringComparison.OrdinalIgnoreCase)
+
+        let isSpecialProjectPath (entity: Entity) =
+            hasLogicalPathSegment "common/special_projects" entity
+
+        let isSituationPath (entity: Entity) =
+            hasLogicalPathSegment "common/situations" entity
+
+        let isOnActionPath (entity: Entity) =
+            hasLogicalPathSegment "common/on_actions" entity
+
+        let isEventPath (entity: Entity) =
+            hasLogicalPathSegment "events" entity
+
+        let eventScopeForProject (projectId: string) (root: Node) projectScopes =
+            let eventScope = root.TagText "event_scope" |> cleanValue |> fun value -> value.ToLowerInvariant()
+            match eventScope with
+            | "planet_event" -> planetScope ()
+            | "ship_event" -> shipScope ()
+            | "country_event" -> countryScope ()
+            | "colony_event" -> colonyScope ()
+            | "carrier_event" ->
+                projectScopes
+                |> Map.tryFind (projectId.ToLowerInvariant())
+                |> Option.bind chooseScope
+                |> Option.bind (fun scope ->
+                    if hostMaskOfScope scope = 0 then carrierScope () else Some scope)
+                |> Option.orElseWith (fun () -> carrierScope ())
+            | _ -> None
+
+        let projectCallbackContext (projectId: string) (root: Node) callbackKey projectScopes (fallback: ScopeContext) =
+            let eventScope = eventScopeForProject projectId root projectScopes |> Option.defaultValue scopeManager.AnyScope
+            let creationScope =
+                projectScopes
+                |> Map.tryFind (projectId.ToLowerInvariant())
+                |> Option.bind chooseScope
+                |> Option.defaultValue scopeManager.AnyScope
+
+            let current, froms =
+                match callbackKey with
+                | "on_success"
+                | "on_progress_25"
+                | "on_progress_50"
+                | "on_progress_75"
+                | "on_start" -> eventScope, [ creationScope ]
+                | "fail_trigger"
+                | "abort_trigger" ->
+                    countryScope () |> Option.defaultValue scopeManager.AnyScope,
+                    [ eventScope; creationScope ]
+                | "on_fail"
+                | "on_cancel" ->
+                    countryScope () |> Option.defaultValue scopeManager.AnyScope,
+                    [ eventScope; creationScope ]
+                | _ -> fallback.CurrentScope, fallback.From
+
+            { setCurrent current fallback with From = froms }
+
+        let callbackContextAt projectId (root: Node) (target: Node) projectScopes fallback =
+            root.Nodes
+            |> Seq.tryFind (fun callback ->
+                callbackKeys.Contains(normalizeKey callback.Key)
+                && rangeContainsRange callback.Position target.Position)
+            |> Option.map (fun callback ->
+                let baseContext =
+                    projectCallbackContext projectId root (normalizeKey callback.Key) projectScopes fallback
+
+                tryPathTo target callback
+                |> Option.map (fun path ->
+                    path
+                    |> List.tail
+                    |> List.rev
+                    |> List.tail
+                    |> List.rev
+                    |> List.fold (fun context node -> changeContextByKey node.Key context) baseContext)
+                |> Option.defaultValue baseContext)
+
+        let buildSnapshot version =
+            let entities =
+                resources.AllEntities()
+                |> Seq.map (fun struct (entity, _) -> entity)
+                |> Seq.toArray
+            let eventDefinitions = Dictionary<string, struct (Entity * Node)>(StringComparer.OrdinalIgnoreCase)
+            let carrierEventIds = HashSet<string>(StringComparer.OrdinalIgnoreCase)
+
+            for entity in entities do
+                if isEventPath entity then
+                    for root in entity.entity.Nodes do
+                        let eventId = root.TagText "id" |> cleanValue
+                        if not (String.IsNullOrWhiteSpace eventId) && (normalizeKey root.Key).EndsWith("_event") then
+                            eventDefinitions[eventId] <- struct (entity, root)
+                            if normalizeKey root.Key = "carrier_event" then carrierEventIds.Add eventId |> ignore
+
+            let mutable projectScopes: Map<string, Set<Scope>> = Map.empty
+            let mutable situationScopes: Map<string, Set<Scope>> = Map.empty
+
+            for entity in entities do
+                for root in entity.entity.Nodes do
+                    for node in allNodes root do
+                        match normalizeKey node.Key with
+                        | "enable_special_project" ->
+                            let id = node.TagText "name" |> cleanValue
+                            let nodeContext =
+                                (if isEventPath entity then contextAtNodeFromRoot "event" root node else None)
+                                |> Option.orElseWith (fun () -> tryStaticContext entity node)
+
+                            match nodeContext with
+                            | Some context when not (String.IsNullOrWhiteSpace id) ->
+                                let location = node.TagText "location"
+                                projectScopes <- addScope id (resolveExpression context location) projectScopes
+                            | _ -> ()
+                        | "start_situation" ->
+                            let id = node.TagText "type" |> cleanValue
+                            let target = node.TagText "target"
+                            let nodeContext =
+                                (if isEventPath entity then contextAtNodeFromRoot "event" root node else None)
+                                |> Option.orElseWith (fun () -> tryStaticContext entity node)
+
+                            match nodeContext with
+                            | Some context when not (String.IsNullOrWhiteSpace id) && not (String.IsNullOrWhiteSpace target) ->
+                                situationScopes <- addScope id (resolveExpression context target) situationScopes
+                            | _ -> ()
+                        | _ -> ()
+
+            let mutable seeds: Map<string, int> = Map.empty
+            let mutable evidence: Map<string, string list> = Map.empty
+            let mutable eventFromChains: Map<string, Set<Scope list>> = Map.empty
+            let dependencies = ResizeArray<string * string * Node * ScopeContext>()
+
+            for pair in eventDefinitions do
+                let eventId = pair.Key
+                let struct (_, root) = pair.Value
+
+                if carrierEventIds.Contains eventId then
+                    let mask = impliedHostMask root
+                    if mask <> 0 then
+                        seeds <- addMask eventId mask seeds
+                        evidence <- addEvidence eventId $"carrier_is_type in %s{root.Position.FileName}:%i{root.Position.StartLine}" evidence
+
+            for entity in entities do
+                for root in entity.entity.Nodes do
+                    let rootEventId = root.TagText "id" |> cleanValue
+                    let callerCarrierId =
+                        if normalizeKey root.Key = "carrier_event" && carrierEventIds.Contains rootEventId then Some rootEventId else None
+
+                    for node in allNodes root do
+                        if normalizeKey node.Key = "carrier_event" && not (node.Position.Equals root.Position) then
+                            let targetId = node.TagText "id" |> cleanValue
+                            if carrierEventIds.Contains targetId then
+                                let staticContext =
+                                    (if isEventPath entity then contextAtNodeFromRoot "event" root node else None)
+                                    |> Option.orElseWith (fun () -> tryStaticContext entity node)
+                                    |> Option.defaultValue
+                                        { Root = scopeManager.AnyScope
+                                          From = []
+                                          Scopes = [] }
+
+                                let context =
+                                    if isSpecialProjectPath entity then
+                                        callbackContextAt root.Key root node projectScopes staticContext
+                                        |> Option.defaultValue staticContext
+                                    else
+                                        staticContext
+
+                                let mask = hostMaskOfScope context.CurrentScope
+                                match callerCarrierId, mask, isScope "Carrier" context.Root with
+                                | Some caller, AnyCarrierHost, true -> dependencies.Add(caller, targetId, node, context)
+                                | _, 0, _ ->
+                                    seeds <- addMask targetId AnyCarrierHost seeds
+                                    eventFromChains <- addFromChain targetId (eventFromChain context node) eventFromChains
+                                    evidence <- addEvidence targetId $"unknown caller at %s{node.Position.FileName}:%i{node.Position.StartLine}" evidence
+                                | _, value, _ ->
+                                    seeds <- addMask targetId value seeds
+                                    eventFromChains <- addFromChain targetId (eventFromChain context node) eventFromChains
+                                    evidence <-
+                                        addEvidence
+                                            targetId
+                                            $"%s{scopeName context.CurrentScope} caller at %s{node.Position.FileName}:%i{node.Position.StartLine}"
+                                            evidence
+
+                    if isOnActionPath entity then
+                        let eventListNodes =
+                            allNodes root
+                            |> Seq.filter (fun node ->
+                                let key = normalizeKey node.Key
+                                key = "events" || key = "random_events")
+
+                        for eventList in eventListNodes do
+                            let listContext =
+                                trySubtypeContext "on_action" root
+                                |> Option.orElseWith (fun () -> tryStaticContext entity eventList)
+                                |> Option.defaultValue
+                                    { Root = scopeManager.AnyScope
+                                      From = []
+                                      Scopes = [] }
+
+                            let mask = hostMaskOfScope listContext.CurrentScope
+
+                            for value in eventList.LeafValues do
+                                let targetId = cleanValue value.ValueText
+                                if carrierEventIds.Contains targetId then
+                                    seeds <- addMask targetId (if mask = 0 then AnyCarrierHost else mask) seeds
+                                    eventFromChains <- addFromChain targetId listContext.From eventFromChains
+                                    evidence <- addEvidence targetId $"on_action %s{root.Key} (%s{scopeName listContext.CurrentScope})" evidence
+
+                            for value in eventList.Leaves do
+                                let targetId = cleanValue value.ValueText
+                                if carrierEventIds.Contains targetId then
+                                    seeds <- addMask targetId (if mask = 0 then AnyCarrierHost else mask) seeds
+                                    eventFromChains <- addFromChain targetId listContext.From eventFromChains
+                                    evidence <- addEvidence targetId $"on_action %s{root.Key} (%s{scopeName listContext.CurrentScope})" evidence
+
+            let mutable eventHosts = seeds
+            let mutable changed = true
+            let mutable iterations = 0
+            while changed && iterations < 64 do
+                changed <- false
+                iterations <- iterations + 1
+                for caller, target, eventCall, staticContext in dependencies do
+                    let callerMask = eventHosts |> Map.tryFind (caller.ToLowerInvariant()) |> Option.defaultValue 0
+                    if callerMask <> 0 then
+                        let before = eventHosts |> Map.tryFind (target.ToLowerInvariant()) |> Option.defaultValue 0
+                        let after = before ||| callerMask
+                        if after <> before then
+                            eventHosts <- addMask target callerMask eventHosts
+                            evidence <- addEvidence target $"carrier_event from %s{caller}" evidence
+                            changed <- true
+
+                        match hostScope callerMask with
+                        | Some callerScope ->
+                            let callerChains =
+                                eventFromChains
+                                |> Map.tryFind (caller.ToLowerInvariant())
+                                |> Option.defaultValue (Set.singleton [])
+
+                            for chain in callerChains do
+                                let callerContext =
+                                    { setCarrierHost callerScope staticContext with
+                                        From = chain }
+
+                                let beforeChains =
+                                    eventFromChains
+                                    |> Map.tryFind (target.ToLowerInvariant())
+                                    |> Option.defaultValue Set.empty
+
+                                eventFromChains <- addFromChain target (eventFromChain callerContext eventCall) eventFromChains
+
+                                let afterChains =
+                                    eventFromChains
+                                    |> Map.tryFind (target.ToLowerInvariant())
+                                    |> Option.defaultValue Set.empty
+
+                                if afterChains <> beforeChains then changed <- true
+                        | None -> ()
+
+            { version = version
+              eventHosts = eventHosts
+              eventEvidence = evidence
+              eventFromChains = eventFromChains
+              projectCreationScopes = projectScopes
+              situationTargetScopes = situationScopes }
+
+        let currentSnapshot () =
+            let version = ResourceManagerEager.currentVersion ()
+            lock gate (fun () ->
+                match cached with
+                | Some snapshot when snapshot.version = version -> snapshot
+                | _ when building ->
+                    { version = version
+                      eventHosts = Map.empty
+                      eventEvidence = Map.empty
+                      eventFromChains = Map.empty
+                      projectCreationScopes = Map.empty
+                      situationTargetScopes = Map.empty }
+                | _ ->
+                    building <- true
+                    try
+                        let snapshot = buildSnapshot version
+                        cached <- Some snapshot
+                        snapshot
+                    finally
+                        building <- false)
+
+        let tryEntityAndRoot (node: Node) =
+            resources.GetEntityByFilePath node.Position.FileName
+            |> Option.bind (fun struct (entity, _) ->
+                entity.entity.Nodes
+                |> Seq.tryFind (fun root -> rangeContainsRange root.Position node.Position)
+                |> Option.map (fun root -> entity, root))
+
+        member _.Resolve(node: IClause, context: ScopeContext) =
+            if building then
+                None
+            else
+                match node with
+                | :? Node as node ->
+                    let snapshot = currentSnapshot ()
+                    let mutable resolved = context
+                    let mutable changed = false
+
+                    match tryEntityAndRoot node with
+                    | Some(entity, root) ->
+                        let rootKey = normalizeKey root.Key
+                        if rootKey = "carrier_event" && node.Position.Equals root.Position then
+                            let eventId = root.TagText "id" |> cleanValue
+                            let mask = snapshot.eventHosts |> Map.tryFind (eventId.ToLowerInvariant()) |> Option.defaultValue AnyCarrierHost
+                            match hostScope mask with
+                            | Some exact when mask = PlanetHost || mask = ShipHost ->
+                                resolved <- setCarrierHost exact resolved
+                                changed <- true
+                            | _ -> ()
+
+                            match snapshot.eventFromChains |> Map.tryFind (eventId.ToLowerInvariant()) with
+                            | Some chains when not chains.IsEmpty ->
+                                resolved <- { resolved with From = mergeFromChains chains }
+                                changed <- true
+                            | _ -> ()
+
+                        if isSpecialProjectPath entity && callbackKeys.Contains(normalizeKey node.Key) then
+                            resolved <-
+                                projectCallbackContext root.Key root (normalizeKey node.Key) snapshot.projectCreationScopes resolved
+                            changed <- true
+
+                        if isSituationPath entity && normalizeKey node.Key = "target" && resolved.CurrentScope.Equals scopeManager.AnyScope then
+                            match snapshot.situationTargetScopes |> Map.tryFind (root.Key.ToLowerInvariant()) |> Option.bind chooseScope with
+                            | Some target ->
+                                resolved <- setCurrent target resolved
+                                changed <- true
+                            | None -> ()
+                    | None -> ()
+
+                    if isScope "Carrier" resolved.CurrentScope then
+                        let mask = impliedHostMask node
+                        match hostScope mask with
+                        | Some exact when mask = PlanetHost || mask = ShipHost ->
+                            resolved <- setCarrierHost exact resolved
+                            changed <- true
+                        | _ -> ()
+
+                    if changed then Some resolved else None
+                | _ -> None
+
+        member _.EventEvidence (eventId: string) =
+            currentSnapshot().eventEvidence
+            |> Map.tryFind (eventId.ToLowerInvariant())
+            |> Option.defaultValue []
+
+        member _.ScopeEvidence(node: Node) =
+            let snapshot = currentSnapshot ()
+            let evidence = ResizeArray<string>()
+            let mutable carrierRelevant = false
+
+            match tryEntityAndRoot node with
+            | Some(entity, root) ->
+                let rootKey = normalizeKey root.Key
+                let path = tryPathTo node root |> Option.defaultValue [ root ]
+
+                if rootKey = "carrier_event" then
+                    carrierRelevant <- true
+                    let eventId = root.TagText "id" |> cleanValue
+                    snapshot.eventEvidence
+                    |> Map.tryFind (eventId.ToLowerInvariant())
+                    |> Option.defaultValue []
+                    |> evidence.AddRange
+
+                for ancestor in path do
+                    let mask = impliedHostMask ancestor
+                    if mask = PlanetHost || mask = ShipHost then
+                        carrierRelevant <- true
+                        evidence.Add($"carrier_is_type guard at %s{ancestor.Position.FileName}:%i{ancestor.Position.StartLine}")
+
+                if isSpecialProjectPath entity && root.TagText "event_scope" |> cleanValue |> normalizeKey = "carrier_event" then
+                    carrierRelevant <- true
+                    let creationScopes =
+                        snapshot.projectCreationScopes
+                        |> Map.tryFind (root.Key.ToLowerInvariant())
+                        |> Option.defaultValue Set.empty
+                        |> Seq.map scopeName
+                        |> String.concat " | "
+
+                    evidence.Add($"special_project %s{root.Key} event_scope = carrier_event")
+                    if not (String.IsNullOrWhiteSpace creationScopes) then
+                        evidence.Add($"enable_special_project location scopes: %s{creationScopes}")
+
+                if isSituationPath entity && path |> List.exists (fun ancestor -> normalizeKey ancestor.Key = "target") then
+                    let targetScopes =
+                        snapshot.situationTargetScopes
+                        |> Map.tryFind (root.Key.ToLowerInvariant())
+                        |> Option.defaultValue Set.empty
+                        |> Seq.filter (fun scope -> hostMaskOfScope scope <> 0)
+                        |> Seq.map scopeName
+                        |> String.concat " | "
+
+                    if not (String.IsNullOrWhiteSpace targetScopes) then
+                        carrierRelevant <- true
+                        evidence.Add($"start_situation target scopes for %s{root.Key}: %s{targetScopes}")
+            | None -> ()
+
+            carrierRelevant, (evidence |> Seq.distinct |> Seq.toList)
 
     let createEmbeddedSettings embeddedFiles cachedResourceData (configs: (string * string) list) cachedRuleMetadata =
         initializeScopesAndModifierCategories configs defaultScopeInputs defaultModifiersInputs
@@ -728,6 +1509,7 @@ type STLGame(setupSettings: StellarisSettings) =
     let processLocalisationFunction lookup =
         (createLocalisationFunctions STL.locStaticSettings createLocDynamicSettings legacyLocDataTypes lookup)
 
+    let mutable dynamicScopeOverride: IClause -> ScopeContext -> ScopeContext option = fun _ _ -> None
 
     let rulesManagerSettings =
         { rulesSettings = settings.rules
@@ -738,6 +1520,7 @@ type STLGame(setupSettings: StellarisSettings) =
           anyScope = scopeManager.AnyScope
           scopeGroups = scopeManager.ScopeGroups
           changeScope = changeScope
+          scopeContextOverride = fun node context -> dynamicScopeOverride node context
           defaultContext = defaultContext
           defaultLang = STL STLLang.Default
           oneToOneScopesNames = oneToOneScopesNames
@@ -768,6 +1551,11 @@ type STLGame(setupSettings: StellarisSettings) =
              setupSettings.debugSettings)
             afterInit
 
+    let carrierScopeResolver =
+        CarrierScopeResolver(game.Resources, game.Lookup, fun () -> game.InfoService)
+
+    do dynamicScopeOverride <- fun node context -> carrierScopeResolver.Resolve(node, context)
+
     let lookup = game.Lookup
     let resources = game.Resources
     let fileManager = game.FileManager
@@ -792,6 +1580,45 @@ type STLGame(setupSettings: StellarisSettings) =
         tech
 
     member _.Lookup = lookup
+
+    interface IScopeInferenceProvider with
+        member _.ScopeInferenceAtPos pos file _text scopes =
+            let rec deepestNode (node: Node) =
+                node.Nodes
+                |> Seq.tryFind (fun child -> rangeContainsPos child.Position pos)
+                |> Option.map deepestNode
+                |> Option.defaultValue node
+
+            resources.GetEntityByFilePath file
+            |> Option.bind (fun struct (entity, _) ->
+                entity.entity.Nodes
+                |> Seq.tryFind (fun root -> rangeContainsPos root.Position pos)
+                |> Option.map deepestNode)
+            |> Option.bind (fun node ->
+                let relevant, evidence = carrierScopeResolver.ScopeEvidence node
+                if not relevant then
+                    None
+                else
+                    let resolved = scopeManager.GetName scopes.CurrentScope
+                    let certainty =
+                        if String.Equals(resolved, "Planet", StringComparison.OrdinalIgnoreCase)
+                           || String.Equals(resolved, "Ship", StringComparison.OrdinalIgnoreCase) then
+                            "exact"
+                        elif String.Equals(resolved, "Carrier", StringComparison.OrdinalIgnoreCase) then
+                            "union"
+                        else
+                            "unresolved"
+
+                    Some
+                        { kind = "carrier_host"
+                          candidates = [ "Planet"; "Ship" ]
+                          resolvedScope = resolved
+                          certainty = certainty
+                          evidence =
+                            if evidence.IsEmpty then
+                                [ "No unique Planet/Ship caller was found; preserving the Carrier union." ]
+                            else
+                                evidence })
 
     interface IGame<STLComputedData> with
         member _.ParserErrors() = parseErrors ()
