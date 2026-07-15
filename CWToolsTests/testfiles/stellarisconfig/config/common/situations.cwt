@@ -51,22 +51,26 @@ situation_type = {
 	}
 	## cardinality = 0..1
 	###Effects when the Situation is created
+	## replace_scope = { root = situation this = situation }
 	on_start = {
 		alias_name[effect] = alias_match_left[effect]
 	}
 	## cardinality = 0..1
 	###Effects when Situation's total progress is below 0
 	###You should always call destroy_situation = this from here or from an event fired by here
+	## replace_scope = { root = situation this = situation }
 	on_fail = {
 		alias_name[effect] = alias_match_left[effect]
 	}
 	## cardinality = 0..1
 	###Effects when Situation is cancelled via abort_trigger trigger
+	## replace_scope = { root = situation this = situation }
 	on_abort = {
 		alias_name[effect] = alias_match_left[effect]
 	}
 	## cardinality = 0..1
 	###Trigger for when a Situation should abort, firing on_abort
+	## replace_scope = { root = situation this = situation }
 	abort_trigger = {
 		alias_name[trigger] = alias_match_left[trigger]
 	}

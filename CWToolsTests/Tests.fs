@@ -856,7 +856,13 @@ let carrierEventScopeValidationTests =
                               id = carrier_origin.60
                               hide_window = yes
                               is_triggered_only = yes
-                              immediate = { carrier_completion_marker = yes }
+                              immediate = {
+                                  carrier_completion_marker = yes
+                                  enable_special_project = {
+                                      name = carrier_location_project
+                                      location = this
+                                  }
+                              }
                           }
                           """
 
@@ -871,6 +877,11 @@ let carrierEventScopeValidationTests =
                               on_success = { set_carrier_flag = project_callback_marker }
                               on_fail = { set_country_flag = project_fail_marker }
                           }
+
+                          carrier_location_project = {
+                              key = carrier_location_project
+                              cost = 1
+                          }
                           """
 
                   let situationPath, situationText =
@@ -882,30 +893,60 @@ let carrierEventScopeValidationTests =
                                   target = { set_carrier_flag = situation_target_marker }
                               }
                           }
-                          """
 
-                  writeFile
-                      (Path.Combine("events", "carrier_origin_common_callers.txt"))
-                      """
-                      namespace = carrier_common
-
-                      planet_event = {
-                          id = carrier_common.1
-                          hide_window = yes
-                          is_triggered_only = yes
-                          immediate = {
-                              enable_special_project = {
-                                  name = carrier_origin_project
-                                  location = this
-                              }
-                              start_situation = {
-                                  type = carrier_origin_situation
-                                  target = this
+                          carrier_country_target_situation = {
+                              on_start = {
+                                  target = { set_country_flag = country_situation_target_marker }
                               }
                           }
-                      }
-                      """
-                  |> ignore
+                          """
+
+                  let commonCallerPath, commonCallerText =
+                      writeFile
+                          (Path.Combine("events", "carrier_origin_common_callers.txt"))
+                          """
+                          namespace = carrier_common
+
+                          planet_event = {
+                              id = carrier_common.1
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  enable_special_project = {
+                                      name = carrier_origin_project
+                                      location = this
+                                  }
+                                  start_situation = {
+                                      type = carrier_origin_situation
+                                      target = this
+                                  }
+                              }
+                          }
+
+                          country_event = {
+                              id = carrier_common.2
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  start_situation = {
+                                      type = carrier_country_target_situation
+                                      target = this
+                                  }
+                              }
+                          }
+                          """
+
+                  let gameRulePath, gameRuleText =
+                      writeFile
+                          (Path.Combine("common", "game_rules", "carrier_origin_game_rules.txt"))
+                          """
+                          can_orbital_bombard = {
+                              exists = from.owner
+                              NOR = {
+                                  any_controlled_ship = { is_ship_size = colossus }
+                              }
+                          }
+                          """
 
                   let onActionPath, onActionText =
                       writeFile
@@ -987,6 +1028,46 @@ let carrierEventScopeValidationTests =
                           expected
                           message
 
+                  let bombardContext =
+                      stl.ScopesAtPos (posOf "NOR =" gameRuleText) gameRulePath gameRuleText
+                      |> Option.get
+
+                  Expect.equal (bombardContext.CurrentScope.ToString()) "Fleet" "game_rule THIS should default to ROOT"
+                  Expect.equal (bombardContext.Root.ToString()) "Fleet" "can_orbital_bombard ROOT should be Fleet"
+                  Expect.equal
+                      (bombardContext.From |> List.map string)
+                      [ "Planet" ]
+                      "can_orbital_bombard FROM should be Planet"
+
+                  let controlledShipContext =
+                      stl.ScopesAtPos (posOf "is_ship_size" gameRuleText) gameRulePath gameRuleText
+                      |> Option.get
+
+                  Expect.equal
+                      (controlledShipContext.CurrentScope.ToString())
+                      "Ship"
+                      "any_controlled_ship should push each matched Ship"
+                  Expect.equal
+                      (controlledShipContext.Root.ToString())
+                      "Fleet"
+                      "scope iteration should preserve the game_rule Fleet ROOT"
+
+                  let scopeParameterDiagnostics =
+                      stl.ValidationErrors()
+                      |> List.filter (fun error ->
+                          (error.code = "CW243" || error.code = "CW245")
+                          && [ eventPath; commonCallerPath; gameRulePath; situationPath ]
+                             |> List.exists (fun path ->
+                                 String.Equals(
+                                     Path.GetFullPath(error.range.FileName),
+                                     Path.GetFullPath(path),
+                                     StringComparison.OrdinalIgnoreCase
+                                 )))
+
+                  Expect.isEmpty
+                      scopeParameterDiagnostics
+                      $"current-scope parameters should not report CW243/CW245: %A{scopeParameterDiagnostics |> List.map (fun e -> e.message)}"
+
                   expectScope "Planet" "planet_chain_marker" eventPath eventText "planet callers should narrow carrier_event"
                   let planetPos = posOf "planet_chain_marker" eventText
                   let planetContext = stl.ScopesAtPos planetPos eventPath eventText |> Option.get
@@ -1040,6 +1121,12 @@ let carrierEventScopeValidationTests =
                       projectText
                       "special project failure callbacks should preserve project scope and creation scope as FROM/FROMFROM"
                   expectScope "Planet" "situation_target_marker" situationPath situationText "situation targets should use start_situation target provenance"
+                  expectScope
+                      "Country"
+                      "country_situation_target_marker"
+                      situationPath
+                      situationText
+                      "start_situation target = this should retain the caller's Country scope"
               finally
                   if Directory.Exists folder then
                       Directory.Delete(folder, true) ]
