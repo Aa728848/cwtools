@@ -828,7 +828,9 @@ let carrierEventScopeValidationTests =
                               id = carrier_origin.30
                               hide_window = yes
                               is_triggered_only = yes
+                              trigger = { has_carrier_flag = missing_carrier_flag_warning_marker }
                               immediate = {
+                                  remove_carrier_flag = missing_removed_carrier_flag_warning_marker
                                   owner? = {
                                       abort_special_project = {
                                           type = carrier_location_project
@@ -1086,8 +1088,28 @@ let carrierEventScopeValidationTests =
                       "Fleet"
                       "scope iteration should preserve the game_rule Fleet ROOT"
 
+                  let validationErrors = stl.ValidationErrors()
+
+                  [ "missing_carrier_flag_warning_marker"
+                    "missing_removed_carrier_flag_warning_marker" ]
+                  |> List.iter (fun marker ->
+                      let missingCarrierFlagDiagnostics =
+                          validationErrors
+                          |> List.filter (fun error -> error.code = "CW240" && error.message.Contains(marker))
+
+                      Expect.isNonEmpty
+                          missingCarrierFlagDiagnostics
+                          $"an undefined carrier_flag reference should still report CW240 for {marker}"
+
+                      missingCarrierFlagDiagnostics
+                      |> List.iter (fun error ->
+                          Expect.equal
+                              error.severity
+                              Severity.Warning
+                              $"an undefined carrier_flag reference should be a warning for {marker}"))
+
                   let scopeParameterDiagnostics =
-                      stl.ValidationErrors()
+                      validationErrors
                       |> List.filter (fun error ->
                           (error.code = "CW243" || error.code = "CW245")
                           && [ eventPath; commonCallerPath; gameRulePath; situationPath ]

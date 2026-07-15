@@ -5619,6 +5619,7 @@ alias[effect:set_mission_flag] = value_set[mission_flag]
 
 ### Removes a flag from the scoped colony carrier
 ## supported_scopes = planet ship colony
+## severity = warning
 alias[effect:remove_carrier_flag] = value[carrier_flag]
 
 ### Removes a flag from the scoped mission
