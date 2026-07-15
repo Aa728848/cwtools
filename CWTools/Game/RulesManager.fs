@@ -756,7 +756,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                  |> (Option.defaultWith (fun () -> tempInfoService.GetDefinedVariables e))))
             |> Seq.fold mergeDefinedVariables predefValues
 
-        let collectExpandedScriptedDefinedVariables () =
+        let collectExpandedScriptedData () =
             let entityMap =
                 allEntitiesList
                 |> Seq.map (fun struct (e, d) -> e.filepath, struct (e, d))
@@ -775,9 +775,19 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 |> Map.tryFind pos.FileName
                 |> Option.bind (fun struct (e, _) -> findNodeAtPosition e.entity pos |> Option.map (fun n -> e, n))
 
+            let scriptedEffectScopeAtPosition (entity: Entity) (pos: range) =
+                let cursor = mkPos pos.StartLine (int pos.StartColumn)
+                match tempInfoService.GetInfo(cursor, entity) with
+                | Some(context, (_, Some(TypeRef(typeName, _)), _)) when typeName == "scripted_effect" ->
+                    Some context.CurrentScope
+                | _ -> None
+
+            let preferConcreteScope fallback scope =
+                if scope.Equals(settings.anyScope) || scope.Equals(scopeManager.InvalidScope) then fallback else scope
+
             let lower (s: string) = s.ToLowerInvariant()
 
-            let scriptedDefinitions =
+            let typedScriptedDefinitions =
                 lookup.typeDefInfo
                 |> Map.tryFind "scripted_effect"
                 |> Option.defaultValue [||]
@@ -785,6 +795,19 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     findEntityNode se.range
                     |> Option.map (fun (entity, node) -> lower se.id, (entity, node)))
                 |> Map.ofArray
+
+            // Dynamic scripted-effect type references may not exist yet during the first refresh.
+            // The definition folder remains available and is the canonical fallback in that phase.
+            let scriptedDefinitions =
+                allEntitiesList
+                |> Seq.collect (fun struct (entity, _) ->
+                    let logicalPath = entity.logicalpath.Replace('\\', '/')
+
+                    if logicalPath.StartsWith("common/scripted_effects/", StringComparison.OrdinalIgnoreCase) then
+                        entity.entity.Nodes |> Seq.map (fun node -> lower node.Key, (entity, node))
+                    else
+                        Seq.empty)
+                |> Seq.fold (fun definitions (name, definition) -> Map.add name definition definitions) typedScriptedDefinitions
 
             if Map.isEmpty scriptedDefinitions then
                 Seq.empty
@@ -800,19 +823,60 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                         node.Values
                         |> List.choose (fun l ->
                             let key = lower l.Key
-                            if Map.containsKey key scriptedDefinitions then Some(l.Key, []) else None)
+                            if Map.containsKey key scriptedDefinitions then Some(l.Key, [], l.Position) else None)
 
                     let nodeCalls =
                         node.Nodes
                         |> Seq.choose (fun n ->
                             let key = lower n.Key
-                            if Map.containsKey key scriptedDefinitions then Some(n.Key, extractCallParams n) else None)
+                            if Map.containsKey key scriptedDefinitions then
+                                Some(n.Key, extractCallParams n, n.Position)
+                            else
+                                None)
                         |> List.ofSeq
 
                     let childCalls =
                         node.Nodes |> Seq.collect findNestedCalls |> List.ofSeq
 
                     leafCalls @ nodeCalls @ childCalls
+
+                // Scope inspection is relatively expensive. Restrict it to effects that can save
+                // a target directly or through a bounded scripted-effect call chain.
+                let directTargetSavingEffects =
+                    scriptedDefinitions
+                    |> Map.toSeq
+                    |> Seq.choose (fun (name, (_, node)) ->
+                        if
+                            not (Set.isEmpty (STLProcess.findAllSavedEventTargets node))
+                            || not (Set.isEmpty (STLProcess.findAllSavedGlobalEventTargets node))
+                        then
+                            Some name
+                        else
+                            None)
+                    |> Set.ofSeq
+
+                let callsByEffect =
+                    scriptedDefinitions
+                    |> Map.map (fun _ (_, node) ->
+                        findNestedCalls node
+                        |> Seq.map (fun (name, _, _) -> lower name)
+                        |> Set.ofSeq)
+
+                let rec closeTargetSavingEffects remaining targetSavingEffects =
+                    if remaining <= 0 then
+                        targetSavingEffects
+                    else
+                        let expanded =
+                            callsByEffect
+                            |> Map.fold (fun relevant name calls ->
+                                if Set.intersect calls relevant |> Set.isEmpty then relevant else Set.add name relevant) targetSavingEffects
+
+                        if expanded = targetSavingEffects then
+                            targetSavingEffects
+                        else
+                            closeTargetSavingEffects (remaining - 1) expanded
+
+                let targetSavingEffects = closeTargetSavingEffects 12 directTargetSavingEffects
 
                 let canonicalParams parameters =
                     parameters
@@ -832,14 +896,23 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                         if concrete.Count = 0 then None else Some(name, concrete))
                     |> Map.ofSeq
 
+                let onlyConcreteEventTargets callScope (savedTargets: ResizeArray<string * range * Scope>) =
+                    savedTargets
+                    |> Seq.choose (fun (name, position, scope) ->
+                        if String.IsNullOrWhiteSpace name || name.IndexOf('$') >= 0 then
+                            None
+                        else
+                            Some(name, position, preferConcreteScope callScope scope))
+                    |> Seq.toList
+
                 let visited = HashSet<string>()
 
-                let rec collectFromScriptedEffect depth name parameters =
+                let rec collectFromScriptedEffect depth name parameters callScope =
                     if depth > 12 then
                         []
                     else
                         let nameKey = lower name
-                        let visitedKey = nameKey + "|" + canonicalParams parameters
+                        let visitedKey = nameKey + "|" + canonicalParams parameters + "|" + callScope.ToString()
 
                         if not (visited.Add visitedKey) then
                             []
@@ -862,30 +935,65 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                                     tempInfoService.GetDefinedVariables expandedEntity
                                     |> onlyConcreteValues
 
+                                let directEventTargets =
+                                    tempInfoService.GetSavedEventTargets expandedEntity
+                                    |> onlyConcreteEventTargets callScope
+
                                 let nested =
                                     findNestedCalls expandedNode
-                                    |> List.collect (fun (nestedName, nestedParams) ->
-                                        collectFromScriptedEffect (depth + 1) nestedName nestedParams)
+                                    |> List.collect (fun (nestedName, nestedParams, nestedPosition) ->
+                                        let nestedScope =
+                                            scriptedEffectScopeAtPosition expandedEntity nestedPosition
+                                            |> Option.map (preferConcreteScope callScope)
+                                            |> Option.defaultValue callScope
 
-                                direct :: nested
+                                        collectFromScriptedEffect (depth + 1) nestedName nestedParams nestedScope)
 
-                allEntitiesList
-                |> Seq.collect (fun struct (_, d) ->
-                    d.Force().Referencedtypes
-                    |> Option.bind (Map.tryFind "scripted_effect")
-                    |> Option.defaultValue [])
-                |> Seq.filter (fun ref -> ref.referenceType = ReferenceType.TypeDef)
-                |> Seq.collect (fun ref ->
-                    let effectName = ref.name.GetString()
-                    collectFromScriptedEffect 0 effectName (findCallParams ref.position))
+                                (direct, directEventTargets) :: nested
+
+                let referencedExpansions =
+                    allEntitiesList
+                    |> Seq.collect (fun struct (_, data) ->
+                        data.Force().Referencedtypes
+                        |> Option.bind (Map.tryFind "scripted_effect")
+                        |> Option.defaultValue [])
+                    |> Seq.filter (fun reference -> reference.referenceType = ReferenceType.TypeDef)
+                    |> Seq.collect (fun reference ->
+                        collectFromScriptedEffect
+                            0
+                            (reference.name.GetString())
+                            (findCallParams reference.position)
+                            settings.anyScope)
+
+                let scopedEventTargetExpansions =
+                    allEntitiesList
+                    |> Seq.collect (fun struct (entity, _) ->
+                        let logicalPath = entity.logicalpath.Replace('\\', '/')
+                        let calls =
+                            if logicalPath.StartsWith("common/scripted_effects/", StringComparison.OrdinalIgnoreCase) then
+                                entity.entity.Nodes |> Seq.collect findNestedCalls
+                            else
+                                findNestedCalls entity.entity
+
+                        calls
+                        |> Seq.filter (fun (effectName, _, _) -> Set.contains (lower effectName) targetSavingEffects)
+                        |> Seq.collect (fun (effectName, parameters, position) ->
+                            scriptedEffectScopeAtPosition entity position
+                            |> Option.map (collectFromScriptedEffect 0 effectName parameters)
+                            |> Option.defaultValue []))
+
+                Seq.append referencedExpansions scopedEventTargetExpansions
+
+        let expandedScriptedData = collectExpandedScriptedData () |> Seq.cache
 
         let results =
-            collectExpandedScriptedDefinedVariables ()
+            expandedScriptedData
+            |> Seq.map fst
             |> Seq.fold mergeDefinedVariables results
 
         lookup.varDefInfo <- addEmbeddedVarDefData results
         // eprintfn "vdi %A" results
-        let results =
+        let savedEventTargetResults =
             allEntitiesList
             |> PSeq.map (fun struct (e, l) ->
                 (l.Force().SavedEventTargets
@@ -896,7 +1004,11 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     acc)
                 (new ResizeArray<_>())
 
-        lookup.savedEventTargets <- results
+        expandedScriptedData
+        |> Seq.collect snd
+        |> savedEventTargetResults.AddRange
+
+        lookup.savedEventTargets <- savedEventTargetResults
         //|> Seq.fold (fun m map -> Map.toList map |>  List.fold (fun m2 (n,k) -> if Map.containsKey n m2 then Map.add n ((k |> List.ofSeq)@m2.[n]) m2 else Map.add n (k |> List.ofSeq) m2) m) tempValues
         settings.refreshConfigAfterVarDefHook lookup resources embeddedSettings
 

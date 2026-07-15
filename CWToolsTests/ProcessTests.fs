@@ -3472,6 +3472,183 @@ let nestedEventTargetTests =
                   callerSaved
                   "my_target"
                   $"caller should resolve the full parameter chain, got %A{callerSaved}"
+          testWithCapturedLogs "parameterized and wrapped event target saves preserve scope"
+          <| fun () ->
+              let root =
+                  Path.Combine(Path.GetTempPath(), "cwtools-event-target-scope-" + System.Guid.NewGuid().ToString("N"))
+
+              let eventsDir = Path.Combine(root, "events")
+              let scriptedEffectsDir = Path.Combine(root, "common", "scripted_effects")
+              Directory.CreateDirectory(eventsDir) |> ignore
+              Directory.CreateDirectory(scriptedEffectsDir) |> ignore
+              let eventFile = Path.Combine(eventsDir, "event_target_scope_events.txt")
+              let effectFile = Path.Combine(scriptedEffectsDir, "event_target_scope_effects.txt")
+              let eventText =
+                  "namespace = target_scope\n\
+                   country_event = {\n\
+                       id = target_scope.1\n\
+                       hide_window = yes\n\
+                       is_triggered_only = yes\n\
+                       immediate = {\n\
+                           save_parameterized_target = { TARGET = parameter_country_target }\n\
+                           save_parameterized_global_target = { TARGET = parameter_global_country_target }\n\
+                           save_wrapped_planet_target = { TARGET = wrapped_planet_target }\n\
+                           event_target:parameter_country_target = {\n\
+                               set_country_flag = parameter_country_scope_marker\n\
+                           }\n\
+                           event_target:parameter_global_country_target = {\n\
+                               set_country_flag = parameter_global_country_scope_marker\n\
+                           }\n\
+                           event_target:wrapped_planet_target = {\n\
+                               set_planet_flag = wrapped_planet_scope_marker\n\
+                           }\n\
+                       }\n\
+                   }"
+              let effectText =
+                  "save_parameterized_target = {\n\
+                       save_event_target_as = $TARGET$\n\
+                   }\n\
+                   save_parameterized_global_target = {\n\
+                       save_global_event_target_as = $TARGET$\n\
+                   }\n\
+                   save_wrapped_planet_target = {\n\
+                       random_owned_planet = {\n\
+                           save_parameterized_target = { TARGET = $TARGET$ }\n\
+                       }\n\
+                   }"
+
+              File.WriteAllText(eventFile, eventText)
+              File.WriteAllText(effectFile, effectText)
+
+              let posOf (needle: string) =
+                  let marker = eventText.IndexOf(needle, System.StringComparison.Ordinal)
+                  Expect.isGreaterThan marker -1 $"scope marker {needle} was not found"
+                  let before = eventText.Substring(0, marker)
+                  let line = (before |> Seq.filter ((=) '\n') |> Seq.length) + 1
+                  let lastLineBreak = before.LastIndexOf('\n')
+                  let column = if lastLineBreak < 0 then marker else marker - lastLineBreak - 1
+                  mkPos line column
+
+              try
+                  let configText = Tests.configFilesFromDir "./testfiles/stellarisconfig/config"
+
+                  let settings =
+                      { emptyStellarisSettings root with
+                          rules =
+                              Some
+                                  { ruleFiles = configText
+                                    validateRules = true
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+
+                  let stl = STLGame(settings) :> IGame<STLComputedData>
+
+                  let expectScope expected marker =
+                      let context = stl.ScopesAtPos (posOf marker) eventFile eventText
+                      Expect.isSome context $"{marker} should have a scope context"
+                      Expect.equal
+                          (context.Value.CurrentScope.ToString())
+                          expected
+                          $"{marker} should resolve through the saved event target"
+
+                  expectScope "Country" "parameter_country_scope_marker"
+                  expectScope "Country" "parameter_global_country_scope_marker"
+                  expectScope "Planet" "wrapped_planet_scope_marker"
+              finally
+                  if Directory.Exists(root) then Directory.Delete(root, true)
+          testWithCapturedLogs "parameterized and nested inline scripts preserve event target scope"
+          <| fun () ->
+              let root =
+                  Path.Combine(Path.GetTempPath(), "cwtools-inline-event-target-scope-" + System.Guid.NewGuid().ToString("N"))
+
+              let eventsDir = Path.Combine(root, "events")
+              let inlineScriptsDir = Path.Combine(root, "common", "inline_scripts", "event_target_scope")
+              Directory.CreateDirectory(eventsDir) |> ignore
+              Directory.CreateDirectory(inlineScriptsDir) |> ignore
+              let eventFile = Path.Combine(eventsDir, "inline_event_target_scope_events.txt")
+              let directFile = Path.Combine(inlineScriptsDir, "save_target.txt")
+              let globalFile = Path.Combine(inlineScriptsDir, "save_global_target.txt")
+              let planetFile = Path.Combine(inlineScriptsDir, "save_planet_target.txt")
+              let eventText =
+                  "namespace = inline_target_scope\n\
+                   country_event = {\n\
+                       id = inline_target_scope.1\n\
+                       hide_window = yes\n\
+                       is_triggered_only = yes\n\
+                       immediate = {\n\
+                           inline_script = {\n\
+                               script = event_target_scope/save_target\n\
+                               TARGET = inline_country_target\n\
+                           }\n\
+                           inline_script = {\n\
+                               script = event_target_scope/save_global_target\n\
+                               TARGET = inline_global_country_target\n\
+                           }\n\
+                           inline_script = {\n\
+                               script = event_target_scope/save_planet_target\n\
+                               TARGET = inline_planet_target\n\
+                           }\n\
+                           event_target:inline_country_target = {\n\
+                               set_country_flag = inline_country_scope_marker\n\
+                           }\n\
+                           event_target:inline_global_country_target = {\n\
+                               set_country_flag = inline_global_country_scope_marker\n\
+                           }\n\
+                           event_target:inline_planet_target = {\n\
+                               set_planet_flag = inline_planet_scope_marker\n\
+                           }\n\
+                       }\n\
+                   }"
+
+              File.WriteAllText(eventFile, eventText)
+              File.WriteAllText(directFile, "save_event_target_as = $TARGET$")
+              File.WriteAllText(globalFile, "save_global_event_target_as = $TARGET$")
+              File.WriteAllText(
+                  planetFile,
+                  "random_owned_planet = {\n\
+                       inline_script = {\n\
+                           script = event_target_scope/save_target\n\
+                           TARGET = $TARGET$\n\
+                       }\n\
+                   }"
+              )
+
+              let posOf (needle: string) =
+                  let marker = eventText.IndexOf(needle, System.StringComparison.Ordinal)
+                  Expect.isGreaterThan marker -1 $"scope marker {needle} was not found"
+                  let before = eventText.Substring(0, marker)
+                  let line = (before |> Seq.filter ((=) '\n') |> Seq.length) + 1
+                  let lastLineBreak = before.LastIndexOf('\n')
+                  let column = if lastLineBreak < 0 then marker else marker - lastLineBreak - 1
+                  mkPos line column
+
+              try
+                  let configText = Tests.configFilesFromDir "./testfiles/stellarisconfig/config"
+
+                  let settings =
+                      { emptyStellarisSettings root with
+                          rules =
+                              Some
+                                  { ruleFiles = configText
+                                    validateRules = true
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+
+                  let stl = STLGame(settings) :> IGame<STLComputedData>
+
+                  let expectScope expected marker =
+                      let context = stl.ScopesAtPos (posOf marker) eventFile eventText
+                      Expect.isSome context $"{marker} should have a scope context"
+                      Expect.equal
+                          (context.Value.CurrentScope.ToString())
+                          expected
+                          $"{marker} should resolve through the inline-script event target"
+
+                  expectScope "Country" "inline_country_scope_marker"
+                  expectScope "Country" "inline_global_country_scope_marker"
+                  expectScope "Planet" "inline_planet_scope_marker"
+              finally
+                  if Directory.Exists(root) then Directory.Delete(root, true)
           testCase "leaf call without params propagates concrete saves"
           <| fun () ->
               let input =

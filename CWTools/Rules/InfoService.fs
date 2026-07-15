@@ -1659,11 +1659,14 @@ type InfoService
         fLeaf, fLeafValue, fComment, fNode, fValueClause, Map.empty
 
     let getSavedScopesInEntity = //(ctx : Collections.Map<string, (string * range) list>) (entity : Entity) =
+        let isEventTargetVariable variable =
+            variable == "event_target" || variable == "global_event_target"
+
         let fLeaf (ctx: RuleContext) (res: ResizeArray<string * range * Scope>) (leaf: Leaf) ((field, _): NewRule) =
             match field with
-            | LeafRule(_, VariableSetField "event_target") ->
+            | LeafRule(_, VariableSetField variable) when isEventTargetVariable variable ->
                 res.Add((leaf.ValueText, leaf.Position, ctx.scopes.CurrentScope))
-            | LeafRule(VariableSetField "event_target", _) ->
+            | LeafRule(VariableSetField variable, _) when isEventTargetVariable variable ->
                 res.Add((leaf.Key, leaf.Position, ctx.scopes.CurrentScope))
             | _ -> ()
 
@@ -1671,7 +1674,7 @@ type InfoService
 
         let fLeafValue (ctx: RuleContext) (res: ResizeArray<string * range * Scope>) (leafvalue: LeafValue) (field, _) =
             match field with
-            | LeafValueRule(VariableSetField v) ->
+            | LeafValueRule(VariableSetField variable) when isEventTargetVariable variable ->
                 res.Add(leafvalue.ValueText, leafvalue.Position, ctx.scopes.CurrentScope)
             | _ -> ()
 
@@ -1684,7 +1687,8 @@ type InfoService
             ((field, option): NewRule)
             =
             match field with
-            | NodeRule(VariableSetField v, _) -> res.Add(node.Key, node.Position, ctx.scopes.CurrentScope)
+            | NodeRule(VariableSetField variable, _) when isEventTargetVariable variable ->
+                res.Add(node.Key, node.Position, ctx.scopes.CurrentScope)
             | _ -> ()
 
             res
