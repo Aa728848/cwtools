@@ -775,6 +775,17 @@ let carrierEventScopeValidationTests =
                               immediate = { carrier_event = { id = carrier_origin.50 } }
                           }
 
+                          country_event = {
+                              id = carrier_origin.4
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  random_system = {
+                                      random_system_planet = { carrier_event = { id = carrier_origin.12 } }
+                                  }
+                              }
+                          }
+
                           carrier_event = {
                               id = carrier_origin.10
                               hide_window = yes
@@ -790,6 +801,13 @@ let carrierEventScopeValidationTests =
                               hide_window = yes
                               is_triggered_only = yes
                               immediate = { set_carrier_flag = transitive_planet_marker }
+                          }
+
+                          carrier_event = {
+                              id = carrier_origin.12
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = { set_planet_flag = iterator_planet_marker }
                           }
 
                           ship_event = {
@@ -811,6 +829,12 @@ let carrierEventScopeValidationTests =
                               hide_window = yes
                               is_triggered_only = yes
                               immediate = {
+                                  owner? = {
+                                      abort_special_project = {
+                                          type = carrier_location_project
+                                          location = root
+                                      }
+                                  }
                                   if = {
                                       limit = { carrier_is_type = planet }
                                       set_carrier_flag = narrowed_branch_marker
@@ -870,15 +894,18 @@ let carrierEventScopeValidationTests =
                       writeFile
                           (Path.Combine("common", "special_projects", "carrier_origin_projects.txt"))
                           """
-                          carrier_origin_project = {
+                          special_project = {
                               key = carrier_origin_project
                               cost = 1
                               event_scope = carrier_event
-                              on_success = { set_carrier_flag = project_callback_marker }
+                              on_success = {
+                                  set_carrier_flag = project_callback_marker
+                                  prev = { set_country_flag = project_prev_marker }
+                              }
                               on_fail = { set_country_flag = project_fail_marker }
                           }
 
-                          carrier_location_project = {
+                          special_project = {
                               key = carrier_location_project
                               cost = 1
                           }
@@ -1095,6 +1122,12 @@ let carrierEventScopeValidationTests =
                       eventPath
                       eventText
                       "carrier_event chains should advance FROM and FROMFROM"
+                  expectScope
+                      "Planet"
+                      "iterator_planet_marker"
+                      eventPath
+                      eventText
+                      "scope-changing iterators should narrow carrier_event callers"
                   expectScope "Ship" "ship_chain_marker" eventPath eventText "ship callers should narrow carrier_event"
                   expectFromScopes [ "Ship" ] "ship_chain_marker" eventPath eventText "ship event calls should seed a Ship FROM"
                   expectScope "Planet" "narrowed_branch_marker" eventPath eventText "carrier_is_type should narrow its guarded branch"
@@ -1120,6 +1153,12 @@ let carrierEventScopeValidationTests =
                       projectPath
                       projectText
                       "special project callbacks should use the creation location as FROM"
+                  expectScope
+                      "Country"
+                      "project_prev_marker"
+                      projectPath
+                      projectText
+                      "successful special project callbacks should expose the owner country as PREV"
                   expectScope "Country" "project_fail_marker" projectPath projectText "special project failure callbacks should use the owner country"
                   expectFromScopes
                       [ "Planet"; "Planet" ]

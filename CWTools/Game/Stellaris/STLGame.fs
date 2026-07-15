@@ -796,22 +796,40 @@ module STLGameFunctions =
               Scopes = scopes }
 
         let trySubtypeContext typeName (root: Node) =
-            lookup.typeDefs
-            |> List.tryFind (fun definition -> String.Equals(definition.name, typeName, StringComparison.OrdinalIgnoreCase))
-            |> Option.bind (fun definition ->
-                definition.subtypes
-                |> List.tryFind (fun subtype ->
+            let subtypeMatches (subtype: SubTypeDefinition) =
+                let key = root.Key
+                let fieldMatches =
                     subtype.typeKeyField
-                    |> Option.exists (fun key -> String.Equals(key, root.Key, StringComparison.OrdinalIgnoreCase)))
-                |> Option.bind (fun subtype ->
-                    match subtype.replaceScopes, subtype.pushScope with
-                    | Some scopes, _ -> Some(contextFromReplaceScopes scopes)
-                    | None, Some scope ->
-                        Some
-                            { Root = scope
-                              From = []
-                              Scopes = [ scope ] }
-                    | None, None -> None))
+                    |> Option.forall (fun field -> String.Equals(field, key, StringComparison.OrdinalIgnoreCase))
+
+                let prefixMatches =
+                    subtype.startsWith
+                    |> Option.forall (fun prefix -> key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+
+                let regexMatches =
+                    subtype.typeKeyRegex
+                    |> Option.forall (fun pattern ->
+                        System.Text.RegularExpressions.Regex.IsMatch(
+                            key,
+                            pattern,
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                        ))
+
+                fieldMatches && prefixMatches && regexMatches
+
+            lookup.typeDefs
+            |> List.filter (fun definition -> String.Equals(definition.name, typeName, StringComparison.OrdinalIgnoreCase))
+            |> List.collect (fun definition -> definition.subtypes)
+            |> List.filter subtypeMatches
+            |> List.tryPick (fun subtype ->
+                match subtype.replaceScopes, subtype.pushScope with
+                | Some scopes, _ -> Some(contextFromReplaceScopes scopes)
+                | None, Some scope ->
+                    Some
+                        { Root = scope
+                          From = []
+                          Scopes = [ scope ] }
+                | None, None -> None)
 
         let changeContextByKey (key: string) (context: ScopeContext) =
             match
@@ -946,6 +964,10 @@ module STLGameFunctions =
         let isEventPath (entity: Entity) =
             hasLogicalPathSegment "events" entity
 
+        let projectIdOfRoot (root: Node) =
+            let key = root.TagText "key" |> cleanValue
+            if String.IsNullOrWhiteSpace key then root.Key else key
+
         let eventScopeForProject (projectId: string) (root: Node) projectScopes =
             let eventScope = root.TagText "event_scope" |> cleanValue |> fun value -> value.ToLowerInvariant()
             match eventScope with
@@ -970,6 +992,8 @@ module STLGameFunctions =
                 |> Option.bind chooseScope
                 |> Option.defaultValue scopeManager.AnyScope
 
+            let ownerScope = countryScope () |> Option.defaultValue scopeManager.AnyScope
+
             let current, froms =
                 match callbackKey with
                 | "on_success"
@@ -979,15 +1003,21 @@ module STLGameFunctions =
                 | "on_start" -> eventScope, [ creationScope ]
                 | "fail_trigger"
                 | "abort_trigger" ->
-                    countryScope () |> Option.defaultValue scopeManager.AnyScope,
-                    [ eventScope; creationScope ]
+                    ownerScope, [ eventScope; creationScope ]
                 | "on_fail"
                 | "on_cancel" ->
-                    countryScope () |> Option.defaultValue scopeManager.AnyScope,
-                    [ eventScope; creationScope ]
+                    ownerScope, [ eventScope; creationScope ]
                 | _ -> fallback.CurrentScope, fallback.From
 
-            { setCurrent current fallback with From = froms }
+            let resolved = { setCurrent current fallback with From = froms }
+
+            match callbackKey with
+            | "on_success"
+            | "on_progress_25"
+            | "on_progress_50"
+            | "on_progress_75"
+            | "on_start" -> { resolved with Scopes = [ eventScope; ownerScope ] }
+            | _ -> resolved
 
         let callbackContextAt projectId (root: Node) (target: Node) projectScopes fallback =
             root.Nodes
@@ -1034,8 +1064,9 @@ module STLGameFunctions =
                         | "enable_special_project" ->
                             let id = node.TagText "name" |> cleanValue
                             let nodeContext =
-                                (if isEventPath entity then contextAtNodeFromRoot "event" root node else None)
-                                |> Option.orElseWith (fun () -> tryStaticContext entity node)
+                                tryStaticContext entity node
+                                |> Option.orElseWith (fun () ->
+                                    if isEventPath entity then contextAtNodeFromRoot "event" root node else None)
 
                             match nodeContext with
                             | Some context when not (String.IsNullOrWhiteSpace id) ->
@@ -1046,8 +1077,9 @@ module STLGameFunctions =
                             let id = node.TagText "type" |> cleanValue
                             let target = node.TagText "target"
                             let nodeContext =
-                                (if isEventPath entity then contextAtNodeFromRoot "event" root node else None)
-                                |> Option.orElseWith (fun () -> tryStaticContext entity node)
+                                tryStaticContext entity node
+                                |> Option.orElseWith (fun () ->
+                                    if isEventPath entity then contextAtNodeFromRoot "event" root node else None)
 
                             match nodeContext with
                             | Some context when not (String.IsNullOrWhiteSpace id) && not (String.IsNullOrWhiteSpace target) ->
@@ -1081,8 +1113,9 @@ module STLGameFunctions =
                             let targetId = node.TagText "id" |> cleanValue
                             if carrierEventIds.Contains targetId then
                                 let staticContext =
-                                    (if isEventPath entity then contextAtNodeFromRoot "event" root node else None)
-                                    |> Option.orElseWith (fun () -> tryStaticContext entity node)
+                                    tryStaticContext entity node
+                                    |> Option.orElseWith (fun () ->
+                                        if isEventPath entity then contextAtNodeFromRoot "event" root node else None)
                                     |> Option.defaultValue
                                         { Root = scopeManager.AnyScope
                                           From = []
@@ -1090,7 +1123,7 @@ module STLGameFunctions =
 
                                 let context =
                                     if isSpecialProjectPath entity then
-                                        callbackContextAt root.Key root node projectScopes staticContext
+                                        callbackContextAt (projectIdOfRoot root) root node projectScopes staticContext
                                         |> Option.defaultValue staticContext
                                     else
                                         staticContext
@@ -1251,7 +1284,12 @@ module STLGameFunctions =
 
                         if isSpecialProjectPath entity && callbackKeys.Contains(normalizeKey node.Key) then
                             resolved <-
-                                projectCallbackContext root.Key root (normalizeKey node.Key) snapshot.projectCreationScopes resolved
+                                projectCallbackContext
+                                    (projectIdOfRoot root)
+                                    root
+                                    (normalizeKey node.Key)
+                                    snapshot.projectCreationScopes
+                                    resolved
                             changed <- true
 
                         if isSituationPath entity && normalizeKey node.Key = "target" && resolved.CurrentScope.Equals scopeManager.AnyScope then
@@ -1304,14 +1342,15 @@ module STLGameFunctions =
 
                 if isSpecialProjectPath entity && root.TagText "event_scope" |> cleanValue |> normalizeKey = "carrier_event" then
                     carrierRelevant <- true
+                    let projectId = projectIdOfRoot root
                     let creationScopes =
                         snapshot.projectCreationScopes
-                        |> Map.tryFind (root.Key.ToLowerInvariant())
+                        |> Map.tryFind (projectId.ToLowerInvariant())
                         |> Option.defaultValue Set.empty
                         |> Seq.map scopeName
                         |> String.concat " | "
 
-                    evidence.Add($"special_project %s{root.Key} event_scope = carrier_event")
+                    evidence.Add($"special_project %s{projectId} event_scope = carrier_event")
                     if not (String.IsNullOrWhiteSpace creationScopes) then
                         evidence.Add($"enable_special_project location scopes: %s{creationScopes}")
 
