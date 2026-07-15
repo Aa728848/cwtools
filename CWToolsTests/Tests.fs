@@ -898,6 +898,13 @@ let carrierEventScopeValidationTests =
                               on_start = {
                                   target = { set_country_flag = country_situation_target_marker }
                               }
+                              monthly_progress = {
+                                  base = 0
+                                  modifier = {
+                                      add = 1
+                                      target = { has_country_flag = country_modifier_target_marker }
+                                  }
+                              }
                           }
                           """
 
@@ -1127,6 +1134,12 @@ let carrierEventScopeValidationTests =
                       situationPath
                       situationText
                       "start_situation target = this should retain the caller's Country scope"
+                  expectScope
+                      "Country"
+                      "country_modifier_target_marker"
+                      situationPath
+                      situationText
+                      "monthly_progress target should resolve the Situation's proven Country target"
               finally
                   if Directory.Exists folder then
                       Directory.Delete(folder, true) ]
