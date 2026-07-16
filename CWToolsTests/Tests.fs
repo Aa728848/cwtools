@@ -49,7 +49,7 @@ Thread.CurrentThread.CurrentUICulture <- CultureInfo("ru-RU")
 let carrierScopeContractTests =
     testList
         "carrier scope contracts"
-        [ test "carrier only inherits contracts shared by planet and ship" {
+        [ test "carrier inherits contracts supported by either planet or ship" {
               let planet = Scope(10uy)
               let ship = Scope(11uy)
               let carrier = Scope(12uy)
@@ -63,13 +63,13 @@ let carrierScopeContractTests =
 
               Expect.sequenceEqual
                   (normalize [ planet; carrier; country ])
-                  [ planet; country ]
-                  "planet-only contracts must not keep an explicit carrier escape hatch"
+                  [ planet; country; carrier ]
+                  "planet contracts should accept the Carrier union"
 
               Expect.sequenceEqual
                   (normalize [ ship; carrier; country ])
-                  [ ship; country ]
-                  "ship-only contracts must not keep an explicit carrier escape hatch" } ]
+                  [ ship; country; carrier ]
+                  "ship contracts should accept the Carrier union" } ]
 
 let emptyEmbeddedSettings =
     { triggers = []
@@ -775,6 +775,15 @@ let carrierEventScopeValidationTests =
                               immediate = { carrier_event = { id = carrier_origin.50 } }
                           }
 
+                          planet_event = {
+                              id = carrier_origin.5
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  carrier = { set_carrier_flag = carrier_from_planet_marker }
+                              }
+                          }
+
                           country_event = {
                               id = carrier_origin.4
                               hide_window = yes
@@ -782,6 +791,18 @@ let carrierEventScopeValidationTests =
                               immediate = {
                                   random_system = {
                                       random_system_planet = { carrier_event = { id = carrier_origin.12 } }
+                                  }
+                              }
+                          }
+
+                          country_event = {
+                              id = carrier_origin.7
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  enable_special_project = {
+                                      name = carrier_union_project
+                                      location = last_created_ambient_object
                                   }
                               }
                           }
@@ -817,6 +838,27 @@ let carrierEventScopeValidationTests =
                               immediate = { carrier_event = { id = carrier_origin.20 } }
                           }
 
+                          ship_event = {
+                              id = carrier_origin.6
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  carrier = { set_carrier_flag = carrier_from_ship_marker }
+                              }
+                          }
+
+                          ship_event = {
+                              id = carrier_origin.61
+                              hide_window = yes
+                              is_triggered_only = yes
+                          }
+
+                          planet_event = {
+                              id = carrier_origin.62
+                              hide_window = yes
+                              is_triggered_only = yes
+                          }
+
                           carrier_event = {
                               id = carrier_origin.20
                               hide_window = yes
@@ -840,6 +882,12 @@ let carrierEventScopeValidationTests =
                                   if = {
                                       limit = { carrier_is_type = planet }
                                       set_carrier_flag = narrowed_branch_marker
+                                  }
+                                  solar_system = {
+                                      inline_script = {
+                                          script = cosmic_storms/SpawnAtPosition
+                                          TYPE = electric_storm
+                                      }
                                   }
                               }
                           }
@@ -910,6 +958,16 @@ let carrierEventScopeValidationTests =
                           special_project = {
                               key = carrier_location_project
                               cost = 1
+                          }
+
+                          special_project = {
+                              key = carrier_union_project
+                              cost = 0
+                              event_scope = carrier_event
+                              on_success = {
+                                  ship_event = { id = carrier_origin.61 }
+                                  planet_event = { id = carrier_origin.62 }
+                              }
                           }
                           """
 
@@ -984,6 +1042,37 @@ let carrierEventScopeValidationTests =
                           }
                           """
 
+                  let buildingPath, buildingText =
+                      writeFile
+                          (Path.Combine("common", "buildings", "carrier_origin_buildings.txt"))
+                          """
+                          carrier_origin_building = {
+                              allow = {
+                                  carrier = {
+                                      has_carrier_flag = building_colony_carrier_marker
+                                      fleet = { has_fleet_flag = building_carrier_fleet_marker }
+                                  }
+                              }
+                          }
+                          """
+
+                  let _, _ =
+                      writeFile
+                          (Path.Combine("common", "storm_types", "electric_storm.txt"))
+                          """
+                          electric_storm = { }
+                          """
+
+                  let _, _ =
+                      writeFile
+                          (Path.Combine("common", "inline_scripts", "cosmic_storms", "SpawnAtPosition.txt"))
+                          """
+                          create_cosmic_storm = {
+                              type = $TYPE$
+                              cosmic_storm_start_position = prev
+                          }
+                          """
+
                   let onActionPath, onActionText =
                       writeFile
                           (Path.Combine("common", "on_actions", "carrier_origin_on_actions.txt"))
@@ -1042,13 +1131,15 @@ let carrierEventScopeValidationTests =
                       20
                       "carrier-aware effects should receive an in-scope completion score"
                   Expect.contains labels "set_planet_flag" "fixture should expose the planet-only effect"
-                  Expect.isTrue
-                      (scoreFor "set_planet_flag" < scoreFor "set_carrier_flag")
-                      "planet-only effects must be demoted because a carrier can be a ship"
+                  Expect.isGreaterThan
+                      (scoreFor "set_planet_flag")
+                      20
+                      "the Carrier union should admit planet-supported effects"
                   Expect.contains labels "set_ship_flag" "fixture should expose the ship-only effect"
-                  Expect.isTrue
-                      (scoreFor "set_ship_flag" < scoreFor "set_carrier_flag")
-                      "ship-only effects must be demoted because a carrier can be a planet"
+                  Expect.isGreaterThan
+                      (scoreFor "set_ship_flag")
+                      20
+                      "the Carrier union should admit ship-supported effects"
 
                   let expectScope expected needle path text message =
                       let context = stl.ScopesAtPos (posOf needle text) path text
@@ -1108,21 +1199,60 @@ let carrierEventScopeValidationTests =
                               Severity.Warning
                               $"an undefined carrier_flag reference should be a warning for {marker}"))
 
-                  let scopeParameterDiagnostics =
+                  let scopeDiagnostics =
                       validationErrors
                       |> List.filter (fun error ->
-                          (error.code = "CW243" || error.code = "CW245")
-                          && [ eventPath; commonCallerPath; gameRulePath; situationPath ]
-                             |> List.exists (fun path ->
-                                 String.Equals(
-                                     Path.GetFullPath(error.range.FileName),
-                                     Path.GetFullPath(path),
-                                     StringComparison.OrdinalIgnoreCase
-                                 )))
+                          let isIn path =
+                              String.Equals(
+                                  Path.GetFullPath(error.range.FileName),
+                                  Path.GetFullPath(path),
+                                  StringComparison.OrdinalIgnoreCase
+                              )
+
+                          ((error.code = "CW243" || error.code = "CW245")
+                           && [ eventPath; projectPath; commonCallerPath; gameRulePath; situationPath; buildingPath ]
+                              |> List.exists isIn)
+                          || (error.code = "CW247" && isIn projectPath)
+                          || (error.code = "CW274" && isIn eventPath))
 
                   Expect.isEmpty
-                      scopeParameterDiagnostics
-                      $"current-scope parameters should not report CW243/CW245: %A{scopeParameterDiagnostics |> List.map (fun e -> e.message)}"
+                      scopeDiagnostics
+                      $"Carrier-aware fixtures should not report scope diagnostics: %A{scopeDiagnostics |> List.collect (fun e -> e.message :: (e.relatedErrors |> Option.defaultValue [] |> List.map _.message))}"
+
+                  expectScope
+                      "Carrier"
+                      "building_colony_carrier_marker"
+                      buildingPath
+                      buildingText
+                      "a building's Colony carrier should remain the Planet-or-Ship union"
+                  expectScope
+                      "Fleet"
+                      "building_carrier_fleet_marker"
+                      buildingPath
+                      buildingText
+                      "the Carrier union should accept a fleet link supported by Ship"
+
+                  expectScope "Any" "carrier_from_planet_marker" eventPath eventText "Planet.carrier should resolve to Any"
+                  expectScope "Any" "carrier_from_ship_marker" eventPath eventText "Ship.carrier should resolve to Any"
+
+                  expectScope
+                      "Carrier"
+                      "carrier_origin.61"
+                      projectPath
+                      projectText
+                      "carrier-scoped special-project on_success should keep THIS as the Planet-or-Ship union"
+                  expectScope
+                      "Carrier"
+                      "carrier_origin.62"
+                      projectPath
+                      projectText
+                      "Carrier on_success should allow both Ship and Planet event calls"
+                  expectFromScopes
+                      [ "Ambient Object" ]
+                      "carrier_origin.61"
+                      projectPath
+                      projectText
+                      "special-project creation scope should remain FROM without replacing Carrier THIS"
 
                   expectScope "Planet" "planet_chain_marker" eventPath eventText "planet callers should narrow carrier_event"
                   let planetPos = posOf "planet_chain_marker" eventText

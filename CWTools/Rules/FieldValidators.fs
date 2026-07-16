@@ -1142,9 +1142,21 @@ module internal FieldValidators =
 
         lookup.Contains(sb.AsSpan()) || fileExistsIgnoringCase files (sb.ToString())
 
+    let private isScopeNamed name (scope: Scope) =
+        String.Equals(scope.ToString(), name, StringComparison.OrdinalIgnoreCase)
+
+    /// Stellaris Carrier is a synthetic Planet-or-Ship union rather than a
+    /// concrete scope. Target fields must accept the union when either host is
+    /// allowed, including while validating expanded inline scripts.
+    let private carrierScopeMatches (scopes: Scope list) (currentScope: Scope) =
+        let isCarrierHost scope = isScopeNamed "Planet" scope || isScopeNamed "Ship" scope
+
+        isScopeNamed "Carrier" currentScope && List.exists isCarrierHost scopes
+
     let private checkAnyScopesMatch anyScope (scopes: Scope list) (currentScope: Scope) =
         (currentScope = anyScope)
         || (List.exists (fun s -> currentScope.IsOfScope(s) || s = anyScope) scopes)
+        || carrierScopeMatches scopes currentScope
 
     let checkScopeField
         (linkMap: EffectMap)

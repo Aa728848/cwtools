@@ -135,8 +135,8 @@ scopes = {
 }
 
 scope_groups = {
-    # Carrier is admitted only where the group already supports both physical
-    # hosts, preserving the Planet/Ship intersection contract.
+    # Carrier is a synthetic Planet-or-Ship union and is admitted wherever
+    # either physical host is supported.
     celestial_coordinate = {
         planet ship fleet system ambient_object megastructure starbase archaeological_site first_contact
         deposit pop pop_group pop_job army country leader debris astral_rift bypass colony carrier

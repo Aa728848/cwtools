@@ -270,13 +270,13 @@ module STLGameFunctions =
             .Concat(RulesHelpers.generateModifierRulesFromTypes lookup.typeDefs)
             .ToArray()
 
-    /// Carrier is a planet-or-ship runtime host. It can only inherit a contract
-    /// when that contract is valid for both possible host types.
+    /// Carrier is a planet-or-ship union. A contract supported by either
+    /// possible host is valid for the synthetic Carrier scope.
     let internal normalizeCarrierScopeSet planetScope shipScope carrierScope (scopes: Scope list) =
         let withoutCarrier = scopes |> List.filter (fun scope -> not (scope.Equals carrierScope))
         let supports scope = withoutCarrier |> List.exists (fun candidate -> candidate.Equals scope)
 
-        if supports planetScope && supports shipScope then
+        if supports planetScope || supports shipScope then
             withoutCarrier @ [ carrierScope ]
         else
             withoutCarrier

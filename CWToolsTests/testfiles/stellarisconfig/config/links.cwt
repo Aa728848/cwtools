@@ -102,7 +102,7 @@ links = {
 		output_scope = Fleet
 	}
 	fleet = {
-		input_scopes = { Ship Planet colony carrier Starbase Leader Army Fleet astral_rift }
+		input_scopes = { ship fleet leader army starbase astral_rift colony }
 		output_scope = Fleet
 	}
 	excavator_fleet = {
