@@ -1150,6 +1150,12 @@ let carrierEventScopeValidationTests =
                       eventPath
                       eventText
                       "scope-changing iterators should narrow carrier_event callers"
+                  expectFromScopes
+                      [ "Country" ]
+                      "iterator_planet_marker"
+                      eventPath
+                      eventText
+                      "event calls inside iterators should default FROM to the firing event ROOT"
                   expectScope "Ship" "ship_chain_marker" eventPath eventText "ship callers should narrow carrier_event"
                   expectFromScopes [ "Ship" ] "ship_chain_marker" eventPath eventText "ship event calls should seed a Ship FROM"
                   expectScope "Planet" "narrowed_branch_marker" eventPath eventText "carrier_is_type should narrow its guarded branch"

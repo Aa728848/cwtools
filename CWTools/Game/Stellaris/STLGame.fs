@@ -871,7 +871,9 @@ module STLGameFunctions =
             padded |> List.mapi (fun itemIndex existing -> if itemIndex = index then value else existing)
 
         let eventFromChain (context: ScopeContext) (eventCall: Node) =
-            let defaultChain = context.CurrentScope :: context.From
+            // Without an explicit scopes.from override, fired events inherit the
+            // firing event's ROOT as FROM, even when the call is inside an iterator.
+            let defaultChain = context.Root :: context.From
 
             eventCall.Nodes
             |> Seq.tryFind (fun child -> normalizeKey child.Key = "scopes")
