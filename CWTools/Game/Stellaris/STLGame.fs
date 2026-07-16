@@ -641,7 +641,8 @@ module STLGameFunctions =
           eventEvidence: Map<string, string list>
           eventFromChains: Map<string, Set<Scope list>>
           projectCreationScopes: Map<string, Set<Scope>>
-          situationTargetScopes: Map<string, Set<Scope>> }
+          situationTargetScopes: Map<string, Set<Scope>>
+          situationEventTargetScopes: Map<string, Set<Scope>> }
 
     type internal CarrierScopeResolver
         (
@@ -1089,6 +1090,21 @@ module STLGameFunctions =
                             | _ -> ()
                         | _ -> ()
 
+            let mutable situationEventTargetScopes: Map<string, Set<Scope>> = Map.empty
+
+            for entity in entities do
+                if isSituationPath entity then
+                    for root in entity.entity.Nodes do
+                        match situationScopes |> Map.tryFind (root.Key.ToLowerInvariant()) with
+                        | Some targets ->
+                            for node in allNodes root do
+                                if normalizeKey node.Key = "situation_event" then
+                                    let eventId = node.TagText "id" |> cleanValue
+                                    for target in targets do
+                                        situationEventTargetScopes <-
+                                            addScope eventId target situationEventTargetScopes
+                        | None -> ()
+
             let mutable seeds: Map<string, int> = Map.empty
             let mutable evidence: Map<string, string list> = Map.empty
             let mutable eventFromChains: Map<string, Set<Scope list>> = Map.empty
@@ -1226,7 +1242,8 @@ module STLGameFunctions =
               eventEvidence = evidence
               eventFromChains = eventFromChains
               projectCreationScopes = projectScopes
-              situationTargetScopes = situationScopes }
+              situationTargetScopes = situationScopes
+              situationEventTargetScopes = situationEventTargetScopes }
 
         let currentSnapshot () =
             let version = ResourceManagerEager.currentVersion ()
@@ -1239,7 +1256,8 @@ module STLGameFunctions =
                       eventEvidence = Map.empty
                       eventFromChains = Map.empty
                       projectCreationScopes = Map.empty
-                      situationTargetScopes = Map.empty }
+                      situationTargetScopes = Map.empty
+                      situationEventTargetScopes = Map.empty }
                 | _ ->
                     building <- true
                     try
@@ -1296,6 +1314,14 @@ module STLGameFunctions =
 
                         if isSituationPath entity && normalizeKey node.Key = "target" && resolved.CurrentScope.Equals scopeManager.AnyScope then
                             match snapshot.situationTargetScopes |> Map.tryFind (root.Key.ToLowerInvariant()) |> Option.bind chooseScope with
+                            | Some target ->
+                                resolved <- setCurrent target resolved
+                                changed <- true
+                            | None -> ()
+
+                        if rootKey = "situation_event" && normalizeKey node.Key = "target" then
+                            let eventId = root.TagText "id" |> cleanValue
+                            match snapshot.situationEventTargetScopes |> Map.tryFind (eventId.ToLowerInvariant()) |> Option.bind chooseScope with
                             | Some target ->
                                 resolved <- setCurrent target resolved
                                 changed <- true

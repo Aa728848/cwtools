@@ -54,6 +54,16 @@ module STL =
                     | _ :: tail -> anyScope :: tail
 
                 NewScope({ target with Scopes = scopes }, ignored, hint)
+            | WrongScope(command, _, _, _) as wrongScope when
+                String.Equals(command, "target", StringComparison.OrdinalIgnoreCase)
+                ->
+                // Situation/Agreement/Espionage target is bound to the event ROOT,
+                // so it remains accessible from nested scopes such as System.
+                let rootContext = { source with Scopes = [ source.Root ] }
+                match baseChangeScope.Invoke(varLhs, skipEffect, links, valueTriggers, wildcards, vars, key, rootContext) with
+                | NewScope({ Scopes = target :: _ }, ignored, hint) ->
+                    NewScope({ source with Scopes = target :: source.Scopes }, ignored, hint)
+                | _ -> wrongScope
             | result -> result)
 
     let sourceScope (effects: Map<StringLowerToken, Scope list>) (key: string) =

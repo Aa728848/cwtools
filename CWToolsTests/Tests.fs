@@ -784,6 +784,23 @@ let carrierEventScopeValidationTests =
                               }
                           }
 
+                          situation_event = {
+                              id = carrier_origin.8
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  target = {
+                                      set_carrier_flag = situation_event_target_marker
+                                      solar_system = {
+                                          spawn_planet = {
+                                              class = random
+                                              location = target
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+
                           country_event = {
                               id = carrier_origin.4
                               hide_window = yes
@@ -978,6 +995,7 @@ let carrierEventScopeValidationTests =
                           carrier_origin_situation = {
                               on_start = {
                                   target = { set_carrier_flag = situation_target_marker }
+                                  situation_event = { id = carrier_origin.8 }
                               }
                           }
 
@@ -1022,6 +1040,10 @@ let carrierEventScopeValidationTests =
                               hide_window = yes
                               is_triggered_only = yes
                               immediate = {
+                                  start_situation = {
+                                      type = carrier_origin_situation
+                                      target = this.capital_star
+                                  }
                                   start_situation = {
                                       type = carrier_country_target_situation
                                       target = this
@@ -1234,6 +1256,12 @@ let carrierEventScopeValidationTests =
 
                   expectScope "Any" "carrier_from_planet_marker" eventPath eventText "Planet.carrier should resolve to Any"
                   expectScope "Any" "carrier_from_ship_marker" eventPath eventText "Ship.carrier should resolve to Any"
+                  expectScope
+                      "Planet"
+                      "situation_event_target_marker"
+                      eventPath
+                      eventText
+                      "a situation_event target should inherit the creating situation's target scope"
 
                   expectScope
                       "Carrier"
