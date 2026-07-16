@@ -951,7 +951,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
                                 (direct, directEventTargets) :: nested
 
-                let referencedExpansions =
+                let rawReferencedExpansions =
                     allEntitiesList
                     |> Seq.collect (fun struct (_, data) ->
                         data.Force().Referencedtypes
@@ -963,7 +963,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                             0
                             (reference.name.GetString())
                             (findCallParams reference.position)
-                            settings.anyScope)
+                            settings.anyScope
+                        |> Seq.map (fun expansion -> reference.position, expansion))
 
                 let scopedEventTargetExpansions =
                     allEntitiesList
@@ -980,9 +981,33 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                         |> Seq.collect (fun (effectName, parameters, position) ->
                             scriptedEffectScopeAtPosition entity position
                             |> Option.map (collectFromScriptedEffect 0 effectName parameters)
-                            |> Option.defaultValue []))
+                            |> Option.defaultValue []
+                            |> Seq.map (fun expansion -> position, expansion)))
+                    |> Seq.cache
 
-                Seq.append referencedExpansions scopedEventTargetExpansions
+                // The reference-based pass starts every scripted-effect call at Any and can
+                // therefore duplicate the scope-aware expansion at that call site. Drop only
+                // those synthetic Any duplicates. Any produced by the scope-aware pass remains
+                // significant evidence that a target is ambiguous.
+                let scopedExpansionPositions =
+                    scopedEventTargetExpansions
+                    |> Seq.map (fun (position, _) -> position.FileIndex, position.Code)
+                    |> Set.ofSeq
+
+                let referencedExpansions =
+                    rawReferencedExpansions
+                    |> Seq.map (fun (callPosition, (variables, eventTargets)) ->
+                        variables,
+                        eventTargets
+                        |> List.filter (fun (_, _, scope) ->
+                            not (
+                                scope.Equals settings.anyScope
+                                && Set.contains
+                                    (callPosition.FileIndex, callPosition.Code)
+                                    scopedExpansionPositions
+                            )))
+
+                Seq.append referencedExpansions (scopedEventTargetExpansions |> Seq.map snd)
 
         let expandedScriptedData = collectExpandedScriptedData () |> Seq.cache
 

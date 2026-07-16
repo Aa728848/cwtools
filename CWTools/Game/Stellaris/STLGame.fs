@@ -75,10 +75,9 @@ module STLGameFunctions =
     /// distinguish their call paths.
     let savedEventTargetLinks (lookup: Lookup) =
         lookup.savedEventTargets
-        |> Seq.filter (fun (name, _, scope) ->
+        |> Seq.filter (fun (name, _, _) ->
             not (String.IsNullOrWhiteSpace name)
-            && not (name.Contains '$')
-            && not (scope.Equals scopeManager.AnyScope))
+            && not (name.Contains '$'))
         |> Seq.groupBy (fun (name, _, _) -> name.ToLowerInvariant())
         |> Seq.choose (fun (_, targets) ->
             let targets = targets |> Seq.toArray
@@ -86,7 +85,7 @@ module STLGameFunctions =
 
             match targets, scopes with
             | [||], _ -> None
-            | _, [| scope |] ->
+            | _, [| scope |] when not (scope.Equals scopeManager.AnyScope) ->
                 let name, _, _ = targets[0]
 
                 Some(

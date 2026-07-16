@@ -3315,16 +3315,117 @@ let nestedEventTargetTests =
                       [ "unique_planet", range.Zero, planet
                         "unique_planet", range.Zero, planet
                         "ambiguous_target", range.Zero, planet
-                        "ambiguous_target", range.Zero, country ]
+                        "ambiguous_target", range.Zero, country
+                        "partially_known_target", range.Zero, ship
+                        "partially_known_target", range.Zero, scopeManager.AnyScope ]
                   )
 
               let savedLinks = STLGameFunctions.savedEventTargetLinks lookup
-              Expect.equal savedLinks.Length 1 "only the target with one project-wide scope should get an exact link"
+              Expect.equal
+                  savedLinks.Length
+                  1
+                  "only targets whose every save has one known project-wide scope should get an exact link"
               Expect.equal (savedLinks[0].Name.GetString()) "event_target:unique_planet" "the exact link should use event_target syntax"
 
               match savedLinks[0] with
               | :? ScopedEffect as link -> Expect.equal link.Target (Some planet) "the exact link should retain the saved scope"
               | other -> failtestf "saved event target link should be scoped, got %A" other
+          testWithCapturedLogs "an unresolved FROM save prevents an exact saved event target scope"
+          <| fun () ->
+              let root =
+                  Path.Combine(Path.GetTempPath(), "cwtools-ambiguous-event-target-" + System.Guid.NewGuid().ToString("N"))
+
+              let eventsDir = Path.Combine(root, "events")
+              Directory.CreateDirectory(eventsDir) |> ignore
+              let eventFile = Path.Combine(eventsDir, "ambiguous_event_target_events.txt")
+              let eventText =
+                  "namespace = ambiguous_target\n\
+                   country_event = {\n\
+                       id = ambiguous_target.1\n\
+                       hide_window = yes\n\
+                       is_triggered_only = yes\n\
+                       immediate = {\n\
+                           from = {\n\
+                               save_event_target_as = current_marauder_diplomacy\n\
+                           }\n\
+                       }\n\
+                   }\n\
+                   country_event = {\n\
+                       id = ambiguous_target.2\n\
+                       hide_window = yes\n\
+                       is_triggered_only = yes\n\
+                       immediate = {\n\
+                           owner_species = {\n\
+                               save_event_target_as = current_marauder_diplomacy\n\
+                           }\n\
+                       }\n\
+                   }\n\
+                   country_event = {\n\
+                       id = ambiguous_target.3\n\
+                       hide_window = yes\n\
+                       is_triggered_only = yes\n\
+                       trigger = {\n\
+                           event_target:current_marauder_diplomacy = {\n\
+                               has_country_flag = marauder_country_scope_marker\n\
+                           }\n\
+                       }\n\
+                   }"
+
+              File.WriteAllText(eventFile, eventText)
+
+              try
+                  let configText = Tests.configFilesFromDir "./testfiles/stellarisconfig/config"
+
+                  let settings =
+                      { emptyStellarisSettings root with
+                          rules =
+                              Some
+                                  { ruleFiles = configText
+                                    validateRules = true
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+
+                  let stlGame = STLGame(settings)
+                  let stl = stlGame :> IGame<STLComputedData>
+                  let savedScopes =
+                      stlGame.Lookup.savedEventTargets
+                      |> Seq.choose (fun (name, _, scope) ->
+                          if name == "current_marauder_diplomacy" then Some(scope.ToString()) else None)
+                      |> Set.ofSeq
+
+                  Expect.contains savedScopes "Any" "the unresolved FROM save should be retained as unknown scope evidence"
+                  Expect.contains savedScopes "Species" "the owner_species save should retain its exact Species scope"
+                  let marker = "marauder_country_scope_marker"
+                  let markerIndex = eventText.IndexOf(marker, System.StringComparison.Ordinal)
+                  Expect.isGreaterThan markerIndex -1 "the event-target scope marker should exist"
+                  let before = eventText.Substring(0, markerIndex)
+                  let line = (before |> Seq.filter ((=) '\n') |> Seq.length) + 1
+                  let lastLineBreak = before.LastIndexOf('\n')
+                  let column = if lastLineBreak < 0 then markerIndex else markerIndex - lastLineBreak - 1
+                  let context = stl.ScopesAtPos (mkPos line column) eventFile eventText
+
+                  Expect.isSome context "the ambiguous event target should have a scope context"
+                  Expect.equal
+                      (context.Value.CurrentScope.ToString())
+                      "Any"
+                      "an unresolved save must prevent a different save from fixing the target to Species"
+
+                  let wrongScopeErrors =
+                      stl.ValidationErrors()
+                      |> List.filter (fun error ->
+                          System.String.Equals(
+                              Path.GetFullPath(error.range.FileName),
+                              Path.GetFullPath(eventFile),
+                              System.StringComparison.OrdinalIgnoreCase
+                          )
+                          && error.message.Contains("has_country_flag", System.StringComparison.OrdinalIgnoreCase)
+                          && (error.code = "CW243" || error.code = "CW245"))
+
+                  Expect.isEmpty
+                      wrongScopeErrors
+                      $"the conservatively unknown target should not report a Species/Country mismatch: %A{wrongScopeErrors}"
+              finally
+                  if Directory.Exists(root) then Directory.Delete(root, true)
           testCase "event target parameter values normalize after substitution"
           <| fun () ->
               let input =
