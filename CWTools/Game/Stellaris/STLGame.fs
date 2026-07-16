@@ -639,6 +639,7 @@ module STLGameFunctions =
           eventHosts: Map<string, int>
           eventEvidence: Map<string, string list>
           eventFromChains: Map<string, Set<Scope list>>
+          eventSavedTargetScopes: Map<string, Set<Scope>>
           projectCreationScopes: Map<string, Set<Scope>>
           situationTargetScopes: Map<string, Set<Scope>>
           situationEventTargetScopes: Map<string, Set<Scope>> }
@@ -702,6 +703,9 @@ module STLGameFunctions =
             let key = key.Trim().Trim('"').ToLowerInvariant()
             if key.StartsWith("hidden:") then key.Substring(7) else key
 
+        let eventTargetKey (eventId: string) (targetName: string) =
+            eventId.ToLowerInvariant() + "\u0000" + targetName.ToLowerInvariant()
+
         let cleanValue (value: string) =
             if isNull value then "" else value.Trim().Trim('"')
 
@@ -733,7 +737,14 @@ module STLGameFunctions =
             else
                 map
                 |> Map.change (key.ToLowerInvariant()) (fun existing ->
-                    existing |> Option.defaultValue Set.empty |> Set.add chain |> Some)
+                    let updated = existing |> Option.defaultValue Set.empty |> Set.add chain
+                    if updated.Count <= 256 then
+                        Some updated
+                    else
+                        // Highly connected event graphs must stay bounded; overflow
+                        // falls back conservatively instead of selecting one call path.
+                        let depth = updated |> Seq.map List.length |> Seq.max
+                        Some(Set.singleton(List.replicate depth scopeManager.AnyScope)))
 
         let chooseScope (scopes: Set<Scope>) =
             if scopes.Count = 1 then
@@ -859,6 +870,14 @@ module STLGameFunctions =
                     |> List.rev
                     |> List.fold (fun context node -> changeContextByKey node.Key context) rootContext)
                 |> Option.defaultValue rootContext)
+
+        let contextInsideNodeFromRoot (rootContext: ScopeContext) (root: Node) (target: Node) =
+            tryPathTo target root
+            |> Option.map (fun path ->
+                path
+                |> List.tail
+                |> List.fold (fun context node -> changeContextByKey node.Key context) rootContext)
+            |> Option.defaultValue rootContext
 
         let resolveExpression (context: ScopeContext) value =
             let value = cleanValue value
@@ -1107,7 +1126,8 @@ module STLGameFunctions =
             let mutable seeds: Map<string, int> = Map.empty
             let mutable evidence: Map<string, string list> = Map.empty
             let mutable eventFromChains: Map<string, Set<Scope list>> = Map.empty
-            let dependencies = ResizeArray<string * string * Node * ScopeContext>()
+            let carrierDependencies = ResizeArray<string * string * Node * ScopeContext>()
+            let eventDependencies = ResizeArray<string * string * Node * ScopeContext>()
 
             for pair in eventDefinitions do
                 let eventId = pair.Key
@@ -1122,13 +1142,19 @@ module STLGameFunctions =
             for entity in entities do
                 for root in entity.entity.Nodes do
                     let rootEventId = root.TagText "id" |> cleanValue
+                    let callerEventId =
+                        if (normalizeKey root.Key).EndsWith("_event") && eventDefinitions.ContainsKey rootEventId then
+                            Some rootEventId
+                        else
+                            None
+
                     let callerCarrierId =
                         if normalizeKey root.Key = "carrier_event" && carrierEventIds.Contains rootEventId then Some rootEventId else None
 
                     for node in allNodes root do
-                        if normalizeKey node.Key = "carrier_event" && not (node.Position.Equals root.Position) then
+                        if (normalizeKey node.Key).EndsWith("_event") && not (node.Position.Equals root.Position) then
                             let targetId = node.TagText "id" |> cleanValue
-                            if carrierEventIds.Contains targetId then
+                            if eventDefinitions.ContainsKey targetId then
                                 let staticContext =
                                     tryStaticContext entity node
                                     |> Option.orElseWith (fun () ->
@@ -1145,21 +1171,34 @@ module STLGameFunctions =
                                     else
                                         staticContext
 
-                                let mask = hostMaskOfScope context.CurrentScope
-                                match callerCarrierId, mask, isScope "Carrier" context.Root with
-                                | Some caller, AnyCarrierHost, true -> dependencies.Add(caller, targetId, node, context)
-                                | _, 0, _ ->
-                                    seeds <- addMask targetId AnyCarrierHost seeds
+                                match callerEventId with
+                                | Some caller ->
+                                    eventDependencies.Add(caller, targetId, node, context)
+
+                                    let staticChain = eventFromChain context node
+                                    match staticChain with
+                                    | first :: _
+                                        when callerCarrierId.IsNone
+                                             && not (first.Equals scopeManager.AnyScope) ->
+                                        eventFromChains <- addFromChain targetId staticChain eventFromChains
+                                    | _ -> ()
+                                | None ->
                                     eventFromChains <- addFromChain targetId (eventFromChain context node) eventFromChains
-                                    evidence <- addEvidence targetId $"unknown caller at %s{node.Position.FileName}:%i{node.Position.StartLine}" evidence
-                                | _, value, _ ->
-                                    seeds <- addMask targetId value seeds
-                                    eventFromChains <- addFromChain targetId (eventFromChain context node) eventFromChains
-                                    evidence <-
-                                        addEvidence
-                                            targetId
-                                            $"%s{scopeName context.CurrentScope} caller at %s{node.Position.FileName}:%i{node.Position.StartLine}"
-                                            evidence
+
+                                if carrierEventIds.Contains targetId then
+                                    let mask = hostMaskOfScope context.CurrentScope
+                                    match callerCarrierId, mask, isScope "Carrier" context.Root with
+                                    | Some caller, AnyCarrierHost, true -> carrierDependencies.Add(caller, targetId, node, context)
+                                    | _, 0, _ ->
+                                        seeds <- addMask targetId AnyCarrierHost seeds
+                                        evidence <- addEvidence targetId $"unknown caller at %s{node.Position.FileName}:%i{node.Position.StartLine}" evidence
+                                    | _, value, _ ->
+                                        seeds <- addMask targetId value seeds
+                                        evidence <-
+                                            addEvidence
+                                                targetId
+                                                $"%s{scopeName context.CurrentScope} caller at %s{node.Position.FileName}:%i{node.Position.StartLine}"
+                                                evidence
 
                     if isOnActionPath entity then
                         let eventListNodes =
@@ -1181,17 +1220,19 @@ module STLGameFunctions =
 
                             for value in eventList.LeafValues do
                                 let targetId = cleanValue value.ValueText
-                                if carrierEventIds.Contains targetId then
-                                    seeds <- addMask targetId (if mask = 0 then AnyCarrierHost else mask) seeds
+                                if eventDefinitions.ContainsKey targetId then
                                     eventFromChains <- addFromChain targetId listContext.From eventFromChains
-                                    evidence <- addEvidence targetId $"on_action %s{root.Key} (%s{scopeName listContext.CurrentScope})" evidence
+                                    if carrierEventIds.Contains targetId then
+                                        seeds <- addMask targetId (if mask = 0 then AnyCarrierHost else mask) seeds
+                                        evidence <- addEvidence targetId $"on_action %s{root.Key} (%s{scopeName listContext.CurrentScope})" evidence
 
                             for value in eventList.Leaves do
                                 let targetId = cleanValue value.ValueText
-                                if carrierEventIds.Contains targetId then
-                                    seeds <- addMask targetId (if mask = 0 then AnyCarrierHost else mask) seeds
+                                if eventDefinitions.ContainsKey targetId then
                                     eventFromChains <- addFromChain targetId listContext.From eventFromChains
-                                    evidence <- addEvidence targetId $"on_action %s{root.Key} (%s{scopeName listContext.CurrentScope})" evidence
+                                    if carrierEventIds.Contains targetId then
+                                        seeds <- addMask targetId (if mask = 0 then AnyCarrierHost else mask) seeds
+                                        evidence <- addEvidence targetId $"on_action %s{root.Key} (%s{scopeName listContext.CurrentScope})" evidence
 
             let mutable eventHosts = seeds
             let mutable changed = true
@@ -1199,7 +1240,36 @@ module STLGameFunctions =
             while changed && iterations < 64 do
                 changed <- false
                 iterations <- iterations + 1
-                for caller, target, eventCall, staticContext in dependencies do
+
+                for caller, target, eventCall, staticContext in eventDependencies do
+                    let callerChains =
+                        eventFromChains
+                        |> Map.tryFind (caller.ToLowerInvariant())
+                        |> Option.defaultValue Set.empty
+
+                    for chain in callerChains do
+                        let callerContext =
+                            let withFrom = { staticContext with From = chain }
+                            let callerMask = eventHosts |> Map.tryFind (caller.ToLowerInvariant()) |> Option.defaultValue 0
+                            match hostScope callerMask with
+                            | Some callerScope -> setCarrierHost callerScope withFrom
+                            | None -> withFrom
+
+                        let beforeChains =
+                            eventFromChains
+                            |> Map.tryFind (target.ToLowerInvariant())
+                            |> Option.defaultValue Set.empty
+
+                        eventFromChains <- addFromChain target (eventFromChain callerContext eventCall) eventFromChains
+
+                        let afterChains =
+                            eventFromChains
+                            |> Map.tryFind (target.ToLowerInvariant())
+                            |> Option.defaultValue Set.empty
+
+                        if afterChains <> beforeChains then changed <- true
+
+                for caller, target, _, _ in carrierDependencies do
                     let callerMask = eventHosts |> Map.tryFind (caller.ToLowerInvariant()) |> Option.defaultValue 0
                     if callerMask <> 0 then
                         let before = eventHosts |> Map.tryFind (target.ToLowerInvariant()) |> Option.defaultValue 0
@@ -1209,37 +1279,46 @@ module STLGameFunctions =
                             evidence <- addEvidence target $"carrier_event from %s{caller}" evidence
                             changed <- true
 
-                        match hostScope callerMask with
-                        | Some callerScope ->
-                            let callerChains =
-                                eventFromChains
-                                |> Map.tryFind (caller.ToLowerInvariant())
-                                |> Option.defaultValue (Set.singleton [])
+            let mutable eventSavedTargetScopes: Map<string, Set<Scope>> = Map.empty
 
-                            for chain in callerChains do
-                                let callerContext =
-                                    { setCarrierHost callerScope staticContext with
-                                        From = chain }
+            for pair in eventDefinitions do
+                let eventId = pair.Key
+                let struct (_, root) = pair.Value
+                let rootContext =
+                    trySubtypeContext "event" root
+                    |> Option.defaultValue
+                        { Root = scopeManager.AnyScope
+                          From = []
+                          Scopes = [] }
 
-                                let beforeChains =
-                                    eventFromChains
-                                    |> Map.tryFind (target.ToLowerInvariant())
-                                    |> Option.defaultValue Set.empty
+                let rootContext =
+                    match eventFromChains |> Map.tryFind (eventId.ToLowerInvariant()) with
+                    | Some chains when not chains.IsEmpty -> { rootContext with From = mergeFromChains chains }
+                    | _ -> rootContext
 
-                                eventFromChains <- addFromChain target (eventFromChain callerContext eventCall) eventFromChains
+                let rootContext =
+                    let mask = eventHosts |> Map.tryFind (eventId.ToLowerInvariant()) |> Option.defaultValue 0
+                    match hostScope mask with
+                    | Some eventScope -> setCarrierHost eventScope rootContext
+                    | None -> rootContext
 
-                                let afterChains =
-                                    eventFromChains
-                                    |> Map.tryFind (target.ToLowerInvariant())
-                                    |> Option.defaultValue Set.empty
-
-                                if afterChains <> beforeChains then changed <- true
-                        | None -> ()
+                for node in allNodes root do
+                    // Expanded inline-script nodes retain the source inline file's range;
+                    // their call-site scope is already handled by the global expansion pass.
+                    if rangeContainsRange root.Position node.Position then
+                        let nodeContext = contextInsideNodeFromRoot rootContext root node
+                        for leaf in node.Leaves do
+                            let key = normalizeKey leaf.Key
+                            if key = "save_event_target_as" || key = "save_global_event_target_as" then
+                                let targetName = cleanValue leaf.ValueText
+                                eventSavedTargetScopes <-
+                                    addScope (eventTargetKey eventId targetName) nodeContext.CurrentScope eventSavedTargetScopes
 
             { version = version
               eventHosts = eventHosts
               eventEvidence = evidence
               eventFromChains = eventFromChains
+              eventSavedTargetScopes = eventSavedTargetScopes
               projectCreationScopes = projectScopes
               situationTargetScopes = situationScopes
               situationEventTargetScopes = situationEventTargetScopes }
@@ -1254,6 +1333,7 @@ module STLGameFunctions =
                       eventHosts = Map.empty
                       eventEvidence = Map.empty
                       eventFromChains = Map.empty
+                      eventSavedTargetScopes = Map.empty
                       projectCreationScopes = Map.empty
                       situationTargetScopes = Map.empty
                       situationEventTargetScopes = Map.empty }
@@ -1286,18 +1366,34 @@ module STLGameFunctions =
                     match tryEntityAndRoot node with
                     | Some(entity, root) ->
                         let rootKey = normalizeKey root.Key
-                        if rootKey = "carrier_event" && node.Position.Equals root.Position then
+                        if rootKey.EndsWith("_event") && node.Position.Equals root.Position then
                             let eventId = root.TagText "id" |> cleanValue
-                            let mask = snapshot.eventHosts |> Map.tryFind (eventId.ToLowerInvariant()) |> Option.defaultValue AnyCarrierHost
-                            match hostScope mask with
-                            | Some exact when mask = PlanetHost || mask = ShipHost ->
-                                resolved <- setCarrierHost exact resolved
-                                changed <- true
-                            | _ -> ()
+                            if rootKey = "carrier_event" then
+                                let mask = snapshot.eventHosts |> Map.tryFind (eventId.ToLowerInvariant()) |> Option.defaultValue AnyCarrierHost
+                                match hostScope mask with
+                                | Some exact when mask = PlanetHost || mask = ShipHost ->
+                                    resolved <- setCarrierHost exact resolved
+                                    changed <- true
+                                | _ -> ()
 
                             match snapshot.eventFromChains |> Map.tryFind (eventId.ToLowerInvariant()) with
                             | Some chains when not chains.IsEmpty ->
                                 resolved <- { resolved with From = mergeFromChains chains }
+                                changed <- true
+                            | _ -> ()
+
+                        if rootKey.EndsWith("_event") && (normalizeKey node.Key).StartsWith("event_target:") then
+                            let eventId = root.TagText "id" |> cleanValue
+                            let targetName =
+                                (normalizeKey node.Key).Substring("event_target:".Length).Split('.').[0].TrimEnd('?')
+
+                            match
+                                snapshot.eventSavedTargetScopes
+                                |> Map.tryFind (eventTargetKey eventId targetName)
+                                |> Option.bind chooseScope
+                            with
+                            | Some targetScope ->
+                                resolved <- setCurrent targetScope resolved
                                 changed <- true
                             | _ -> ()
 

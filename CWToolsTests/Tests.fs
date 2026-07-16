@@ -824,6 +824,41 @@ let carrierEventScopeValidationTests =
                               }
                           }
 
+                          country_event = {
+                              id = carrier_origin.70
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  country_event = {
+                                      id = carrier_origin.71
+                                      scopes = { from = from }
+                                  }
+                              }
+                          }
+
+                          country_event = {
+                              id = carrier_origin.71
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  from = { save_event_target_as = current_marauder_diplomacy }
+                              }
+                              trigger = {
+                                  event_target:current_marauder_diplomacy = {
+                                      has_country_flag = marauder_country_scope_marker
+                                  }
+                              }
+                          }
+
+                          country_event = {
+                              id = carrier_origin.72
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  owner_species = { save_event_target_as = current_marauder_diplomacy }
+                              }
+                          }
+
                           carrier_event = {
                               id = carrier_origin.10
                               hide_window = yes
@@ -1105,6 +1140,9 @@ let carrierEventScopeValidationTests =
                           on_initialize_advanced_colony = {
                               random_events = { 100 = carrier_origin.41 }
                           }
+                          on_custom_diplomacy = {
+                              events = { carrier_origin.70 }
+                          }
                           """
 
                   let docsPath = "./testfiles/stellarisconfig/config/logs/trigger_docs.log"
@@ -1325,6 +1363,19 @@ let carrierEventScopeValidationTests =
                       eventPath
                       eventText
                       "on_action replace_scope should seed the carrier event FROM chain"
+                  let marauderContext =
+                      stl.ScopesAtPos (posOf "marauder_country_scope_marker" eventText) eventPath eventText
+
+                  Expect.isSome marauderContext "the event-local saved target should have a scope context"
+                  Expect.equal
+                      (marauderContext.Value.CurrentScope.ToString())
+                      "Country"
+                      "on_action FROM should flow through scopes.from and resolve the local target as Country"
+                  Expect.isNonEmpty marauderContext.Value.From "the called country event should inherit a FROM chain"
+                  Expect.equal
+                      (marauderContext.Value.From.Head.ToString())
+                      "Country"
+                      "the called event's immediate FROM should be the on_action source country"
                   expectScope "Planet" "explicit_scope_target_marker" eventPath eventText "explicit event scopes should retain the proven Carrier host"
                   expectFromScopes
                       [ "Country"; "Planet" ]
