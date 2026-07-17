@@ -436,7 +436,7 @@ type InfoService
                                         { ctx.scopes with
                                             Scopes = this :: ctx.scopes.PopScope
                                             From = froms
-                                            FromDepth = 0 } }
+                                            FromDepth = FromPath.FixedSlots } }
                             | Some this, None ->
                                 { ctx with
                                     scopes =
@@ -447,7 +447,7 @@ type InfoService
                                     scopes =
                                         { ctx.scopes with
                                             From = froms
-                                            FromDepth = 0 } }
+                                            FromDepth = FromPath.FixedSlots } }
                             | None, None -> ctx
 
                         match rs.root with
@@ -731,7 +731,7 @@ type InfoService
                                         { ctx.scopes with
                                             Scopes = this :: ctx.scopes.PopScope
                                             From = froms
-                                            FromDepth = 0 } }
+                                            FromDepth = FromPath.FixedSlots } }
                             | Some this, None ->
                                 { ctx with
                                     scopes =
@@ -742,7 +742,7 @@ type InfoService
                                     scopes =
                                         { ctx.scopes with
                                             From = froms
-                                            FromDepth = 0 } }
+                                            FromDepth = FromPath.FixedSlots } }
                             | None, None -> ctx
 
                         match rs.root with
@@ -942,7 +942,7 @@ type InfoService
                                         { ctx.scopes with
                                             Scopes = this :: ctx.scopes.PopScope
                                             From = froms
-                                            FromDepth = 0 } }
+                                            FromDepth = FromPath.FixedSlots } }
                             | Some this, None ->
                                 { ctx with
                                     scopes =
@@ -953,7 +953,7 @@ type InfoService
                                     scopes =
                                         { ctx.scopes with
                                             From = froms
-                                            FromDepth = 0 } }
+                                            FromDepth = FromPath.FixedSlots } }
                             | None, None -> ctx
 
                         match rs.root with

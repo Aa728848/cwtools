@@ -15,9 +15,10 @@ module STL =
     let oneToOneScopes =
         let from i =
             fun (s, change) ->
-                let index = s.FromDepth + i
+                let fixedSlots = FromPath.usesFixedSlots s.FromDepth
+                let index = if fixedSlots then i else s.FromDepth + i
                 { s with
-                    FromDepth = index
+                    FromDepth = if fixedSlots then FromPath.FixedSlots else index
                     Scopes = (s.GetFrom index) :: s.Scopes },
                 struct (false, true)
 
@@ -27,7 +28,7 @@ module STL =
           "ROOT",
           (fun (s, change) ->
               { s with
-                  FromDepth = 0
+                  FromDepth = if FromPath.usesFixedSlots s.FromDepth then FromPath.FixedSlots else 0
                   Scopes = s.Root :: s.Scopes },
               struct (false, true))
           "FROM", from 1

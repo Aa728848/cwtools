@@ -946,7 +946,7 @@ type RuleValidationService
                                     { prevctx.scopes with
                                         Scopes = this :: prevctx.scopes.PopScope
                                         From = froms
-                                        FromDepth = 0 } }
+                                        FromDepth = FromPath.FixedSlots } }
                         | Some this, None ->
                             { prevctx with
                                 scopes =
@@ -957,7 +957,7 @@ type RuleValidationService
                                 scopes =
                                     { prevctx.scopes with
                                         From = froms
-                                        FromDepth = 0 } }
+                                        FromDepth = FromPath.FixedSlots } }
                         | None, None -> prevctx
 
                     match rs.root with
@@ -1120,7 +1120,7 @@ type RuleValidationService
                                     { prevctx.scopes with
                                         Scopes = this :: prevctx.scopes.PopScope
                                         From = froms
-                                        FromDepth = 0 } }
+                                        FromDepth = FromPath.FixedSlots } }
                         | Some this, None ->
                             { prevctx with
                                 scopes =
@@ -1131,7 +1131,7 @@ type RuleValidationService
                                 scopes =
                                     { prevctx.scopes with
                                         From = froms
-                                        FromDepth = 0 } }
+                                        FromDepth = FromPath.FixedSlots } }
                         | None, None -> prevctx
 
                     match rs.root with

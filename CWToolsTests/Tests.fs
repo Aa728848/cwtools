@@ -1092,6 +1092,19 @@ let carrierEventScopeValidationTests =
                                   planet_event = { id = carrier_origin.62 }
                               }
                           }
+
+                          special_project = {
+                              key = carrier_dynamic_project
+                              cost = 1
+                              event_scope = ship_event
+                              on_fail = {
+                                  from = {
+                                      from = {
+                                          set_planet_flag = special_project_relative_from_marker
+                                      }
+                                  }
+                              }
+                          }
                           """
 
                   let situationPath, situationText =
@@ -1132,6 +1145,10 @@ let carrierEventScopeValidationTests =
                               immediate = {
                                   enable_special_project = {
                                       name = carrier_origin_project
+                                      location = this
+                                  }
+                                  enable_special_project = {
+                                      name = carrier_dynamic_project
                                       location = this
                                   }
                                   start_situation = {
@@ -1179,6 +1196,24 @@ let carrierEventScopeValidationTests =
                                   carrier = {
                                       has_carrier_flag = building_colony_carrier_marker
                                       fleet = { has_fleet_flag = building_carrier_fleet_marker }
+                                  }
+                              }
+                          }
+                          """
+
+                  let megastructurePath, megastructureText =
+                      writeFile
+                          (Path.Combine("common", "megastructures", "carrier_origin_megastructures.txt"))
+                          """
+                          carrier_origin_megastructure = {
+                              on_build_complete = {
+                                  from = {
+                                      fromfrom = {
+                                          set_megastructure_flag = fixed_nested_fromfrom_marker
+                                      }
+                                  }
+                                  from.fromfrom = {
+                                      set_megastructure_flag = fixed_dotted_fromfrom_marker
                                   }
                               }
                           }
@@ -1352,9 +1387,15 @@ let carrierEventScopeValidationTests =
                               )
 
                           ((error.code = "CW243" || error.code = "CW245")
-                           && [ eventPath; projectPath; commonCallerPath; gameRulePath; situationPath; buildingPath ]
+                           && [ eventPath
+                                projectPath
+                                commonCallerPath
+                                gameRulePath
+                                situationPath
+                                buildingPath
+                                megastructurePath ]
                               |> List.exists isIn)
-                          || (error.code = "CW247" && isIn projectPath)
+                          || (error.code = "CW247" && [ projectPath; megastructurePath ] |> List.exists isIn)
                           || (error.code = "CW274" && isIn eventPath))
 
                   Expect.isEmpty
@@ -1394,6 +1435,18 @@ let carrierEventScopeValidationTests =
                       buildingPath
                       buildingText
                       "the Carrier union should accept a fleet link supported by Ship"
+                  expectScope
+                      "Megastructure"
+                      "fixed_nested_fromfrom_marker"
+                      megastructurePath
+                      megastructureText
+                      "a nested FROMFROM in an object callback should use its fixed named slot"
+                  expectScope
+                      "Megastructure"
+                      "fixed_dotted_fromfrom_marker"
+                      megastructurePath
+                      megastructureText
+                      "a dotted FROM.FROMFROM path should use the same fixed callback slot"
 
                   expectScope "Any" "carrier_from_planet_marker" eventPath eventText "Planet.carrier should resolve to Any"
                   expectScope "Any" "carrier_from_ship_marker" eventPath eventText "Ship.carrier should resolve to Any"
@@ -1572,6 +1625,18 @@ let carrierEventScopeValidationTests =
                       projectPath
                       projectText
                       "special project failure callbacks should preserve project scope and creation scope as FROM/FROMFROM"
+                  expectScope
+                      "Planet"
+                      "special_project_relative_from_marker"
+                      projectPath
+                      projectText
+                      "special-project callbacks should keep runtime FROM paths relative"
+                  expectFromDepth
+                      2
+                      "special_project_relative_from_marker"
+                      projectPath
+                      projectText
+                      "two nested FROM switches in a special-project callback should advance two runtime positions"
                   expectScope "Planet" "situation_target_marker" situationPath situationText "situation targets should use start_situation target provenance"
                   expectScope
                       "Country"

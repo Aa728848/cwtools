@@ -58,10 +58,19 @@ type EffectDictionary(effects: Effect seq) =
 
 type EffectMap = EffectDictionary
 
+[<RequireQualifiedAccess>]
+module FromPath =
+    /// Marks a callback frame whose FROM/FROMFROM/... names are fixed slots.
+    [<Literal>]
+    let FixedSlots = -1
+
+    let usesFixedSlots depth = depth = FixedSlots
+
 type ScopeContext =
     { Root: Scope
       From: Scope list
-      /// Number of relative FROM hops already taken by the current scope chain.
+      /// Number of relative FROM hops already taken, or FromPath.FixedSlots for
+      /// a callback contract whose named FROM slots are absolute.
       FromDepth: int
       Scopes: Scope list }
 
