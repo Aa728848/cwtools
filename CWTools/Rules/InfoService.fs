@@ -71,7 +71,21 @@ type InfoService
     let scopeContextOverride = defaultArg scopeContextOverride (fun _ _ -> None)
 
     let applyScopeContextOverride (node: IClause) (context: ScopeContext) =
-        scopeContextOverride node context |> Option.defaultValue context
+        let overrideInput =
+            if node.Key.StartsWith("event_target:", System.StringComparison.OrdinalIgnoreCase) then
+                // Unknown event targets get a temporary Any frame before the
+                // normal scope-field pass. A precise game-specific override
+                // replaces that placeholder; it must not preserve it as PREV.
+                match context.Scopes, context.FromDepthStack with
+                | current :: _ :: remainingScopes, _ :: remainingDepths ->
+                    { context with
+                        Scopes = current :: remainingScopes
+                        FromDepthStack = remainingDepths }
+                | _ -> context
+            else
+                context
+
+        scopeContextOverride node overrideInput |> Option.defaultValue context
 
     let wildCardLinks =
         links.Values

@@ -873,6 +873,12 @@ let carrierEventScopeValidationTests =
                                   }
                                   event_target:locally_saved_planet.owner = {
                                       set_country_flag = local_planet_owner_marker
+                                      prev = { set_country_flag = dotted_event_target_prev_marker }
+                                  }
+                                  event_target:locally_saved_planet = {
+                                      owner = {
+                                          prev = { set_planet_flag = nested_event_target_prev_marker }
+                                      }
                                   }
                                   random_system = {
                                       random_system_planet = {
@@ -1742,6 +1748,18 @@ let carrierEventScopeValidationTests =
                       eventPath
                       eventText
                       "event-local target fallback should not replace a target chain's final scope"
+                  expectScope
+                      "Country"
+                      "dotted_event_target_prev_marker"
+                      eventPath
+                      eventText
+                      "a dotted event-target path should expose only the outer scope through PREV"
+                  expectScope
+                      "Planet"
+                      "nested_event_target_prev_marker"
+                      eventPath
+                      eventText
+                      "equivalent nested scope blocks should retain their intermediate PREV frame"
                   expectScope
                       "Planet"
                       "chained_planet_target_marker"

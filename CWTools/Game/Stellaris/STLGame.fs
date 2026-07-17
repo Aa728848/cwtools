@@ -1587,11 +1587,19 @@ module STLGameFunctions =
 
                             match inferredScope with
                             | Some targetScope ->
-                                resolved <- setCurrent targetScope resolved
-                                resolved <-
+                                let pathContext =
                                     targetPath
                                     |> List.skip 1
-                                    |> List.fold (fun targetContext link -> changeContextByKey link targetContext) resolved
+                                    |> List.fold
+                                        (fun targetContext link -> changeContextByKey link targetContext)
+                                        (setCurrent targetScope resolved)
+
+                                // A dotted scope path resolves each link in order, but
+                                // enters the final result as one scope frame. Intermediate
+                                // links must not become visible through PREV.
+                                resolved <-
+                                    { setCurrent pathContext.CurrentScope resolved with
+                                        FromDepth = pathContext.FromDepth }
                                 changed <- true
                             | _ -> ()
 
