@@ -332,14 +332,16 @@ type ValidationManager<'T when 'T :> ComputedData>
                     { prevctx with
                         Scopes = this :: prevctx.PopScope
                         From = froms
-                        FromDepth = FromPath.FixedSlots }
+                        FromDepth = FromPath.FixedSlots
+                        FromDepthStack = [] }
                 | Some this, None ->
                     { prevctx with
                         Scopes = this :: prevctx.PopScope }
                 | None, Some froms ->
                     { prevctx with
                         From = froms
-                        FromDepth = FromPath.FixedSlots }
+                        FromDepth = FromPath.FixedSlots
+                        FromDepthStack = [] }
                 | None, None -> prevctx
 
             match rs.root with

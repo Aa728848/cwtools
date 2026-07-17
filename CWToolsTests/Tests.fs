@@ -927,6 +927,40 @@ let carrierEventScopeValidationTests =
                                   fromfromfromfrom = {
                                       set_war_flag = legacy_four_joined_from_marker
                                   }
+                                  country_event = {
+                                      id = carrier_origin.76
+                                      scopes = {
+                                          from = from
+                                          fromfrom = fromfromfromfrom
+                                      }
+                                  }
+                              }
+                          }
+
+                          country_event = {
+                              id = carrier_origin.76
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  fromfrom = {
+                                      every_war_participant = {
+                                          fromfrom = {
+                                              set_war_flag = iterator_from_cursor_reset_marker
+                                              every_war_participant = {
+                                                  set_country_flag = nested_war_participant_marker
+                                              }
+                                          }
+                                      }
+                                  }
+                                  from = {
+                                      capital_scope = {
+                                          prev = {
+                                              from = {
+                                                  set_war_flag = prev_restores_from_cursor_marker
+                                              }
+                                          }
+                                      }
+                                  }
                               }
                           }
 
@@ -1598,6 +1632,18 @@ let carrierEventScopeValidationTests =
                       eventPath
                       eventText
                       "the four-joined FROM spelling used by vanilla should remain compatible"
+                  expectScope
+                      "War"
+                      "iterator_from_cursor_reset_marker"
+                      eventPath
+                      eventText
+                      "a non-FROM iterator should start a new FROM cursor while preserving the event slots"
+                  expectScope
+                      "War"
+                      "prev_restores_from_cursor_marker"
+                      eventPath
+                      eventText
+                      "PREV should restore the FROM cursor belonging to the previous scope frame"
                   expectScope "Planet" "explicit_scope_target_marker" eventPath eventText "explicit event scopes should retain the proven Carrier host"
                   expectFromScopes
                       [ "Country"; "Planet" ]

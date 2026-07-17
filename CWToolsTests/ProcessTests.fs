@@ -3273,6 +3273,7 @@ let nestedEventTargetTests =
                       { Root = root
                         From = []
                         FromDepth = 0
+                        FromDepthStack = []
                         Scopes = [ current ] }
 
                   match

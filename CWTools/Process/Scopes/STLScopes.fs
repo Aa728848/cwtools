@@ -14,22 +14,24 @@ module STL =
 
     let oneToOneScopes =
         let from i =
-            fun (s, change) ->
+            fun ((s: ScopeContext), change) ->
                 let fixedSlots = FromPath.usesFixedSlots s.FromDepth
                 let index = if fixedSlots then i else s.FromDepth + i
-                { s with
-                    FromDepth = if fixedSlots then FromPath.FixedSlots else index
-                    Scopes = (s.GetFrom index) :: s.Scopes },
+                s.PushScope(
+                    s.GetFrom index,
+                    if fixedSlots then FromPath.FixedSlots else index
+                ),
                 struct (false, true)
 
-        let prev = fun (s, change) -> { s with Scopes = s.PopScope }, struct (false, true)
+        let prev = fun ((s: ScopeContext), change) -> s.PopScopeContext, struct (false, true)
 
         [ "THIS", id
           "ROOT",
-          (fun (s, change) ->
-              { s with
-                  FromDepth = if FromPath.usesFixedSlots s.FromDepth then FromPath.FixedSlots else 0
-                  Scopes = s.Root :: s.Scopes },
+          (fun ((s: ScopeContext), change) ->
+              s.PushScope(
+                  s.Root,
+                  if FromPath.usesFixedSlots s.FromDepth then FromPath.FixedSlots else 0
+              ),
               struct (false, true))
           "FROM", from 1
           "FROMFROM", from 2
@@ -70,7 +72,7 @@ module STL =
                 let rootContext = { source with Scopes = [ source.Root ] }
                 match baseChangeScope.Invoke(varLhs, skipEffect, links, valueTriggers, wildcards, vars, key, rootContext) with
                 | NewScope({ Scopes = target :: _ }, ignored, hint) ->
-                    NewScope({ source with Scopes = target :: source.Scopes }, ignored, hint)
+                    NewScope(source.PushScopeReset target, ignored, hint)
                 | _ -> wrongScope
             | result -> result)
 

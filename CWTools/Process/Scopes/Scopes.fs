@@ -72,6 +72,9 @@ type ScopeContext =
       /// Number of relative FROM hops already taken, or FromPath.FixedSlots for
       /// a callback contract whose named FROM slots are absolute.
       FromDepth: int
+      /// FROM cursor saved for each previous scope frame, in the same order as
+      /// the tail of Scopes. PREV restores the cursor from this stack.
+      FromDepthStack: int list
       Scopes: Scope list }
 
     member this.CurrentScope =
@@ -83,6 +86,41 @@ type ScopeContext =
         match this.Scopes with
         | [] -> []
         | _ :: xs -> xs
+
+    member this.PushScope(scope: Scope, fromDepth: int) =
+        { this with
+            FromDepth = fromDepth
+            FromDepthStack = this.FromDepth :: this.FromDepthStack
+            Scopes = scope :: this.Scopes }
+
+    member this.PushScopeReset(scope: Scope) =
+        let fromDepth =
+            if FromPath.usesFixedSlots this.FromDepth then FromPath.FixedSlots else 0
+
+        this.PushScope(scope, fromDepth)
+
+    member this.ReplaceCurrentScope(scope: Scope, fromDepth: int) =
+        { this with
+            FromDepth = fromDepth
+            Scopes = scope :: this.PopScope }
+
+    member this.ReplaceCurrentScopeReset(scope: Scope) =
+        let fromDepth =
+            if FromPath.usesFixedSlots this.FromDepth then FromPath.FixedSlots else 0
+
+        this.ReplaceCurrentScope(scope, fromDepth)
+
+    member this.PopScopeContext =
+        let previousDepth, remainingDepths =
+            match this.FromDepthStack with
+            | previous :: remaining -> previous, remaining
+            | [] ->
+                (if FromPath.usesFixedSlots this.FromDepth then FromPath.FixedSlots else 0), []
+
+        { this with
+            FromDepth = previousDepth
+            FromDepthStack = remainingDepths
+            Scopes = this.PopScope }
 
     member this.GetFrom i =
         if this.From.Length >= i then
@@ -116,12 +154,14 @@ module Scopes =
         { Root = scopeManager.AnyScope
           From = []
           FromDepth = 0
+          FromDepthStack = []
           Scopes = [] }
 
     let noneContext =
         { Root = scopeManager.InvalidScope
           From = []
           FromDepth = 0
+          FromDepthStack = []
           Scopes = [ scopeManager.InvalidScope ] }
 
     // type EffectMap<'T> = Map<string, Effect<'T>, InsensitiveStringComparer>
@@ -141,10 +181,10 @@ module Scopes =
             else
                 key.ToString(), false)
 
-    let private applyTargetScope (scope: _ option) (context: _ list) =
+    let private applyTargetContext (scope: Scope option) (context: ScopeContext) =
         match scope with
         | None -> context
-        | Some ps -> ps :: context
+        | Some ps -> context.PushScopeReset ps
 
     let private splitOnDotsOutsideGroups (key: string) =
         let parts = ResizeArray<string>()
@@ -211,10 +251,7 @@ module Scopes =
                     || key.StartsWith('@')
                 then
                     NewScope(
-                        { Root = source.Root
-                          From = source.From
-                          FromDepth = source.FromDepth
-                          Scopes = source.Root.AnyScope :: source.Scopes },
+                        source.PushScopeReset source.Root.AnyScope,
                         [],
                         None
                     )
@@ -283,28 +320,14 @@ module Scopes =
 
                                 match context.CurrentScope, possibleScopes, exact, e.IsScopeChange with
                                 | x, _, _, true when x.Equals source.Root.AnyScope ->
-                                    ({ context with
-                                        Scopes = applyTargetScope e.Target context.Scopes },
-                                     true),
-                                    NewScope(
-                                        { source with
-                                            Scopes = applyTargetScope e.Target context.Scopes },
-                                        e.IgnoreChildren,
-                                        refHint
-                                    )
+                                    let targetContext = applyTargetContext e.Target context
+                                    (targetContext, true), NewScope(targetContext, e.IgnoreChildren, refHint)
                                 | x, _, _, false when x.Equals source.Root.AnyScope ->
                                     (context, false), NewScope(context, e.IgnoreChildren, refHint)
                                 | _, [], _, _ -> (context, false), NotFound
                                 | _, _, true, true ->
-                                    ({ context with
-                                        Scopes = applyTargetScope e.Target context.Scopes },
-                                     true),
-                                    NewScope(
-                                        { source with
-                                            Scopes = applyTargetScope e.Target context.Scopes },
-                                        e.IgnoreChildren,
-                                        refHint
-                                    )
+                                    let targetContext = applyTargetContext e.Target context
+                                    (targetContext, true), NewScope(targetContext, e.IgnoreChildren, refHint)
                                 | _, _, true, false -> (context, false), NewScope(context, e.IgnoreChildren, refHint)
                                 | current, ss, false, _ -> (context, false), WrongScope(nextKey, current, ss, refHint)
 
@@ -327,12 +350,7 @@ module Scopes =
                             r
                             |> function
                                 | NewScope(x, i, rh) ->
-                                    NewScope(
-                                        { source with
-                                            Scopes = x.CurrentScope :: source.Scopes },
-                                        i,
-                                        rh
-                                    )
+                                    NewScope(source.PushScope(x.CurrentScope, x.FromDepth), i, rh)
                                 | x -> x
                         | (_, false), Some r -> r
 
@@ -358,12 +376,7 @@ module Scopes =
                                 r
                                 |> function
                                     | NewScope(x, i, rh) ->
-                                        NewScope(
-                                            { source with
-                                                Scopes = x.CurrentScope :: source.Scopes },
-                                            i,
-                                            rh
-                                        )
+                                        NewScope(source.PushScope(x.CurrentScope, x.FromDepth), i, rh)
                                     | x -> x
                             | (_, false), Some r -> r
 
@@ -401,10 +414,7 @@ module Scopes =
                     || key.StartsWith('@')
                 then
                     NewScope(
-                        { Root = source.Root
-                          From = source.From
-                          FromDepth = source.FromDepth
-                          Scopes = source.Root.AnyScope :: source.Scopes },
+                        source.PushScopeReset source.Root.AnyScope,
                         [],
                         None
                     )
@@ -441,15 +451,9 @@ module Scopes =
                                 valueScopeMatch
                             with
                             | true, None, _ ->
-                                (context, struct (true, true)),
-                                NewScope(
-                                    { Root = source.Root
-                                      From = source.From
-                                      FromDepth = source.FromDepth
-                                      Scopes = source.Root.AnyScope :: source.Scopes },
-                                    [],
-                                    None
-                                )
+                                let targetContext = context.PushScopeReset source.Root.AnyScope
+                                (targetContext, struct (true, true)),
+                                NewScope(targetContext, [], None)
                             | _, _, Some e ->
                                 if last then
                                     let possibleScopes = e.Scopes
@@ -480,28 +484,14 @@ module Scopes =
 
                                 match context.CurrentScope, possibleScopes, exact, e.IsScopeChange with
                                 | x, _, _, true when x.Equals source.Root.AnyScope ->
-                                    ({ context with
-                                        Scopes = applyTargetScope e.Target context.Scopes },
-                                     struct (false, true)),
-                                    NewScope(
-                                        { source with
-                                            Scopes = applyTargetScope e.Target context.Scopes },
-                                        e.IgnoreChildren,
-                                        None
-                                    )
+                                    let targetContext = applyTargetContext e.Target context
+                                    (targetContext, struct (false, true)), NewScope(targetContext, e.IgnoreChildren, None)
                                 | x, _, _, false when x.Equals source.Root.AnyScope ->
                                     (context, struct (false, false)), NewScope(context, e.IgnoreChildren, None)
                                 | _, [], _, _ -> (context, struct (false, false)), NotFound
                                 | _, _, true, true ->
-                                    ({ context with
-                                        Scopes = applyTargetScope e.Target context.Scopes },
-                                     struct (false, true)),
-                                    NewScope(
-                                        { source with
-                                            Scopes = applyTargetScope e.Target context.Scopes },
-                                        e.IgnoreChildren,
-                                        None
-                                    )
+                                    let targetContext = applyTargetContext e.Target context
+                                    (targetContext, struct (false, true)), NewScope(targetContext, e.IgnoreChildren, None)
                                 | _, _, true, false ->
                                     (context, struct (false, false)), NewScope(context, e.IgnoreChildren, None)
                                 | current, ss, false, _ ->
@@ -529,13 +519,7 @@ module Scopes =
                                 r
                                 |> function
                                     | NewScope(x, i, _) ->
-                                        NewScope(
-                                            { source with
-                                                FromDepth = x.FromDepth
-                                                Scopes = x.CurrentScope :: source.Scopes },
-                                            i,
-                                            None
-                                        )
+                                        NewScope(source.PushScope(x.CurrentScope, x.FromDepth), i, None)
                                     | x -> x
                             | (_, struct (_, false)), Some r -> r
                         else
@@ -567,13 +551,7 @@ module Scopes =
                                 r
                                 |> function
                                     | NewScope(x, i, _) ->
-                                        NewScope(
-                                            { source with
-                                                FromDepth = x.FromDepth
-                                                Scopes = x.CurrentScope :: source.Scopes },
-                                            i,
-                                            None
-                                        )
+                                        NewScope(source.PushScope(x.CurrentScope, x.FromDepth), i, None)
                                     | x -> x
                             | (_, struct (_, false)), Some r -> r
 
@@ -602,13 +580,7 @@ module Scopes =
                                         r
                                         |> function
                                             | NewScope(x, i, _) ->
-                                                NewScope(
-                                                    { source with
-                                                        FromDepth = x.FromDepth
-                                                        Scopes = x.CurrentScope :: source.Scopes },
-                                                    i,
-                                                    None
-                                                )
+                                                NewScope(source.PushScope(x.CurrentScope, x.FromDepth), i, None)
                                             | x -> x
                                     | (_, (_, false)), Some r -> r
 

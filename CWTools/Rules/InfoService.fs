@@ -320,6 +320,7 @@ type InfoService
                 { Root = rs.root |> Option.orElse rs.this |> Option.defaultValue anyScope
                   From = rs.froms |> Option.defaultValue []
                   FromDepth = 0
+                  FromDepthStack = []
                   Scopes = rs.prevs |> Option.defaultValue [] }
 
             if rs.this |> Option.isSome then
@@ -341,6 +342,7 @@ type InfoService
                   { Root = ps
                     From = []
                     FromDepth = 0
+                    FromDepthStack = []
                     Scopes = [ ps ] }
               warningOnly = false }
         | None, Some { replaceScopes = Some rs } -> replaceContext rs
@@ -350,6 +352,7 @@ type InfoService
                   { Root = ps
                     From = []
                     FromDepth = 0
+                    FromDepthStack = []
                     Scopes = [ ps ] }
               warningOnly = false }
         | None, _ ->
@@ -422,9 +425,7 @@ type InfoService
                 match options.pushScope with
                 | Some ps ->
                     { ctx with
-                        RuleContext.scopes =
-                            { ctx.scopes with
-                                Scopes = ps :: ctx.scopes.Scopes } }
+                        RuleContext.scopes = ctx.scopes.PushScopeReset ps }
                 | None ->
                     match options.replaceScopes with
                     | Some rs ->
@@ -436,7 +437,8 @@ type InfoService
                                         { ctx.scopes with
                                             Scopes = this :: ctx.scopes.PopScope
                                             From = froms
-                                            FromDepth = FromPath.FixedSlots } }
+                                            FromDepth = FromPath.FixedSlots
+                                            FromDepthStack = [] } }
                             | Some this, None ->
                                 { ctx with
                                     scopes =
@@ -447,7 +449,8 @@ type InfoService
                                     scopes =
                                         { ctx.scopes with
                                             From = froms
-                                            FromDepth = FromPath.FixedSlots } }
+                                            FromDepth = FromPath.FixedSlots
+                                            FromDepthStack = [] } }
                             | None, None -> ctx
 
                         match rs.root with
@@ -461,9 +464,7 @@ type InfoService
                             || node.Key.StartsWith("parameter:", System.StringComparison.OrdinalIgnoreCase)
                         then
                             { ctx with
-                                scopes =
-                                    { ctx.scopes with
-                                        Scopes = anyScope :: ctx.scopes.Scopes } }
+                                scopes = ctx.scopes.PushScopeReset anyScope }
                         else
                             ctx
 
@@ -480,9 +481,7 @@ type InfoService
                         | VarFound ->
                             // log "cs %A %A %A" s node.Key current
                             { newCtx with
-                                scopes =
-                                    { newCtx.scopes with
-                                        Scopes = anyScope :: newCtx.scopes.Scopes } }
+                                scopes = newCtx.scopes.PushScopeReset anyScope }
                         | _ -> newCtx
 
                     newCtx
@@ -717,9 +716,7 @@ type InfoService
                 match options.pushScope with
                 | Some ps ->
                     { ctx with
-                        RuleContext.scopes =
-                            { ctx.scopes with
-                                Scopes = ps :: ctx.scopes.Scopes } }
+                        RuleContext.scopes = ctx.scopes.PushScopeReset ps }
                 | None ->
                     match options.replaceScopes with
                     | Some rs ->
@@ -731,7 +728,8 @@ type InfoService
                                         { ctx.scopes with
                                             Scopes = this :: ctx.scopes.PopScope
                                             From = froms
-                                            FromDepth = FromPath.FixedSlots } }
+                                            FromDepth = FromPath.FixedSlots
+                                            FromDepthStack = [] } }
                             | Some this, None ->
                                 { ctx with
                                     scopes =
@@ -742,7 +740,8 @@ type InfoService
                                     scopes =
                                         { ctx.scopes with
                                             From = froms
-                                            FromDepth = FromPath.FixedSlots } }
+                                            FromDepth = FromPath.FixedSlots
+                                            FromDepthStack = [] } }
                             | None, None -> ctx
 
                         match rs.root with
@@ -756,9 +755,7 @@ type InfoService
                             || node.Key.StartsWith("parameter:", System.StringComparison.OrdinalIgnoreCase)
                         then
                             { ctx with
-                                scopes =
-                                    { ctx.scopes with
-                                        Scopes = anyScope :: ctx.scopes.Scopes } }
+                                scopes = ctx.scopes.PushScopeReset anyScope }
                         else
                             ctx
 
@@ -928,9 +925,7 @@ type InfoService
                 match options.pushScope with
                 | Some ps ->
                     { ctx with
-                        RuleContext.scopes =
-                            { ctx.scopes with
-                                Scopes = ps :: ctx.scopes.Scopes } }
+                        RuleContext.scopes = ctx.scopes.PushScopeReset ps }
                 | None ->
                     match options.replaceScopes with
                     | Some rs ->
@@ -942,7 +937,8 @@ type InfoService
                                         { ctx.scopes with
                                             Scopes = this :: ctx.scopes.PopScope
                                             From = froms
-                                            FromDepth = FromPath.FixedSlots } }
+                                            FromDepth = FromPath.FixedSlots
+                                            FromDepthStack = [] } }
                             | Some this, None ->
                                 { ctx with
                                     scopes =
@@ -953,7 +949,8 @@ type InfoService
                                     scopes =
                                         { ctx.scopes with
                                             From = froms
-                                            FromDepth = FromPath.FixedSlots } }
+                                            FromDepth = FromPath.FixedSlots
+                                            FromDepthStack = [] } }
                             | None, None -> ctx
 
                         match rs.root with
@@ -967,9 +964,7 @@ type InfoService
                             || node.Key.StartsWith("parameter:", System.StringComparison.OrdinalIgnoreCase)
                         then
                             { ctx with
-                                scopes =
-                                    { ctx.scopes with
-                                        Scopes = anyScope :: ctx.scopes.Scopes } }
+                                scopes = ctx.scopes.PushScopeReset anyScope }
                         else
                             ctx
 

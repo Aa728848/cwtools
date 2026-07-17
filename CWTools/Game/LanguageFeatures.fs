@@ -1691,6 +1691,7 @@ module LanguageFeatures =
                 <> { Root = anyScope
                      From = []
                      FromDepth = 0
+                     FromDepthStack = []
                      Scopes = [] }
                 ->
                 Some ctx

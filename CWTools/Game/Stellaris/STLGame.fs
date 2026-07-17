@@ -808,6 +808,7 @@ module STLGameFunctions =
             { Root = root
               From = replaceScopes.froms |> Option.defaultValue []
               FromDepth = 0
+              FromDepthStack = []
               Scopes = scopes }
 
         let trySubtypeContext typeName (root: Node) =
@@ -844,6 +845,7 @@ module STLGameFunctions =
                         { Root = scope
                           From = []
                           FromDepth = 0
+                          FromDepthStack = []
                           Scopes = [ scope ] }
                 | None, None -> None)
 
@@ -1038,7 +1040,8 @@ module STLGameFunctions =
             let resolved =
                 { setCurrent current fallback with
                     From = froms
-                    FromDepth = 0 }
+                    FromDepth = 0
+                    FromDepthStack = [] }
 
             match callbackKey with
             | "on_success"
@@ -1171,6 +1174,7 @@ module STLGameFunctions =
                                         { Root = scopeManager.AnyScope
                                           From = []
                                           FromDepth = 0
+                                          FromDepthStack = []
                                           Scopes = [] }
 
                                 let context =
@@ -1224,6 +1228,7 @@ module STLGameFunctions =
                                     { Root = scopeManager.AnyScope
                                       From = []
                                       FromDepth = 0
+                                      FromDepthStack = []
                                       Scopes = [] }
 
                             let mask = hostMaskOfScope listContext.CurrentScope
@@ -1262,7 +1267,8 @@ module STLGameFunctions =
                             let withFrom =
                                 { staticContext with
                                     From = chain
-                                    FromDepth = 0 }
+                                    FromDepth = 0
+                                    FromDepthStack = [] }
                             let callerMask = eventHosts |> Map.tryFind (caller.ToLowerInvariant()) |> Option.defaultValue 0
                             match hostScope callerMask with
                             | Some callerScope -> setCarrierHost callerScope withFrom
@@ -1303,6 +1309,7 @@ module STLGameFunctions =
                         { Root = scopeManager.AnyScope
                           From = []
                           FromDepth = 0
+                          FromDepthStack = []
                           Scopes = [] }
 
                 let rootContext =
@@ -1310,7 +1317,8 @@ module STLGameFunctions =
                     | Some chains when not chains.IsEmpty ->
                         { rootContext with
                             From = mergeFromChains chains
-                            FromDepth = 0 }
+                            FromDepth = 0
+                            FromDepthStack = [] }
                     | _ -> rootContext
 
                 let rootContext =
@@ -1410,7 +1418,8 @@ module STLGameFunctions =
                                 resolved <-
                                     { resolved with
                                         From = mergeFromChains chains
-                                        FromDepth = 0 }
+                                        FromDepth = 0
+                                        FromDepthStack = [] }
                                 changed <- true
                             | _ -> ()
 

@@ -925,9 +925,7 @@ type RuleValidationService
             match options.pushScope with
             | Some ps ->
                 { ctx with
-                    scopes =
-                        { ctx.scopes with
-                            Scopes = ps :: ctx.scopes.Scopes } }
+                    scopes = ctx.scopes.PushScopeReset ps }
             | None ->
                 match options.replaceScopes with
                 | Some rs ->
@@ -946,7 +944,8 @@ type RuleValidationService
                                     { prevctx.scopes with
                                         Scopes = this :: prevctx.scopes.PopScope
                                         From = froms
-                                        FromDepth = FromPath.FixedSlots } }
+                                        FromDepth = FromPath.FixedSlots
+                                        FromDepthStack = [] } }
                         | Some this, None ->
                             { prevctx with
                                 scopes =
@@ -957,7 +956,8 @@ type RuleValidationService
                                 scopes =
                                     { prevctx.scopes with
                                         From = froms
-                                        FromDepth = FromPath.FixedSlots } }
+                                        FromDepth = FromPath.FixedSlots
+                                        FromDepthStack = [] } }
                         | None, None -> prevctx
 
                     match rs.root with
@@ -1016,10 +1016,9 @@ type RuleValidationService
                      | _, true ->
                          let newCtx =
                              { newCtx with
-                                 scopes =
-                                     applyScopeContextOverride node
-                                         { newCtx.scopes with
-                                             Scopes = anyScope :: newCtx.scopes.Scopes } }
+                                scopes =
+                                    applyScopeContextOverride node
+                                        (newCtx.scopes.PushScopeReset anyScope) }
 
                          applyClauseField enforceCardinality options.severity newCtx rules node errors
                      | NewScope(newScopes, _, _), _ ->
@@ -1036,10 +1035,9 @@ type RuleValidationService
                      | VarFound, _ ->
                          let newCtx =
                              { newCtx with
-                                 scopes =
-                                     applyScopeContextOverride node
-                                         { newCtx.scopes with
-                                             Scopes = anyScope :: newCtx.scopes.Scopes } }
+                                scopes =
+                                    applyScopeContextOverride node
+                                        (newCtx.scopes.PushScopeReset anyScope) }
 
                          applyClauseField enforceCardinality options.severity newCtx rules node errors
                      | VarNotFound v, _ ->
@@ -1099,9 +1097,7 @@ type RuleValidationService
             match options.pushScope with
             | Some ps ->
                 { ctx with
-                    scopes =
-                        { ctx.scopes with
-                            Scopes = ps :: ctx.scopes.Scopes } }
+                    scopes = ctx.scopes.PushScopeReset ps }
             | None ->
                 match options.replaceScopes with
                 | Some rs ->
@@ -1120,7 +1116,8 @@ type RuleValidationService
                                     { prevctx.scopes with
                                         Scopes = this :: prevctx.scopes.PopScope
                                         From = froms
-                                        FromDepth = FromPath.FixedSlots } }
+                                        FromDepth = FromPath.FixedSlots
+                                        FromDepthStack = [] } }
                         | Some this, None ->
                             { prevctx with
                                 scopes =
@@ -1131,7 +1128,8 @@ type RuleValidationService
                                 scopes =
                                     { prevctx.scopes with
                                         From = froms
-                                        FromDepth = FromPath.FixedSlots } }
+                                        FromDepth = FromPath.FixedSlots
+                                        FromDepthStack = [] } }
                         | None, None -> prevctx
 
                     match rs.root with
@@ -1224,6 +1222,7 @@ type RuleValidationService
                 { Root = ps
                   From = []
                   FromDepth = 0
+                  FromDepthStack = []
                   Scopes = [ ps ] }
             | Some(SubTypeReplaceScopes rs), _, _
             | None, _, Some rs ->
@@ -1231,6 +1230,7 @@ type RuleValidationService
                     { Root = rs.root |> Option.orElse rs.this |> Option.defaultValue anyScope
                       From = rs.froms |> Option.defaultValue []
                       FromDepth = 0
+                      FromDepthStack = []
                       Scopes = rs.prevs |> Option.defaultValue [] }
 
                 if rs.this |> Option.isSome then
@@ -1242,6 +1242,7 @@ type RuleValidationService
                 { Root = ps
                   From = []
                   FromDepth = 0
+                  FromDepthStack = []
                   Scopes = [ ps ] }
             | None, None, None -> defaultContext
 
