@@ -775,15 +775,94 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 |> Map.tryFind pos.FileName
                 |> Option.bind (fun struct (e, _) -> findNodeAtPosition e.entity pos |> Option.map (fun n -> e, n))
 
-            let scriptedEffectScopeAtPosition (entity: Entity) (pos: range) =
+            let scriptedEffectContextAtPosition (entity: Entity) (pos: range) =
                 let cursor = mkPos pos.StartLine (int pos.StartColumn)
                 match tempInfoService.GetInfo(cursor, entity) with
-                | Some(context, (_, Some(TypeRef(typeName, _)), _)) when typeName == "scripted_effect" ->
-                    Some context.CurrentScope
+                | Some(context, (_, Some(TypeRef(typeName, _)), _)) when typeName == "scripted_effect" -> Some context
                 | _ -> None
 
-            let preferConcreteScope fallback scope =
-                if scope.Equals(settings.anyScope) || scope.Equals(scopeManager.InvalidScope) then fallback else scope
+            let infoContextAtPosition (entity: Entity) (pos: range) =
+                let cursor = mkPos pos.StartLine (int pos.StartColumn)
+                tempInfoService.GetInfo(cursor, entity) |> Option.map fst
+
+            let expandedPathToPosition (expandedRoot: Node) (pos: range) =
+                let rec pathToPosition path (node: Node) =
+                    node.Nodes
+                    |> Seq.tryFind (fun child -> rangeContainsRange child.Position pos)
+                    |> Option.map (fun child -> pathToPosition (child :: path) child)
+                    |> Option.defaultValue (List.rev path)
+
+                pathToPosition [] expandedRoot
+
+            let isUnresolvedScope (scope: Scope) =
+                scope.Equals(settings.anyScope) || scope.Equals(scopeManager.InvalidScope)
+
+            // Scripted effects execute inline. InfoService describes the definition's
+            // relative scope frames; replay only the frames introduced below its root
+            // over the caller context. This preserves rule-driven iterators as well as
+            // relative FROM/FROMFROM cursors and PREV's restored frame stack.
+            let materializeScriptedContext
+                (callContext: ScopeContext)
+                (expandedRoot: Node)
+                (rootContext: ScopeContext)
+                (staticContext: ScopeContext)
+                (pos: range)
+                =
+                let introducedCount = max 0 (staticContext.Scopes.Length - rootContext.Scopes.Length)
+                let staticDepths = staticContext.FromDepth :: staticContext.FromDepthStack
+
+                let introducedFrames =
+                    List.zip
+                        (staticContext.Scopes |> List.truncate introducedCount)
+                        (staticDepths |> List.truncate introducedCount)
+                    |> List.rev
+
+                let nearestExplicitScope =
+                    let names = settings.oneToOneScopesNames |> List.map _.ToUpperInvariant() |> Set.ofList
+
+                    expandedPathToPosition expandedRoot pos
+                    |> List.rev
+                    |> List.tryFind (fun node ->
+                        let key = node.Key.ToUpperInvariant()
+
+                        names.Contains key
+                        || key.StartsWith("EVENT_TARGET:", StringComparison.Ordinal)
+                        || key.StartsWith("PARAMETER:", StringComparison.Ordinal))
+                    |> Option.map (fun node -> node.Key.ToUpperInvariant())
+
+                let mutable previousStaticDepth = rootContext.FromDepth
+                let mutable previousActualDepth = callContext.FromDepth
+                let mutable actualContext = callContext
+
+                for staticScope, staticDepth in introducedFrames do
+                    let actualDepth =
+                        if FromPath.usesFixedSlots callContext.FromDepth || FromPath.usesFixedSlots staticDepth then
+                            FromPath.FixedSlots
+                        elif staticDepth = 0 then
+                            0
+                        elif previousStaticDepth >= 0 && staticDepth >= previousStaticDepth then
+                            previousActualDepth + staticDepth - previousStaticDepth
+                        else
+                            staticDepth
+
+                    let actualScope =
+                        if not (isUnresolvedScope staticScope) then
+                            staticScope
+                        elif staticDepth > 0 then
+                            let fromIndex =
+                                if FromPath.usesFixedSlots callContext.FromDepth then staticDepth else actualDepth
+
+                            callContext.GetFrom fromIndex
+                        elif nearestExplicitScope = Some "ROOT" then
+                            callContext.Root
+                        else
+                            settings.anyScope
+
+                    actualContext <- actualContext.PushScope(actualScope, actualDepth)
+                    previousStaticDepth <- staticDepth
+                    previousActualDepth <- actualDepth
+
+                actualContext
 
             let lower (s: string) = s.ToLowerInvariant()
 
@@ -896,23 +975,49 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                         if concrete.Count = 0 then None else Some(name, concrete))
                     |> Map.ofSeq
 
-                let onlyConcreteEventTargets callScope (savedTargets: ResizeArray<string * range * Scope>) =
+                let onlyConcreteEventTargets
+                    (callContext: ScopeContext)
+                    (expandedEntity: Entity)
+                    (expandedNode: Node)
+                    (savedTargets: ResizeArray<string * range * Scope>)
+                    =
+                    let rootContext =
+                        infoContextAtPosition expandedEntity expandedNode.Position
+                        |> Option.defaultValue settings.defaultContext
+
                     savedTargets
-                    |> Seq.choose (fun (name, position, scope) ->
+                    |> Seq.choose (fun (name, position, _) ->
                         if String.IsNullOrWhiteSpace name || name.IndexOf('$') >= 0 then
                             None
                         else
-                            Some(name, position, preferConcreteScope callScope scope))
+                            let resolvedScope =
+                                infoContextAtPosition expandedEntity position
+                                |> Option.map (fun staticContext ->
+                                    materializeScriptedContext callContext expandedNode rootContext staticContext position)
+                                |> Option.defaultValue callContext
+                                |> _.CurrentScope
+
+                            Some(name, position, resolvedScope))
                     |> Seq.toList
 
                 let visited = HashSet<string>()
 
-                let rec collectFromScriptedEffect depth name parameters callScope =
+                let contextKey (context: ScopeContext) =
+                    String.concat
+                        "|"
+                        [ context.Root.ToString()
+                          context.CurrentScope.ToString()
+                          string context.FromDepth
+                          context.From |> List.map string |> String.concat ","
+                          context.Scopes |> List.map string |> String.concat ","
+                          context.FromDepthStack |> List.map string |> String.concat "," ]
+
+                let rec collectFromScriptedEffect depth name parameters (callContext: ScopeContext) =
                     if depth > 12 then
                         []
                     else
                         let nameKey = lower name
-                        let visitedKey = nameKey + "|" + canonicalParams parameters + "|" + callScope.ToString()
+                        let visitedKey = nameKey + "|" + canonicalParams parameters + "|" + contextKey callContext
 
                         if not (visited.Add visitedKey) then
                             []
@@ -937,17 +1042,27 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
                                 let directEventTargets =
                                     tempInfoService.GetSavedEventTargets expandedEntity
-                                    |> onlyConcreteEventTargets callScope
+                                    |> onlyConcreteEventTargets callContext expandedEntity expandedNode
 
                                 let nested =
                                     findNestedCalls expandedNode
                                     |> List.collect (fun (nestedName, nestedParams, nestedPosition) ->
-                                        let nestedScope =
-                                            scriptedEffectScopeAtPosition expandedEntity nestedPosition
-                                            |> Option.map (preferConcreteScope callScope)
-                                            |> Option.defaultValue callScope
+                                        let rootContext =
+                                            infoContextAtPosition expandedEntity expandedNode.Position
+                                            |> Option.defaultValue settings.defaultContext
 
-                                        collectFromScriptedEffect (depth + 1) nestedName nestedParams nestedScope)
+                                        let nestedContext =
+                                            infoContextAtPosition expandedEntity nestedPosition
+                                            |> Option.map (fun staticContext ->
+                                                materializeScriptedContext
+                                                    callContext
+                                                    expandedNode
+                                                    rootContext
+                                                    staticContext
+                                                    nestedPosition)
+                                            |> Option.defaultValue callContext
+
+                                        collectFromScriptedEffect (depth + 1) nestedName nestedParams nestedContext)
 
                                 (direct, directEventTargets) :: nested
 
@@ -963,7 +1078,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                             0
                             (reference.name.GetString())
                             (findCallParams reference.position)
-                            settings.anyScope
+                            settings.defaultContext
                         |> Seq.map (fun expansion -> reference.position, expansion))
 
                 let scopedEventTargetExpansions =
@@ -979,7 +1094,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                         calls
                         |> Seq.filter (fun (effectName, _, _) -> Set.contains (lower effectName) targetSavingEffects)
                         |> Seq.collect (fun (effectName, parameters, position) ->
-                            scriptedEffectScopeAtPosition entity position
+                            scriptedEffectContextAtPosition entity position
                             |> Option.map (collectFromScriptedEffect 0 effectName parameters)
                             |> Option.defaultValue []
                             |> Seq.map (fun expansion -> position, expansion)))

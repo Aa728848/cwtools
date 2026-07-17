@@ -639,7 +639,8 @@ module STLGameFunctions =
           eventHosts: Map<string, int>
           eventEvidence: Map<string, string list>
           eventFromChains: Map<string, Set<Scope list>>
-          eventSavedTargetScopes: Map<string, Set<Scope>>
+          eventSavedTargetScopes: Map<string, Map<string, Set<Scope>>>
+          globalSavedTargetScopes: Map<string, Set<Scope>>
           projectCreationScopes: Map<string, Set<Scope>>
           situationTargetScopes: Map<string, Set<Scope>>
           situationEventTargetScopes: Map<string, Set<Scope>> }
@@ -703,9 +704,6 @@ module STLGameFunctions =
             let key = key.Trim().Trim('"').ToLowerInvariant()
             if key.StartsWith("hidden:") then key.Substring(7) else key
 
-        let eventTargetKey (eventId: string) (targetName: string) =
-            eventId.ToLowerInvariant() + "\u0000" + targetName.ToLowerInvariant()
-
         let cleanValue (value: string) =
             if isNull value then "" else value.Trim().Trim('"')
 
@@ -715,7 +713,18 @@ module STLGameFunctions =
             else
                 map
                 |> Map.change (key.ToLowerInvariant()) (fun existing ->
-                    existing |> Option.defaultValue Set.empty |> Set.add scope |> Some)
+                        existing |> Option.defaultValue Set.empty |> Set.add scope |> Some)
+
+        let addEventTargetScope eventId targetName scope map =
+            if String.IsNullOrWhiteSpace eventId || String.IsNullOrWhiteSpace targetName then
+                map
+            else
+                map
+                |> Map.change (eventId.ToLowerInvariant()) (fun existing ->
+                    existing
+                    |> Option.defaultValue Map.empty
+                    |> addScope targetName scope
+                    |> Some)
 
         let addMask key mask map =
             if String.IsNullOrWhiteSpace key || mask = 0 then map
@@ -1298,64 +1307,126 @@ module STLGameFunctions =
                             evidence <- addEvidence target $"carrier_event from %s{caller}" evidence
                             changed <- true
 
-            let mutable eventSavedTargetScopes: Map<string, Set<Scope>> = Map.empty
+            let mutable directEventSavedTargetScopes: Map<string, Map<string, Set<Scope>>> = Map.empty
+            let mutable globalSavedTargetScopes: Map<string, Set<Scope>> = Map.empty
 
-            for pair in eventDefinitions do
-                let eventId = pair.Key
-                let struct (entity, root) = pair.Value
-                let rootContext =
-                    trySubtypeContext "event" root
-                    |> Option.defaultValue
-                        { Root = scopeManager.AnyScope
-                          From = []
-                          FromDepth = 0
-                          FromDepthStack = []
-                          Scopes = [] }
+            // Rule-driven iterators such as random_owned_planet can only be
+            // interpreted by the completed InfoService. During early game
+            // construction, leave target bindings unresolved and rebuild this
+            // snapshot once InfoService is available instead of recording the
+            // event root scope as false evidence.
+            if getInfoService().IsSome then
+                for pair in eventDefinitions do
+                    let eventId = pair.Key
+                    let struct (entity, root) = pair.Value
+                    let rootContext =
+                        trySubtypeContext "event" root
+                        |> Option.defaultValue
+                            { Root = scopeManager.AnyScope
+                              From = []
+                              FromDepth = 0
+                              FromDepthStack = []
+                              Scopes = [] }
 
-                let rootContext =
-                    match eventFromChains |> Map.tryFind (eventId.ToLowerInvariant()) with
-                    | Some chains when not chains.IsEmpty ->
-                        { rootContext with
-                            From = mergeFromChains chains
-                            FromDepth = 0
-                            FromDepthStack = [] }
-                    | _ -> rootContext
+                    let rootContext =
+                        match eventFromChains |> Map.tryFind (eventId.ToLowerInvariant()) with
+                        | Some chains when not chains.IsEmpty ->
+                            { rootContext with
+                                From = mergeFromChains chains
+                                FromDepth = 0
+                                FromDepthStack = [] }
+                        | _ -> rootContext
 
-                let rootContext =
-                    let mask = eventHosts |> Map.tryFind (eventId.ToLowerInvariant()) |> Option.defaultValue 0
-                    match hostScope mask with
-                    | Some eventScope -> setCarrierHost eventScope rootContext
-                    | None -> rootContext
+                    let rootContext =
+                        let mask = eventHosts |> Map.tryFind (eventId.ToLowerInvariant()) |> Option.defaultValue 0
+                        match hostScope mask with
+                        | Some eventScope -> setCarrierHost eventScope rootContext
+                        | None -> rootContext
 
-                for node in allNodes root do
-                    // Expanded inline-script nodes retain the source inline file's range;
-                    // their call-site scope is already handled by the global expansion pass.
-                    if rangeContainsRange root.Position node.Position then
-                        let pathContext = contextInsideNodeFromRoot rootContext root node
-                        for leaf in node.Leaves do
-                            let key = normalizeKey leaf.Key
-                            if key = "save_event_target_as" || key = "save_global_event_target_as" then
-                                let targetName = cleanValue leaf.ValueText
-                                let nodeContext =
-                                    // InfoService knows rule-driven iterators such as
-                                    // random_owned_planet/random_country; the lightweight
-                                    // path replay above only knows named scope links. Keep
-                                    // the dynamic event FROM replay as a fallback for the
-                                    // unresolved contexts that motivated this inference.
-                                    tryStaticContextAt entity leaf.Position
-                                    |> Option.filter (fun context ->
-                                        not (context.CurrentScope.Equals scopeManager.AnyScope)
-                                        && not (context.CurrentScope.Equals scopeManager.InvalidScope))
-                                    |> Option.defaultValue pathContext
+                    for node in allNodes root do
+                        // Expanded inline-script nodes retain the source inline
+                        // file's range; their call-site scope is handled by the
+                        // normal expansion pass.
+                        if rangeContainsRange root.Position node.Position then
+                            let pathContext = contextInsideNodeFromRoot rootContext root node
+                            for leaf in node.Leaves do
+                                let key = normalizeKey leaf.Key
+                                if key = "save_event_target_as" || key = "save_global_event_target_as" then
+                                    let targetName = cleanValue leaf.ValueText
+                                    let nodeContext =
+                                        tryStaticContextAt entity leaf.Position
+                                        |> Option.filter (fun context ->
+                                            not (context.CurrentScope.Equals scopeManager.AnyScope)
+                                            && not (context.CurrentScope.Equals scopeManager.InvalidScope))
+                                        |> Option.orElseWith (fun () ->
+                                            if
+                                                pathContext.CurrentScope.Equals scopeManager.AnyScope
+                                                || pathContext.CurrentScope.Equals scopeManager.InvalidScope
+                                            then
+                                                None
+                                            else
+                                                Some pathContext)
 
-                                eventSavedTargetScopes <-
-                                    addScope (eventTargetKey eventId targetName) nodeContext.CurrentScope eventSavedTargetScopes
+                                    match nodeContext with
+                                    | Some nodeContext when key = "save_global_event_target_as" ->
+                                        globalSavedTargetScopes <-
+                                            addScope targetName nodeContext.CurrentScope globalSavedTargetScopes
+                                    | Some nodeContext ->
+                                        directEventSavedTargetScopes <-
+                                            addEventTargetScope
+                                                eventId
+                                                targetName
+                                                nodeContext.CurrentScope
+                                                directEventSavedTargetScopes
+                                    | None -> ()
+
+            // Ordinary event targets are inherited only by events reached from
+            // the saving event. A directly saved name in the callee shadows the
+            // inherited binding, while multiple callers are merged conservatively.
+            let mutable eventSavedTargetScopes = directEventSavedTargetScopes
+            let mutable targetScopesChanged = true
+            let mutable targetScopeIterations = 0
+
+            while targetScopesChanged && targetScopeIterations < 64 do
+                targetScopesChanged <- false
+                targetScopeIterations <- targetScopeIterations + 1
+
+                for caller, target, _, _ in eventDependencies do
+                    let callerTargets =
+                        eventSavedTargetScopes
+                        |> Map.tryFind (caller.ToLowerInvariant())
+                        |> Option.defaultValue Map.empty
+
+                    let targetKey = target.ToLowerInvariant()
+                    let directTargetNames =
+                        directEventSavedTargetScopes
+                        |> Map.tryFind targetKey
+                        |> Option.defaultValue Map.empty
+
+                    let before =
+                        eventSavedTargetScopes
+                        |> Map.tryFind targetKey
+                        |> Option.defaultValue Map.empty
+
+                    let after =
+                        callerTargets
+                        |> Map.fold (fun targetScopes targetName scopes ->
+                            if directTargetNames.ContainsKey targetName then
+                                targetScopes
+                            else
+                                scopes
+                                |> Set.fold (fun state scope -> addScope targetName scope state) targetScopes) before
+
+                    if after <> before then
+                        eventSavedTargetScopes <- eventSavedTargetScopes |> Map.add targetKey after
+                        targetScopesChanged <- true
 
             { version = version
               eventHosts = eventHosts
               eventEvidence = evidence
               eventFromChains = eventFromChains
               eventSavedTargetScopes = eventSavedTargetScopes
+              globalSavedTargetScopes = globalSavedTargetScopes
               projectCreationScopes = projectScopes
               situationTargetScopes = situationScopes
               situationEventTargetScopes = situationEventTargetScopes }
@@ -1371,6 +1442,7 @@ module STLGameFunctions =
                       eventEvidence = Map.empty
                       eventFromChains = Map.empty
                       eventSavedTargetScopes = Map.empty
+                      globalSavedTargetScopes = Map.empty
                       projectCreationScopes = Map.empty
                       situationTargetScopes = Map.empty
                       situationEventTargetScopes = Map.empty }
@@ -1389,6 +1461,9 @@ module STLGameFunctions =
                 entity.entity.Nodes
                 |> Seq.tryFind (fun root -> rangeContainsRange root.Position node.Position)
                 |> Option.map (fun root -> entity, root))
+
+        member _.Invalidate() =
+            lock gate (fun () -> cached <- None)
 
         member _.Resolve(node: IClause, context: ScopeContext) =
             if building then
@@ -1430,22 +1505,50 @@ module STLGameFunctions =
                             else
                                 None
 
-                        if
-                            rootKey.EndsWith("_event")
-                            && resolved.CurrentScope.Equals scopeManager.AnyScope
-                            && eventTargetSuffix |> Option.exists (fun suffix -> not (suffix.Contains('.')))
-                        then
+                        if rootKey.EndsWith("_event") && eventTargetSuffix.IsSome then
                             let eventId = root.TagText "id" |> cleanValue
-                            let targetName =
-                                eventTargetSuffix.Value.TrimEnd('?')
+                            let targetPath =
+                                eventTargetSuffix.Value.Split('.', StringSplitOptions.RemoveEmptyEntries)
+                                |> Array.toList
 
-                            match
+                            let targetName =
+                                targetPath
+                                |> List.tryHead
+                                |> Option.defaultValue ""
+                                |> fun name -> name.TrimEnd('?')
+
+                            let localScope =
                                 snapshot.eventSavedTargetScopes
-                                |> Map.tryFind (eventTargetKey eventId targetName)
+                                |> Map.tryFind (eventId.ToLowerInvariant())
+                                |> Option.bind (Map.tryFind (targetName.ToLowerInvariant()))
                                 |> Option.bind chooseScope
-                            with
+
+                            let globalScope =
+                                snapshot.globalSavedTargetScopes
+                                |> Map.tryFind (targetName.ToLowerInvariant())
+                                |> Option.bind chooseScope
+
+                            let inferredScope =
+                                match localScope with
+                                | Some scope -> Some scope
+                                | None ->
+                                    // A globally saved name can legitimately have
+                                    // several runtime types. Do not replace a more
+                                    // precise call-site result with that global
+                                    // ambiguity; concrete global evidence still
+                                    // corrects polluted flat lookup results.
+                                    globalScope
+                                    |> Option.filter (fun scope ->
+                                        not (scope.Equals scopeManager.AnyScope)
+                                        || resolved.CurrentScope.Equals scopeManager.AnyScope)
+
+                            match inferredScope with
                             | Some targetScope ->
                                 resolved <- setCurrent targetScope resolved
+                                resolved <-
+                                    targetPath
+                                    |> List.skip 1
+                                    |> List.fold (fun targetContext link -> changeContextByKey link targetContext) resolved
                                 changed <- true
                             | _ -> ()
 
@@ -1724,6 +1827,21 @@ type STLGame(setupSettings: StellarisSettings) =
         (createLocalisationFunctions STL.locStaticSettings createLocDynamicSettings legacyLocDataTypes lookup)
 
     let mutable dynamicScopeOverride: IClause -> ScopeContext -> ScopeContext option = fun _ _ -> None
+    let mutable getActiveInfoService: unit -> InfoService option = fun () -> None
+    let mutable carrierResolver: CarrierScopeResolver option = None
+
+    let ensureCarrierResolver resources lookup =
+        match carrierResolver with
+        | Some resolver -> resolver
+        | None ->
+            let resolver = CarrierScopeResolver(resources, lookup, fun () -> getActiveInfoService ())
+            carrierResolver <- Some resolver
+            dynamicScopeOverride <- fun node context -> resolver.Resolve(node, context)
+            resolver
+
+    let refreshConfigAfterFirstTypesWithCarrier lookup resources embeddedSettings =
+        refreshConfigAfterFirstTypesHook lookup resources embeddedSettings
+        ensureCarrierResolver resources lookup |> ignore
 
     let rulesManagerSettings =
         { rulesSettings = settings.rules
@@ -1740,7 +1858,7 @@ type STLGame(setupSettings: StellarisSettings) =
           oneToOneScopesNames = oneToOneScopesNames
           loadConfigRulesHook = loadConfigRulesHook
           refreshConfigBeforeFirstTypesHook = Hooks.refreshConfigBeforeFirstTypesHook
-          refreshConfigAfterFirstTypesHook = refreshConfigAfterFirstTypesHook
+          refreshConfigAfterFirstTypesHook = refreshConfigAfterFirstTypesWithCarrier
           refreshConfigAfterVarDefHook = refreshConfigAfterVarDefHook
           locFunctions = processLocalisationFunction }
 
@@ -1765,10 +1883,10 @@ type STLGame(setupSettings: StellarisSettings) =
              setupSettings.debugSettings)
             afterInit
 
-    let carrierScopeResolver =
-        CarrierScopeResolver(game.Resources, game.Lookup, fun () -> game.InfoService)
-
-    do dynamicScopeOverride <- fun node context -> carrierScopeResolver.Resolve(node, context)
+    let carrierScopeResolver = ensureCarrierResolver game.Resources game.Lookup
+    do
+        getActiveInfoService <- fun () -> game.InfoService
+        carrierScopeResolver.Invalidate()
 
     let lookup = game.Lookup
     let resources = game.Resources

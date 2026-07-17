@@ -855,6 +855,7 @@ let carrierEventScopeValidationTests =
                               hide_window = yes
                               is_triggered_only = yes
                               immediate = {
+                                  save_event_target_as = locally_saved_planet
                                   owner_species = { save_event_target_as = current_marauder_diplomacy }
                               }
                           }
@@ -877,6 +878,79 @@ let carrierEventScopeValidationTests =
                                       set_planet_flag = parameterized_target_marker
                                   }
                               }
+                          }
+
+                          country_event = {
+                              id = carrier_origin.80
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  random_owned_planet = {
+                                      save_event_target_as = chained_planet_target
+                                  }
+                                  country_event = { id = carrier_origin.81 }
+                              }
+                          }
+
+                          country_event = {
+                              id = carrier_origin.81
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  event_target:chained_planet_target = {
+                                      set_planet_flag = chained_planet_target_marker
+                                      carrier_event = { id = carrier_origin.86 }
+                                  }
+                              }
+                          }
+
+                          country_event = {
+                              id = carrier_origin.82
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  save_event_target_as = chained_planet_target
+                              }
+                          }
+
+                          country_event = {
+                              id = carrier_origin.83
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  random_owned_planet = {
+                                      save_global_event_target_as = global_planet_target
+                                  }
+                              }
+                          }
+
+                          country_event = {
+                              id = carrier_origin.84
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  event_target:global_planet_target = {
+                                      set_planet_flag = global_planet_target_marker
+                                  }
+                              }
+                          }
+
+                          country_event = {
+                              id = carrier_origin.85
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  save_event_target_as = global_planet_target
+                                  event_target:global_planet_target = {
+                                      set_country_flag = local_target_overrides_global_marker
+                                  }
+                              }
+                          }
+
+                          carrier_event = {
+                              id = carrier_origin.86
+                              hide_window = yes
+                              is_triggered_only = yes
                           }
 
                           country_event = {
@@ -1060,7 +1134,15 @@ let carrierEventScopeValidationTests =
                               id = carrier_origin.41
                               hide_window = yes
                               is_triggered_only = yes
-                              immediate = { set_carrier_flag = colony_on_action_marker }
+                              immediate = {
+                                  set_carrier_flag = colony_on_action_marker
+                                  carrier_from_target_effect = {
+                                      GLOBAL_TARGET = carrier_from_country_target
+                                  }
+                                  event_target:carrier_from_country_target = {
+                                      has_country_flag = propagated_from_target_marker
+                                  }
+                              }
                           }
 
                           carrier_event = {
@@ -1209,6 +1291,25 @@ let carrierEventScopeValidationTests =
                           }
                           """
 
+                  let scriptedEffectPath, scriptedEffectText =
+                      writeFile
+                          (Path.Combine("common", "scripted_effects", "carrier_origin_effects.txt"))
+                          """
+                          carrier_from_target_effect = {
+                              if = {
+                                  limit = {
+                                      exists = event_target:$GLOBAL_TARGET$
+                                  }
+                                  event_target:$GLOBAL_TARGET$ = {
+                                      has_country_flag = scripted_from_target_country_marker
+                                  }
+                              }
+                              from = {
+                                  save_global_event_target_as = $GLOBAL_TARGET$
+                              }
+                          }
+                          """
+
                   let gameRulePath, gameRuleText =
                       writeFile
                           (Path.Combine("common", "game_rules", "carrier_origin_game_rules.txt"))
@@ -1305,7 +1406,8 @@ let carrierEventScopeValidationTests =
                                     debugRulesOnly = false
                                     debugMode = false } }
 
-                  let stl = STLGame(settings) :> IGame<STLComputedData>
+                  let stlGame = STLGame(settings)
+                  let stl = stlGame :> IGame<STLComputedData>
 
                   let completionNeedle = "carrier_completion_marker = yes"
                   let completionCursor = posOf completionNeedle eventText
@@ -1427,7 +1529,8 @@ let carrierEventScopeValidationTests =
                                 gameRulePath
                                 situationPath
                                 buildingPath
-                                megastructurePath ]
+                                megastructurePath
+                                scriptedEffectPath ]
                               |> List.exists isIn)
                           || (error.code = "CW247" && [ projectPath; megastructurePath ] |> List.exists isIn)
                           || (error.code = "CW274" && isIn eventPath))
@@ -1553,6 +1656,43 @@ let carrierEventScopeValidationTests =
                       eventPath
                       eventText
                       "on_action replace_scope should seed the carrier event FROM chain"
+                  expectScope
+                      "Any"
+                      "save_global_event_target_as"
+                      scriptedEffectPath
+                      scriptedEffectText
+                      "an unbound scripted-effect FROM should remain unresolved in the standalone definition"
+                  expectFromDepth
+                      1
+                      "save_global_event_target_as"
+                      scriptedEffectPath
+                      scriptedEffectText
+                      "the standalone scripted-effect definition should preserve its relative FROM depth"
+                  let propagatedTargetScopes =
+                      stlGame.Lookup.savedEventTargets
+                      |> Seq.choose (fun (name, _, scope) ->
+                          if name == "carrier_from_country_target" then Some(scope.ToString()) else None)
+                      |> Set.ofSeq
+
+                  let propagatedTargetEvidence =
+                      stlGame.Lookup.savedEventTargets
+                      |> Seq.choose (fun (name, position, scope) ->
+                          if name == "carrier_from_country_target" then
+                              Some(scope.ToString(), position.FileName, position.StartLine)
+                          else
+                              None)
+                      |> Seq.toList
+
+                  Expect.equal
+                      propagatedTargetScopes
+                      (Set.singleton "Country")
+                      $"scripted-effect expansion should register only the call-site FROM scope for the parameterized target: %A{propagatedTargetEvidence}"
+                  expectScope
+                      "Country"
+                      "propagated_from_target_marker"
+                      eventPath
+                      eventText
+                      "a parameterized target saved from a Carrier caller's FROM should retain the Country scope"
                   let marauderContext =
                       stl.ScopesAtPos (posOf "marauder_country_scope_marker" eventText) eventPath eventText
 
@@ -1578,6 +1718,24 @@ let carrierEventScopeValidationTests =
                       eventPath
                       eventText
                       "event-local target fallback should not replace a target chain's final scope"
+                  expectScope
+                      "Planet"
+                      "chained_planet_target_marker"
+                      eventPath
+                      eventText
+                      "non-global event targets should propagate only along their event call chain"
+                  expectScope
+                      "Planet"
+                      "global_planet_target_marker"
+                      eventPath
+                      eventText
+                      "global event targets should remain available outside the event call chain"
+                  expectScope
+                      "Country"
+                      "local_target_overrides_global_marker"
+                      eventPath
+                      eventText
+                      "a local event target should override the same global target name in its event chain"
                   expectScope
                       "Fleet"
                       "nested_fromfromfrom_fleet_marker"
