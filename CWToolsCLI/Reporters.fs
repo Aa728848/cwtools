@@ -19,35 +19,61 @@ module Reporters =
 
     let ne = Environment.NewLine
 
+    let private csvEscape (value: string) =
+        "\"" + value.Replace("\"", "\"\"") + "\""
+
+    let private formatPosition (position: CWTools.Utilities.Position.range) =
+        sprintf "%s:%i:%i" position.FileName position.StartLine position.StartColumn
+
     let cliReporter outputFile (errors: ValidationViewModelRow list) =
         let grouped =
             errors
             |> List.groupBy (fun e ->
-                e
-                |> function
-                    | ValidationViewModelRow.Parse(r) -> r.file
-                    | ValidationViewModelRow.Error(e) -> e.position.FileName)
-            |> List.sortBy (fun (k, _) -> k)
+                match e with
+                | ValidationViewModelRow.Parse r -> "CW001", "Error", r.message
+                | ValidationViewModelRow.Error r -> r.category, r.severity.ToString(), r.message)
+            |> List.sortBy (fun ((category, severity, message), _) -> category, severity, message)
 
         let sb = new StringBuilder()
 
-        let printFileErrors ((file: string), (errorList: ValidationViewModelRow list)) =
-            sb.AppendLine(sprintf "%s, %i errors" file (errorList.Length)) |> ignore
+        let appendIndented indent (value: string) =
+            value.Replace("\r\n", "\n").Split('\n')
+            |> Array.iter (fun line -> sb.AppendLine(String.replicate indent " " + line) |> ignore)
+
+        let locationKey row =
+            match row with
+            | ValidationViewModelRow.Parse r -> r.file, 0, 0
+            | ValidationViewModelRow.Error r -> r.position.FileName, r.position.StartLine, r.position.StartColumn
+
+        let printGroup ((category, severity, message), errorList: ValidationViewModelRow list) =
+            let suffix = if errorList.Length = 1 then "occurrence" else "occurrences"
+            sb.AppendLine(sprintf "%s [%s] - %i %s" category severity errorList.Length suffix) |> ignore
+            appendIndented 2 message
 
             errorList
-            |> List.map (fun r ->
-                r
-                |> function
-                    | ValidationViewModelRow.Error(e) ->
-                        sprintf "%s: %s,%s" (e.category) (e.message) (e.position.ToShortString())
-                    | ValidationViewModelRow.Parse(e) -> sprintf "%s: %s" ("CW001") (e.message))
-            |> List.iter (fun es -> sb.AppendLine(sprintf "%s" (es.Pastel(Color.Red))) |> ignore)
+            |> List.sortBy locationKey
+            |> List.iter (fun row ->
+                match row with
+                | ValidationViewModelRow.Parse r -> sb.AppendLine(sprintf "  - %s" r.file) |> ignore
+                | ValidationViewModelRow.Error r ->
+                    sb.AppendLine(sprintf "  - %s" (formatPosition r.position)) |> ignore
 
-        grouped |> List.iter printFileErrors
+                    r.related
+                    |> List.iter (fun related ->
+                        sb.AppendLine(
+                            sprintf "      related: %s - %s" (formatPosition related.position) related.message
+                        )
+                        |> ignore))
+
+            sb.AppendLine() |> ignore
+
+        sb.AppendLine(sprintf "%i diagnostics in %i groups" errors.Length grouped.Length) |> ignore
+        sb.AppendLine() |> ignore
+        grouped |> List.iter printGroup
 
         match outputFile with
         | Some file -> File.WriteAllText(file, sb.ToString())
-        | None -> printf "%s" (sb.ToString())
+        | None -> printf "%s" (sb.ToString().Pastel(Color.Red))
 
 
     let csvReporter outputFile (errors: ValidationViewModelRow list) =
@@ -67,13 +93,22 @@ module Reporters =
                     | Error(r) ->
                         sb.Append(
                             sprintf
-                                "%s%s,%s,%s,%s,\"%s\""
+                                "%s%s,%s,%s,%s,%s"
                                 ne
                                 r.position.FileName
                                 (r.position.StartLine.ToString())
                                 (r.severity.ToString())
                                 r.category
-                                (r.message.Replace(ne, "").Replace("\n", ""))
+                                (csvEscape
+                                    (String.concat
+                                        " | "
+                                        (r.message
+                                         :: (r.related
+                                             |> List.map (fun related ->
+                                                 sprintf
+                                                     "related %s: %s"
+                                                     (related.position.ToShortString())
+                                                     related.message)))))
                         )
                         |> ignore)
 

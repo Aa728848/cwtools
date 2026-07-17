@@ -642,6 +642,7 @@ module STLGameFunctions =
           eventSavedTargetScopes: Map<string, Map<string, Set<Scope>>>
           globalSavedTargetScopes: Map<string, Set<Scope>>
           projectCreationScopes: Map<string, Set<Scope>>
+          projectLocationScopes: Map<string, Set<Scope>>
           situationTargetScopes: Map<string, Set<Scope>>
           situationEventTargetScopes: Map<string, Set<Scope>> }
 
@@ -1005,7 +1006,7 @@ module STLGameFunctions =
             let key = root.TagText "key" |> cleanValue
             if String.IsNullOrWhiteSpace key then root.Key else key
 
-        let eventScopeForProject (projectId: string) (root: Node) projectScopes =
+        let eventScopeForProject (projectId: string) (root: Node) projectCreationScopes projectLocationScopes =
             let eventScope = root.TagText "event_scope" |> cleanValue |> fun value -> value.ToLowerInvariant()
             match eventScope with
             | "planet_event" -> planetScope ()
@@ -1013,18 +1014,32 @@ module STLGameFunctions =
             | "country_event" -> countryScope ()
             | "colony_event" -> colonyScope ()
             | "carrier_event" ->
-                projectScopes
+                projectLocationScopes
                 |> Map.tryFind (projectId.ToLowerInvariant())
                 |> Option.bind chooseScope
+                |> Option.orElseWith (fun () ->
+                    projectCreationScopes
+                    |> Map.tryFind (projectId.ToLowerInvariant())
+                    |> Option.bind chooseScope)
                 |> Option.bind (fun scope ->
                     if hostMaskOfScope scope = 0 then carrierScope () else Some scope)
                 |> Option.orElseWith (fun () -> carrierScope ())
             | _ -> None
 
-        let projectCallbackContext (projectId: string) (root: Node) callbackKey projectScopes (fallback: ScopeContext) =
-            let eventScope = eventScopeForProject projectId root projectScopes |> Option.defaultValue scopeManager.AnyScope
+        let projectCallbackContext
+            (projectId: string)
+            (root: Node)
+            callbackKey
+            projectCreationScopes
+            projectLocationScopes
+            (fallback: ScopeContext)
+            =
+            let eventScope =
+                eventScopeForProject projectId root projectCreationScopes projectLocationScopes
+                |> Option.defaultValue scopeManager.AnyScope
+
             let creationScope =
-                projectScopes
+                projectCreationScopes
                 |> Map.tryFind (projectId.ToLowerInvariant())
                 |> Option.bind chooseScope
                 |> Option.defaultValue scopeManager.AnyScope
@@ -1060,14 +1075,27 @@ module STLGameFunctions =
             | "on_start" -> { resolved with Scopes = [ eventScope; ownerScope ] }
             | _ -> resolved
 
-        let callbackContextAt projectId (root: Node) (target: Node) projectScopes fallback =
+        let callbackContextAt
+            projectId
+            (root: Node)
+            (target: Node)
+            projectCreationScopes
+            projectLocationScopes
+            fallback
+            =
             root.Nodes
             |> Seq.tryFind (fun callback ->
                 callbackKeys.Contains(normalizeKey callback.Key)
                 && rangeContainsRange callback.Position target.Position)
             |> Option.map (fun callback ->
                 let baseContext =
-                    projectCallbackContext projectId root (normalizeKey callback.Key) projectScopes fallback
+                    projectCallbackContext
+                        projectId
+                        root
+                        (normalizeKey callback.Key)
+                        projectCreationScopes
+                        projectLocationScopes
+                        fallback
 
                 tryPathTo target callback
                 |> Option.map (fun path ->
@@ -1095,7 +1123,8 @@ module STLGameFunctions =
                             eventDefinitions[eventId] <- struct (entity, root)
                             if normalizeKey root.Key = "carrier_event" then carrierEventIds.Add eventId |> ignore
 
-            let mutable projectScopes: Map<string, Set<Scope>> = Map.empty
+            let mutable projectCreationScopes: Map<string, Set<Scope>> = Map.empty
+            let mutable projectLocationScopes: Map<string, Set<Scope>> = Map.empty
             let mutable situationScopes: Map<string, Set<Scope>> = Map.empty
 
             for entity in entities do
@@ -1112,7 +1141,10 @@ module STLGameFunctions =
                             match nodeContext with
                             | Some context when not (String.IsNullOrWhiteSpace id) ->
                                 let location = node.TagText "location"
-                                projectScopes <- addScope id (resolveExpression context location) projectScopes
+                                projectCreationScopes <- addScope id context.CurrentScope projectCreationScopes
+                                if not (String.IsNullOrWhiteSpace(cleanValue location)) then
+                                    projectLocationScopes <-
+                                        addScope id (resolveExpression context location) projectLocationScopes
                             | _ -> ()
                         | "start_situation" ->
                             let id = node.TagText "type" |> cleanValue
@@ -1188,7 +1220,13 @@ module STLGameFunctions =
 
                                 let context =
                                     if isSpecialProjectPath entity then
-                                        callbackContextAt (projectIdOfRoot root) root node projectScopes staticContext
+                                        callbackContextAt
+                                            (projectIdOfRoot root)
+                                            root
+                                            node
+                                            projectCreationScopes
+                                            projectLocationScopes
+                                            staticContext
                                         |> Option.defaultValue staticContext
                                     else
                                         staticContext
@@ -1427,7 +1465,8 @@ module STLGameFunctions =
               eventFromChains = eventFromChains
               eventSavedTargetScopes = eventSavedTargetScopes
               globalSavedTargetScopes = globalSavedTargetScopes
-              projectCreationScopes = projectScopes
+              projectCreationScopes = projectCreationScopes
+              projectLocationScopes = projectLocationScopes
               situationTargetScopes = situationScopes
               situationEventTargetScopes = situationEventTargetScopes }
 
@@ -1444,6 +1483,7 @@ module STLGameFunctions =
                       eventSavedTargetScopes = Map.empty
                       globalSavedTargetScopes = Map.empty
                       projectCreationScopes = Map.empty
+                      projectLocationScopes = Map.empty
                       situationTargetScopes = Map.empty
                       situationEventTargetScopes = Map.empty }
                 | _ ->
@@ -1466,11 +1506,14 @@ module STLGameFunctions =
             lock gate (fun () -> cached <- None)
 
         member _.Resolve(node: IClause, context: ScopeContext) =
-            if building then
-                None
-            else
-                match node with
-                | :? Node as node ->
+            match node with
+            | :? Node as node ->
+                let resolve () =
+                    // currentSnapshot serialises the initial graph build. Calls from
+                    // other validation workers must wait for that build; returning
+                    // None while `building` made scope results depend on which file
+                    // happened to validate first. Re-entrant calls on the builder
+                    // thread are still handled by currentSnapshot's empty snapshot.
                     let snapshot = currentSnapshot ()
                     let mutable resolved = context
                     let mutable changed = false
@@ -1559,6 +1602,7 @@ module STLGameFunctions =
                                     root
                                     (normalizeKey node.Key)
                                     snapshot.projectCreationScopes
+                                    snapshot.projectLocationScopes
                                     resolved
                             changed <- true
 
@@ -1587,7 +1631,9 @@ module STLGameFunctions =
                         | _ -> ()
 
                     if changed then Some resolved else None
-                | _ -> None
+
+                resolve ()
+            | _ -> None
 
         member _.EventEvidence (eventId: string) =
             currentSnapshot().eventEvidence
@@ -1622,7 +1668,7 @@ module STLGameFunctions =
                     carrierRelevant <- true
                     let projectId = projectIdOfRoot root
                     let creationScopes =
-                        snapshot.projectCreationScopes
+                        snapshot.projectLocationScopes
                         |> Map.tryFind (projectId.ToLowerInvariant())
                         |> Option.defaultValue Set.empty
                         |> Seq.map scopeName

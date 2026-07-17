@@ -22,12 +22,24 @@ module Validator =
             }
 
     [<StructuredFormatDisplay("{position}\n{category}: {error}")>]
+    type ValidationViewModelRelatedRow =
+        { message: string
+          position: range }
+
+    type ValidationViewModelRelatedRow with
+        static member ToJson(r: ValidationViewModelRelatedRow) =
+            json {
+                do! Json.write "message" r.message
+                do! Json.write "position" (r.position |> Json.serializeWith range.ToJson)
+            }
+
     type ValidationViewModelErrorRow =
         { category: string
           message: string
           position: range
           severity: Severity
-          hash: string }
+          hash: string
+          related: ValidationViewModelRelatedRow list }
 
         override x.ToString() =
             x.category + ", " + x.message + ", " + x.position.ToString()
@@ -60,6 +72,7 @@ module Validator =
                     do! Json.write "position" pos
                     do! Json.write "severity" (r.severity.ToString())
                     do! Json.write "hash" r.hash
+                    do! Json.write "related" r.related
                 }
             | Parse r ->
                 let pos = mkRange r.file pos0 pos0 |> Json.serializeWith range.ToJson
@@ -171,7 +184,35 @@ module Validator =
                   message = e.message
                   position = e.range
                   severity = e.severity
-                  hash = (createHash e.range.FileName e.range e.message) })
+                  hash = (createHash e.range.FileName e.range e.message)
+                  related =
+                    e.relatedErrors
+                    |> Option.defaultValue []
+                    |> List.map (fun related ->
+                        { message = related.message
+                          position = related.location }) })
+            |> List.groupBy (fun e ->
+                e.category,
+                e.message,
+                e.position.FileName,
+                e.position.StartLine,
+                e.position.StartColumn,
+                e.position.EndLine,
+                e.position.EndColumn,
+                e.severity)
+            |> List.map (fun (_, rows) ->
+                let first = rows.Head
+                { first with
+                    related =
+                        rows
+                        |> List.collect _.related
+                        |> List.distinctBy (fun related ->
+                            related.message,
+                            related.position.FileName,
+                            related.position.StartLine,
+                            related.position.StartColumn,
+                            related.position.EndLine,
+                            related.position.EndColumn) })
 
         member __.allFileList =
             game.AllFiles()
@@ -187,7 +228,13 @@ module Validator =
                   message = e.message
                   position = e.range
                   severity = e.severity
-                  hash = (createHash e.range.FileName e.range e.message) })
+                  hash = (createHash e.range.FileName e.range e.message)
+                  related =
+                    e.relatedErrors
+                    |> Option.defaultValue []
+                    |> List.map (fun related ->
+                        { message = related.message
+                          position = related.location }) })
 
         member __.recompute() = game.ForceRecompute()
         member val scriptedTriggerList = game.ScriptedTriggers

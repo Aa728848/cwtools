@@ -423,8 +423,6 @@ let loadGame<'T when 'T :> ComputedData>
         | _, Game.Custom -> LangHelpers.allCustomLangs
         | _ -> failwith "No languages specified"
 
-    eprintfn "%A" langs
-
     let folders =
         Array.concat
             [| [| WD { path = dir; name = "game" } |]

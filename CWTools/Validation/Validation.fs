@@ -793,29 +793,24 @@ module ValidationCore =
         | OK, Invalid(g, e2) -> Invalid(g, e2)
 
     let mergeValidationErrors (errorcode: string) =
-        let rec mergeErrorsInner es =
-            match es with
-            // | [] -> es
-            | [] -> failwith "mergeErrorsInner somehow got an empty error list"
-            | [ res ] -> res
-            | head :: head2 :: tail ->
-                match head.code, head2.code with
-                | "CW272", _ -> head
-                | _, "CW272" -> head2
-                | _ ->
-                    // let (e1c, e1s, e1r, e1l, e1m, e1d, e1rel), (_, _, _, _, e2m, _, _) = head, head2
-                    let t =
-                        { code = head.code
-                          severity = max head.severity head2.severity
-                          range = head.range
-                          keyLength = head.keyLength
-                          message = (sprintf "%s\nor\n%s" head.message head2.message)
-                          data = head.data
-                          relatedErrors = head.relatedErrors }
+        fun es ->
+            match es |> List.tryFind (fun error -> error.code = "CW272") with
+            | Some error -> error
+            | None ->
+                match es with
+                | [] -> failwith "mergeValidationErrors somehow got an empty error list"
+                | head :: tail ->
+                    let all = head :: tail
+                    let messages = all |> List.map _.message |> List.distinct
+                    let related =
+                        all
+                        |> List.collect (fun error -> error.relatedErrors |> Option.defaultValue [])
+                        |> List.distinctBy (fun related -> related.message, related.location)
 
-                    mergeErrorsInner (t :: tail)
-
-        mergeErrorsInner
+                    { head with
+                        severity = all |> List.map _.severity |> List.max
+                        message = String.concat "\nor\n" messages
+                        relatedErrors = if related.IsEmpty then None else Some related }
 
     // Parallelising something this small makes it slower!
     let (<&!!&>) es f = es |> PSeq.map f |> Seq.fold (<&&>) OK

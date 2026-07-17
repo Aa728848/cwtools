@@ -149,7 +149,7 @@ module CWToolsCLI =
         | OutputFile of filename: string
         | [<EqualsAssignment>] OutputHashes of filename: string option
         | [<EqualsAssignment>] IgnoreHashesFile of filename: string option
-        | Languages of LanguageArg array
+        | Languages of LanguageArg list
 
         interface IArgParserTemplate with
             member s.Usage =
@@ -369,7 +369,7 @@ module CWToolsCLI =
 
         let langs =
             results.TryGetResult <@ Languages @>
-            |> Option.map (Array.choose (parseLanguageArg game))
+            |> Option.map (List.choose (parseLanguageArg game) >> List.toArray)
 
         let langs =
             match langs, game with
@@ -550,7 +550,6 @@ module CWToolsCLI =
 
     [<EntryPoint>]
     let main argv =
-        CWTools.Utilities.Utils.loglevel <- CWTools.Utilities.Utils.LogLevel.Verbose
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance)
 
         let parser =

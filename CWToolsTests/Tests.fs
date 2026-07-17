@@ -874,6 +874,18 @@ let carrierEventScopeValidationTests =
                                   event_target:locally_saved_planet.owner = {
                                       set_country_flag = local_planet_owner_marker
                                   }
+                                  random_system = {
+                                      random_system_planet = {
+                                          save_event_target_as = prev_stack_planet
+                                      }
+                                      event_target:prev_stack_planet = {
+                                          create_fleet = {
+                                              effect = {
+                                                  prevprev = { set_star_flag = saved_target_prev_stack_marker }
+                                              }
+                                          }
+                                      }
+                                  }
                                   event_target:the_end_of_the_cycle@$OWNER$ = {
                                       set_planet_flag = parameterized_target_marker
                                   }
@@ -1221,6 +1233,15 @@ let carrierEventScopeValidationTests =
                                   }
                               }
                           }
+
+                          special_project = {
+                              key = country_created_planet_project
+                              cost = 1
+                              event_scope = planet_event
+                              on_success = {
+                                  from = { set_country_flag = country_project_creation_scope_marker }
+                              }
+                          }
                           """
 
                   let situationPath, situationText =
@@ -1279,6 +1300,10 @@ let carrierEventScopeValidationTests =
                               hide_window = yes
                               is_triggered_only = yes
                               immediate = {
+                                  enable_special_project = {
+                                      name = country_created_planet_project
+                                      location = this.capital_star
+                                  }
                                   start_situation = {
                                       type = carrier_origin_situation
                                       target = this.capital_star
@@ -1584,7 +1609,6 @@ let carrierEventScopeValidationTests =
                       megastructurePath
                       megastructureText
                       "a dotted FROM.FROMFROM path should use the same fixed callback slot"
-
                   expectScope "Any" "carrier_from_planet_marker" eventPath eventText "Planet.carrier should resolve to Any"
                   expectScope "Any" "carrier_from_ship_marker" eventPath eventText "Ship.carrier should resolve to Any"
                   expectScope
@@ -1607,11 +1631,11 @@ let carrierEventScopeValidationTests =
                       projectText
                       "Carrier on_success should allow both Ship and Planet event calls"
                   expectFromScopes
-                      [ "Ambient Object" ]
+                      [ "Country" ]
                       "carrier_origin.61"
                       projectPath
                       projectText
-                      "special-project creation scope should remain FROM without replacing Carrier THIS"
+                      "special-project enabling scope should remain FROM without replacing Carrier THIS"
 
                   expectScope "Planet" "planet_chain_marker" eventPath eventText "planet callers should narrow carrier_event"
                   let planetPos = posOf "planet_chain_marker" eventText
@@ -1809,13 +1833,19 @@ let carrierEventScopeValidationTests =
                       eventPath
                       eventText
                       "carrier_event scopes should remap FROM and FROMFROM in the caller context"
-                  expectScope "Planet" "project_callback_marker" projectPath projectText "special project creation location should narrow carrier callbacks"
+                  expectScope "Planet" "project_callback_marker" projectPath projectText "special project location should narrow carrier callbacks"
                   expectFromScopes
                       [ "Planet" ]
                       "project_callback_marker"
                       projectPath
                       projectText
-                      "special project callbacks should use the creation location as FROM"
+                      "special project callbacks should use the project location as FROM"
+                  expectScope
+                      "Country"
+                      "country_project_creation_scope_marker"
+                      projectPath
+                      projectText
+                      "special-project FROM should use the enabling scope rather than its separate location"
                   expectScope
                       "Country"
                       "project_prev_marker"

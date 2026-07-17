@@ -967,10 +967,6 @@ type RuleValidationService
                     | None -> newctx
                 | None -> ctx
 
-        let newCtx =
-            { newCtx with
-                scopes = applyScopeContextOverride node newCtx.scopes }
-
         let oldErrors = errors
         let errors = OK
 
@@ -1046,7 +1042,12 @@ type RuleValidationService
                      | _ ->
                          inv (ErrorCodes.CustomError "Something went wrong with this scope change" Severity.Hint) node
                          <&&&> errors
-                 | _ -> applyClauseField enforceCardinality options.severity newCtx rules node errors
+                 | _ ->
+                     let newCtx =
+                         { newCtx with
+                             scopes = applyScopeContextOverride node newCtx.scopes }
+
+                     applyClauseField enforceCardinality options.severity newCtx rules node errors
 
         match newErrors, node.Trivia |> Option.bind (_.originalSource) with
         | OK, _ -> oldErrors

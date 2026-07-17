@@ -968,10 +968,6 @@ type InfoService
                         else
                             ctx
 
-            let newCtx =
-                { newCtx with
-                    scopes = applyScopeContextOverride node newCtx.scopes }
-
             match options.typeHint, field with
             | Some(t, true), _ -> ctx, (Some options, Some(TypeRef(t, node.Key)), Some(NodeC node))
             | _, NodeRule(ScopeField s, f) ->
@@ -1012,8 +1008,18 @@ type InfoService
             | _, NodeRule(TypeField(TypeType.Simple t), _) ->
                 ctx, (Some options, Some(TypeRef(t, node.Key)), Some(NodeC node))
             | _, NodeRule(LocalisationField _, _) -> ctx, (Some options, Some(LocRef(node.Key)), Some(NodeC node))
-            | _, NodeRule(_, f) -> newCtx, (Some options, None, Some(NodeC node))
-            | _ -> newCtx, (Some options, None, Some(NodeC node))
+            | _, NodeRule(_, f) ->
+                let newCtx =
+                    { newCtx with
+                        scopes = applyScopeContextOverride node newCtx.scopes }
+
+                newCtx, (Some options, None, Some(NodeC node))
+            | _ ->
+                let newCtx =
+                    { newCtx with
+                        scopes = applyScopeContextOverride node newCtx.scopes }
+
+                newCtx, (Some options, None, Some(NodeC node))
 
         let childMatch =
             entity.entity.Nodes
