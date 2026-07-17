@@ -1046,23 +1046,24 @@ module STLGameFunctions =
 
             let ownerScope = countryScope () |> Option.defaultValue scopeManager.AnyScope
 
-            let current, froms =
+            let current, callbackRoot, froms =
                 match callbackKey with
                 | "on_success"
                 | "on_progress_25"
                 | "on_progress_50"
                 | "on_progress_75"
-                | "on_start" -> eventScope, [ creationScope ]
+                | "on_start" -> eventScope, eventScope, [ creationScope ]
                 | "fail_trigger"
                 | "abort_trigger" ->
-                    ownerScope, [ eventScope; creationScope ]
+                    ownerScope, ownerScope, [ eventScope; creationScope ]
                 | "on_fail"
                 | "on_cancel" ->
-                    ownerScope, [ eventScope; creationScope ]
-                | _ -> fallback.CurrentScope, fallback.From
+                    ownerScope, ownerScope, [ eventScope; creationScope ]
+                | _ -> fallback.CurrentScope, fallback.Root, fallback.From
 
             let resolved =
                 { setCurrent current fallback with
+                    Root = callbackRoot
                     From = froms
                     FromDepth = 0
                     FromDepthStack = [] }

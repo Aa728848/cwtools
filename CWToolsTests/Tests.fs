@@ -1494,6 +1494,11 @@ let carrierEventScopeValidationTests =
                           expected
                           message
 
+                  let expectRoot expected needle path text message =
+                      let context = stl.ScopesAtPos (posOf needle text) path text
+                      Expect.isSome context message
+                      Expect.equal (context.Value.Root.ToString()) expected message
+
                   let expectFromDepth expected needle path text message =
                       let context = stl.ScopesAtPos (posOf needle text) path text
                       Expect.isSome context message
@@ -1852,6 +1857,12 @@ let carrierEventScopeValidationTests =
                       eventText
                       "carrier_event scopes should remap FROM and FROMFROM in the caller context"
                   expectScope "Planet" "project_callback_marker" projectPath projectText "special project location should narrow carrier callbacks"
+                  expectRoot
+                      "Planet"
+                      "project_callback_marker"
+                      projectPath
+                      projectText
+                      "successful special-project callbacks should use the event scope as ROOT"
                   expectFromScopes
                       [ "Planet" ]
                       "project_callback_marker"
@@ -1871,6 +1882,12 @@ let carrierEventScopeValidationTests =
                       projectText
                       "successful special project callbacks should expose the owner country as PREV"
                   expectScope "Country" "project_fail_marker" projectPath projectText "special project failure callbacks should use the owner country"
+                  expectRoot
+                      "Country"
+                      "project_fail_marker"
+                      projectPath
+                      projectText
+                      "failed special-project callbacks should use the project owner as ROOT"
                   expectFromScopes
                       [ "Planet"; "Planet" ]
                       "project_fail_marker"
