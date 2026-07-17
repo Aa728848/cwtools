@@ -24,7 +24,12 @@ module STL =
         let prev = fun (s, change) -> { s with Scopes = s.PopScope }, struct (false, true)
 
         [ "THIS", id
-          "ROOT", (fun (s, change) -> { s with Scopes = s.Root :: s.Scopes }, struct (false, true))
+          "ROOT",
+          (fun (s, change) ->
+              { s with
+                  FromDepth = 0
+                  Scopes = s.Root :: s.Scopes },
+              struct (false, true))
           "FROM", from 1
           "FROMFROM", from 2
           "FROMFROMFROM", from 3

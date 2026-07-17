@@ -897,6 +897,16 @@ let carrierEventScopeValidationTests =
                                   from.fromfrom = {
                                       set_fleet_flag = dotted_fromfromfrom_fleet_marker
                                   }
+                                  fromfrom = {
+                                      root = {
+                                          from = {
+                                              set_country_flag = nested_root_from_reset_marker
+                                          }
+                                      }
+                                  }
+                                  fromfrom.root.from = {
+                                      set_country_flag = dotted_root_from_reset_marker
+                                  }
                                   fromfromfrom = {
                                       set_fleet_flag = direct_fromfromfrom_fleet_marker
                                   }
@@ -1505,6 +1515,18 @@ let carrierEventScopeValidationTests =
                       eventPath
                       eventText
                       "FROM.FROMFROM should equal the corresponding nested scope blocks"
+                  expectScope
+                      "Country"
+                      "nested_root_from_reset_marker"
+                      eventPath
+                      eventText
+                      "ROOT should reset the FROM path before a nested FROM switch"
+                  expectScope
+                      "Country"
+                      "dotted_root_from_reset_marker"
+                      eventPath
+                      eventText
+                      "FROMFROM.ROOT.FROM should resolve the event root's first FROM"
                   expectScope
                       "War"
                       "three_plus_one_from_marker"
