@@ -15,8 +15,10 @@ module STL =
     let oneToOneScopes =
         let from i =
             fun (s, change) ->
+                let index = s.FromDepth + i
                 { s with
-                    Scopes = (s.GetFrom i) :: s.Scopes },
+                    FromDepth = index
+                    Scopes = (s.GetFrom index) :: s.Scopes },
                 struct (false, true)
 
         let prev = fun (s, change) -> { s with Scopes = s.PopScope }, struct (false, true)

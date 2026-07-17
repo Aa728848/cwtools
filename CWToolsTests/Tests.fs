@@ -859,6 +859,67 @@ let carrierEventScopeValidationTests =
                               }
                           }
 
+                          country_event = {
+                              id = carrier_origin.73
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  random_owned_planet = {
+                                      save_event_target_as = locally_saved_planet
+                                  }
+                                  event_target:locally_saved_planet = {
+                                      set_planet_flag = local_planet_target_marker
+                                  }
+                                  event_target:locally_saved_planet.owner = {
+                                      set_country_flag = local_planet_owner_marker
+                                  }
+                                  event_target:the_end_of_the_cycle@$OWNER$ = {
+                                      set_planet_flag = parameterized_target_marker
+                                  }
+                              }
+                          }
+
+                          country_event = {
+                              id = carrier_origin.74
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  from = {
+                                      from = {
+                                          from = {
+                                              set_fleet_flag = nested_fromfromfrom_fleet_marker
+                                          }
+                                      }
+                                      fromfrom = {
+                                          set_fleet_flag = mixed_fromfromfrom_fleet_marker
+                                      }
+                                  }
+                                  from.fromfrom = {
+                                      set_fleet_flag = dotted_fromfromfrom_fleet_marker
+                                  }
+                                  fromfromfrom = {
+                                      set_fleet_flag = direct_fromfromfrom_fleet_marker
+                                  }
+                              }
+                          }
+
+                          country_event = {
+                              id = carrier_origin.75
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  fromfromfrom.from = {
+                                      set_war_flag = three_plus_one_from_marker
+                                  }
+                                  from.from.from.from = {
+                                      set_war_flag = four_dotted_from_marker
+                                  }
+                                  fromfromfromfrom = {
+                                      set_war_flag = legacy_four_joined_from_marker
+                                  }
+                              }
+                          }
+
                           carrier_event = {
                               id = carrier_origin.10
                               hide_window = yes
@@ -1143,6 +1204,12 @@ let carrierEventScopeValidationTests =
                           on_custom_diplomacy = {
                               events = { carrier_origin.70 }
                           }
+                          on_space_battle_over = {
+                              events = { carrier_origin.74 }
+                          }
+                          on_status_quo = {
+                              events = { carrier_origin.75 }
+                          }
                           """
 
                   let docsPath = "./testfiles/stellarisconfig/config/logs/trigger_docs.log"
@@ -1215,6 +1282,11 @@ let carrierEventScopeValidationTests =
                           expected
                           message
 
+                  let expectFromDepth expected needle path text message =
+                      let context = stl.ScopesAtPos (posOf needle text) path text
+                      Expect.isSome context message
+                      Expect.equal context.Value.FromDepth expected message
+
                   let bombardContext =
                       stl.ScopesAtPos (posOf "NOR =" gameRuleText) gameRulePath gameRuleText
                       |> Option.get
@@ -1279,12 +1351,33 @@ let carrierEventScopeValidationTests =
                       scopeDiagnostics
                       $"Carrier-aware fixtures should not report scope diagnostics: %A{scopeDiagnostics |> List.collect (fun e -> e.message :: (e.relatedErrors |> Option.defaultValue [] |> List.map _.message))}"
 
+                  let parameterizedTargetCardinalityDiagnostics =
+                      validationErrors
+                      |> List.filter (fun error ->
+                          error.code = "CW242"
+                          && error.message.Contains("scripted_effect_params", StringComparison.Ordinal)
+                          && String.Equals(
+                              Path.GetFullPath(error.range.FileName),
+                              Path.GetFullPath(eventPath),
+                              StringComparison.OrdinalIgnoreCase
+                          ))
+
+                  Expect.isEmpty
+                      parameterizedTargetCardinalityDiagnostics
+                      "a parameterized event-target key must not require call-site scripted-effect parameters"
+
                   expectScope
                       "Carrier"
                       "building_colony_carrier_marker"
                       buildingPath
                       buildingText
                       "a building's Colony carrier should remain the Planet-or-Ship union"
+                  expectFromDepth
+                      3
+                      "nested_fromfromfrom_fleet_marker"
+                      eventPath
+                      eventText
+                      "three nested FROM switches should advance three positions in the on_action FROM chain"
                   expectScope
                       "Fleet"
                       "building_carrier_fleet_marker"
@@ -1376,6 +1469,60 @@ let carrierEventScopeValidationTests =
                       (marauderContext.Value.From.Head.ToString())
                       "Country"
                       "the called event's immediate FROM should be the on_action source country"
+                  expectScope
+                      "Planet"
+                      "local_planet_target_marker"
+                      eventPath
+                      eventText
+                      "rule-driven iterators should retain their saved target scope"
+                  expectScope
+                      "Country"
+                      "local_planet_owner_marker"
+                      eventPath
+                      eventText
+                      "event-local target fallback should not replace a target chain's final scope"
+                  expectScope
+                      "Fleet"
+                      "nested_fromfromfrom_fleet_marker"
+                      eventPath
+                      eventText
+                      "three nested FROM switches should resolve the on_action FROMFROMFROM fleet"
+                  expectScope
+                      "Fleet"
+                      "direct_fromfromfrom_fleet_marker"
+                      eventPath
+                      eventText
+                      "direct FROMFROMFROM should resolve to the same on_action fleet scope"
+                  expectScope
+                      "Fleet"
+                      "mixed_fromfromfrom_fleet_marker"
+                      eventPath
+                      eventText
+                      "nested FROM then FROMFROM should equal FROMFROMFROM"
+                  expectScope
+                      "Fleet"
+                      "dotted_fromfromfrom_fleet_marker"
+                      eventPath
+                      eventText
+                      "FROM.FROMFROM should equal the corresponding nested scope blocks"
+                  expectScope
+                      "War"
+                      "three_plus_one_from_marker"
+                      eventPath
+                      eventText
+                      "FROMFROMFROM.FROM should resolve the fourth source"
+                  expectScope
+                      "War"
+                      "four_dotted_from_marker"
+                      eventPath
+                      eventText
+                      "four dotted FROM links should resolve the fourth source"
+                  expectScope
+                      "War"
+                      "legacy_four_joined_from_marker"
+                      eventPath
+                      eventText
+                      "the four-joined FROM spelling used by vanilla should remain compatible"
                   expectScope "Planet" "explicit_scope_target_marker" eventPath eventText "explicit event scopes should retain the proven Carrier host"
                   expectFromScopes
                       [ "Country"; "Planet" ]

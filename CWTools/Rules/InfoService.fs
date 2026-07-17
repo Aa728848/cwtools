@@ -319,6 +319,7 @@ type InfoService
             let replaceContext =
                 { Root = rs.root |> Option.orElse rs.this |> Option.defaultValue anyScope
                   From = rs.froms |> Option.defaultValue []
+                  FromDepth = 0
                   Scopes = rs.prevs |> Option.defaultValue [] }
 
             if rs.this |> Option.isSome then
@@ -339,6 +340,7 @@ type InfoService
               scopes =
                   { Root = ps
                     From = []
+                    FromDepth = 0
                     Scopes = [ ps ] }
               warningOnly = false }
         | None, Some { replaceScopes = Some rs } -> replaceContext rs
@@ -347,6 +349,7 @@ type InfoService
               scopes =
                   { Root = ps
                     From = []
+                    FromDepth = 0
                     Scopes = [ ps ] }
               warningOnly = false }
         | None, _ ->
@@ -432,7 +435,8 @@ type InfoService
                                     scopes =
                                         { ctx.scopes with
                                             Scopes = this :: ctx.scopes.PopScope
-                                            From = froms } }
+                                            From = froms
+                                            FromDepth = 0 } }
                             | Some this, None ->
                                 { ctx with
                                     scopes =
@@ -440,7 +444,10 @@ type InfoService
                                             Scopes = this :: ctx.scopes.PopScope } }
                             | None, Some froms ->
                                 { ctx with
-                                    scopes = { ctx.scopes with From = froms } }
+                                    scopes =
+                                        { ctx.scopes with
+                                            From = froms
+                                            FromDepth = 0 } }
                             | None, None -> ctx
 
                         match rs.root with
@@ -468,12 +475,8 @@ type InfoService
 
                     let newCtx =
                         match changeScope.Invoke(false, true, links, valueTriggers, wildCardLinks, varSet, key, scope) with
-                        | NewScope({ Scopes = current :: _ }, _, _) ->
-                            // log "cs %A %A %A" s node.Key current
-                            { newCtx with
-                                scopes =
-                                    { newCtx.scopes with
-                                        Scopes = current :: newCtx.scopes.Scopes } }
+                        | NewScope(newScopes, _, _) ->
+                            { newCtx with scopes = newScopes }
                         | VarFound ->
                             // log "cs %A %A %A" s node.Key current
                             { newCtx with
@@ -727,7 +730,8 @@ type InfoService
                                     scopes =
                                         { ctx.scopes with
                                             Scopes = this :: ctx.scopes.PopScope
-                                            From = froms } }
+                                            From = froms
+                                            FromDepth = 0 } }
                             | Some this, None ->
                                 { ctx with
                                     scopes =
@@ -735,7 +739,10 @@ type InfoService
                                             Scopes = this :: ctx.scopes.PopScope } }
                             | None, Some froms ->
                                 { ctx with
-                                    scopes = { ctx.scopes with From = froms } }
+                                    scopes =
+                                        { ctx.scopes with
+                                            From = froms
+                                            FromDepth = 0 } }
                             | None, None -> ctx
 
                         match rs.root with
@@ -934,7 +941,8 @@ type InfoService
                                     scopes =
                                         { ctx.scopes with
                                             Scopes = this :: ctx.scopes.PopScope
-                                            From = froms } }
+                                            From = froms
+                                            FromDepth = 0 } }
                             | Some this, None ->
                                 { ctx with
                                     scopes =
@@ -942,7 +950,10 @@ type InfoService
                                             Scopes = this :: ctx.scopes.PopScope } }
                             | None, Some froms ->
                                 { ctx with
-                                    scopes = { ctx.scopes with From = froms } }
+                                    scopes =
+                                        { ctx.scopes with
+                                            From = froms
+                                            FromDepth = 0 } }
                             | None, None -> ctx
 
                         match rs.root with
@@ -974,13 +985,10 @@ type InfoService
 
                 let newCtx, rh =
                     match changeScope.Invoke(false, true, links, valueTriggers, wildCardLinks, varSet, key, scope) with
-                    | NewScope({ Scopes = current :: _ }, _, rh) ->
-                        // log "cs %A %A %A" s node.Key current
-                        { newCtx with
-                            scopes =
-                                { newCtx.scopes with
-                                    Scopes = current :: newCtx.scopes.Scopes } },
-                        rh
+                    | NewScope(newScopes, _, rh) ->
+                        // Keep the complete context so links that advance FROM retain
+                        // the remaining chain for nested scope switches.
+                        { newCtx with scopes = newScopes }, rh
                     | VarFound ->
                         // log "cs %A %A %A" s node.Key current
                         { newCtx with

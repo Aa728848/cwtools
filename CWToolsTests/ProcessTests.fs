@@ -3272,6 +3272,7 @@ let nestedEventTargetTests =
                   let context =
                       { Root = root
                         From = []
+                        FromDepth = 0
                         Scopes = [ current ] }
 
                   match

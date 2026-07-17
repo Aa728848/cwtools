@@ -1690,6 +1690,7 @@ module LanguageFeatures =
                 ctx
                 <> { Root = anyScope
                      From = []
+                     FromDepth = 0
                      Scopes = [] }
                 ->
                 Some ctx

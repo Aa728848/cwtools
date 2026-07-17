@@ -380,7 +380,8 @@ type RuleValidationService
         // 检查当前节点的子元素中是否包含宏/参数模式
         // 包括完整的 $PARAM$ 键和嵌入式参数（如 event_target:wg_crisis$CURRENT$_country）
         let hasMacro =
-            startNode.LeafValues |> Seq.exists (fun lv ->
+            (stringManager.GetMetadataForID startNode.KeyId.lower).containsDoubleDollar
+            || startNode.LeafValues |> Seq.exists (fun lv ->
                 let text = lv.ValueText
                 text.StartsWith("$") || text.StartsWith("\\[") || text.StartsWith("[[") ||
                 text = "=" || text = "<" || text = ">" || text = "<=" || text = ">=" || text = "!=" || text = "==" || text = "?="
@@ -658,7 +659,8 @@ type RuleValidationService
 
         let inline checkCardinality (clause: IClause) innerErrors (rule: NewRule) =
             let hasMacro =
-                clause.LeafValues |> Seq.exists (fun lv ->
+                (stringManager.GetMetadataForID clause.KeyId.lower).containsDoubleDollar
+                || clause.LeafValues |> Seq.exists (fun lv ->
                     let text = lv.ValueText
                     text.StartsWith("$") || text.StartsWith("\\[") || text.StartsWith("[[") ||
                     text = "=" || text = "<" || text = ">" || text = "<=" || text = ">=" || text = "!=" || text = "==" || text = "?="
@@ -943,7 +945,8 @@ type RuleValidationService
                                 scopes =
                                     { prevctx.scopes with
                                         Scopes = this :: prevctx.scopes.PopScope
-                                        From = froms } }
+                                        From = froms
+                                        FromDepth = 0 } }
                         | Some this, None ->
                             { prevctx with
                                 scopes =
@@ -951,7 +954,10 @@ type RuleValidationService
                                         Scopes = this :: prevctx.scopes.PopScope } }
                         | None, Some froms ->
                             { prevctx with
-                                scopes = { prevctx.scopes with From = froms } }
+                                scopes =
+                                    { prevctx.scopes with
+                                        From = froms
+                                        FromDepth = 0 } }
                         | None, None -> prevctx
 
                     match rs.root with
@@ -1113,7 +1119,8 @@ type RuleValidationService
                                 scopes =
                                     { prevctx.scopes with
                                         Scopes = this :: prevctx.scopes.PopScope
-                                        From = froms } }
+                                        From = froms
+                                        FromDepth = 0 } }
                         | Some this, None ->
                             { prevctx with
                                 scopes =
@@ -1121,7 +1128,10 @@ type RuleValidationService
                                         Scopes = this :: prevctx.scopes.PopScope } }
                         | None, Some froms ->
                             { prevctx with
-                                scopes = { prevctx.scopes with From = froms } }
+                                scopes =
+                                    { prevctx.scopes with
+                                        From = froms
+                                        FromDepth = 0 } }
                         | None, None -> prevctx
 
                     match rs.root with
@@ -1213,12 +1223,14 @@ type RuleValidationService
             | Some(SubTypePushScope ps), _, _ ->
                 { Root = ps
                   From = []
+                  FromDepth = 0
                   Scopes = [ ps ] }
             | Some(SubTypeReplaceScopes rs), _, _
             | None, _, Some rs ->
                 let replaceContext =
                     { Root = rs.root |> Option.orElse rs.this |> Option.defaultValue anyScope
                       From = rs.froms |> Option.defaultValue []
+                      FromDepth = 0
                       Scopes = rs.prevs |> Option.defaultValue [] }
 
                 if rs.this |> Option.isSome then
@@ -1229,6 +1241,7 @@ type RuleValidationService
             | None, Some ps, _ ->
                 { Root = ps
                   From = []
+                  FromDepth = 0
                   Scopes = [ ps ] }
             | None, None, None -> defaultContext
 

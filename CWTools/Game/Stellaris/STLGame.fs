@@ -787,11 +787,14 @@ module STLGameFunctions =
 
             loop [] root
 
-        let tryStaticContext (entity: Entity) (node: Node) =
+        let tryStaticContextAt (entity: Entity) (position: range) =
             getInfoService ()
             |> Option.bind (fun info ->
-                let pos = mkPos node.Position.StartLine (int node.Position.StartColumn)
+                let pos = mkPos position.StartLine (int position.StartColumn)
                 info.GetInfo(pos, entity) |> Option.map fst)
+
+        let tryStaticContext (entity: Entity) (node: Node) =
+            tryStaticContextAt entity node.Position
 
         let contextFromReplaceScopes (replaceScopes: ReplaceScopes) =
             let root =
@@ -804,6 +807,7 @@ module STLGameFunctions =
 
             { Root = root
               From = replaceScopes.froms |> Option.defaultValue []
+              FromDepth = 0
               Scopes = scopes }
 
         let trySubtypeContext typeName (root: Node) =
@@ -839,6 +843,7 @@ module STLGameFunctions =
                     Some
                         { Root = scope
                           From = []
+                          FromDepth = 0
                           Scopes = [ scope ] }
                 | None, None -> None)
 
@@ -1030,7 +1035,10 @@ module STLGameFunctions =
                     ownerScope, [ eventScope; creationScope ]
                 | _ -> fallback.CurrentScope, fallback.From
 
-            let resolved = { setCurrent current fallback with From = froms }
+            let resolved =
+                { setCurrent current fallback with
+                    From = froms
+                    FromDepth = 0 }
 
             match callbackKey with
             | "on_success"
@@ -1162,6 +1170,7 @@ module STLGameFunctions =
                                     |> Option.defaultValue
                                         { Root = scopeManager.AnyScope
                                           From = []
+                                          FromDepth = 0
                                           Scopes = [] }
 
                                 let context =
@@ -1214,6 +1223,7 @@ module STLGameFunctions =
                                 |> Option.defaultValue
                                     { Root = scopeManager.AnyScope
                                       From = []
+                                      FromDepth = 0
                                       Scopes = [] }
 
                             let mask = hostMaskOfScope listContext.CurrentScope
@@ -1249,7 +1259,10 @@ module STLGameFunctions =
 
                     for chain in callerChains do
                         let callerContext =
-                            let withFrom = { staticContext with From = chain }
+                            let withFrom =
+                                { staticContext with
+                                    From = chain
+                                    FromDepth = 0 }
                             let callerMask = eventHosts |> Map.tryFind (caller.ToLowerInvariant()) |> Option.defaultValue 0
                             match hostScope callerMask with
                             | Some callerScope -> setCarrierHost callerScope withFrom
@@ -1283,17 +1296,21 @@ module STLGameFunctions =
 
             for pair in eventDefinitions do
                 let eventId = pair.Key
-                let struct (_, root) = pair.Value
+                let struct (entity, root) = pair.Value
                 let rootContext =
                     trySubtypeContext "event" root
                     |> Option.defaultValue
                         { Root = scopeManager.AnyScope
                           From = []
+                          FromDepth = 0
                           Scopes = [] }
 
                 let rootContext =
                     match eventFromChains |> Map.tryFind (eventId.ToLowerInvariant()) with
-                    | Some chains when not chains.IsEmpty -> { rootContext with From = mergeFromChains chains }
+                    | Some chains when not chains.IsEmpty ->
+                        { rootContext with
+                            From = mergeFromChains chains
+                            FromDepth = 0 }
                     | _ -> rootContext
 
                 let rootContext =
@@ -1306,11 +1323,23 @@ module STLGameFunctions =
                     // Expanded inline-script nodes retain the source inline file's range;
                     // their call-site scope is already handled by the global expansion pass.
                     if rangeContainsRange root.Position node.Position then
-                        let nodeContext = contextInsideNodeFromRoot rootContext root node
+                        let pathContext = contextInsideNodeFromRoot rootContext root node
                         for leaf in node.Leaves do
                             let key = normalizeKey leaf.Key
                             if key = "save_event_target_as" || key = "save_global_event_target_as" then
                                 let targetName = cleanValue leaf.ValueText
+                                let nodeContext =
+                                    // InfoService knows rule-driven iterators such as
+                                    // random_owned_planet/random_country; the lightweight
+                                    // path replay above only knows named scope links. Keep
+                                    // the dynamic event FROM replay as a fallback for the
+                                    // unresolved contexts that motivated this inference.
+                                    tryStaticContextAt entity leaf.Position
+                                    |> Option.filter (fun context ->
+                                        not (context.CurrentScope.Equals scopeManager.AnyScope)
+                                        && not (context.CurrentScope.Equals scopeManager.InvalidScope))
+                                    |> Option.defaultValue pathContext
+
                                 eventSavedTargetScopes <-
                                     addScope (eventTargetKey eventId targetName) nodeContext.CurrentScope eventSavedTargetScopes
 
@@ -1378,14 +1407,28 @@ module STLGameFunctions =
 
                             match snapshot.eventFromChains |> Map.tryFind (eventId.ToLowerInvariant()) with
                             | Some chains when not chains.IsEmpty ->
-                                resolved <- { resolved with From = mergeFromChains chains }
+                                resolved <-
+                                    { resolved with
+                                        From = mergeFromChains chains
+                                        FromDepth = 0 }
                                 changed <- true
                             | _ -> ()
 
-                        if rootKey.EndsWith("_event") && (normalizeKey node.Key).StartsWith("event_target:") then
+                        let normalizedNodeKey = normalizeKey node.Key
+                        let eventTargetSuffix =
+                            if normalizedNodeKey.StartsWith("event_target:") then
+                                Some(normalizedNodeKey.Substring("event_target:".Length))
+                            else
+                                None
+
+                        if
+                            rootKey.EndsWith("_event")
+                            && resolved.CurrentScope.Equals scopeManager.AnyScope
+                            && eventTargetSuffix |> Option.exists (fun suffix -> not (suffix.Contains('.')))
+                        then
                             let eventId = root.TagText "id" |> cleanValue
                             let targetName =
-                                (normalizeKey node.Key).Substring("event_target:".Length).Split('.').[0].TrimEnd('?')
+                                eventTargetSuffix.Value.TrimEnd('?')
 
                             match
                                 snapshot.eventSavedTargetScopes

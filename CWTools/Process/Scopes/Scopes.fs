@@ -61,6 +61,8 @@ type EffectMap = EffectDictionary
 type ScopeContext =
     { Root: Scope
       From: Scope list
+      /// Number of relative FROM hops already taken by the current scope chain.
+      FromDepth: int
       Scopes: Scope list }
 
     member this.CurrentScope =
@@ -104,11 +106,13 @@ module Scopes =
     let defaultContext =
         { Root = scopeManager.AnyScope
           From = []
+          FromDepth = 0
           Scopes = [] }
 
     let noneContext =
         { Root = scopeManager.InvalidScope
           From = []
+          FromDepth = 0
           Scopes = [ scopeManager.InvalidScope ] }
 
     // type EffectMap<'T> = Map<string, Effect<'T>, InsensitiveStringComparer>
@@ -200,6 +204,7 @@ module Scopes =
                     NewScope(
                         { Root = source.Root
                           From = source.From
+                          FromDepth = source.FromDepth
                           Scopes = source.Root.AnyScope :: source.Scopes },
                         [],
                         None
@@ -389,6 +394,7 @@ module Scopes =
                     NewScope(
                         { Root = source.Root
                           From = source.From
+                          FromDepth = source.FromDepth
                           Scopes = source.Root.AnyScope :: source.Scopes },
                         [],
                         None
@@ -430,6 +436,7 @@ module Scopes =
                                 NewScope(
                                     { Root = source.Root
                                       From = source.From
+                                      FromDepth = source.FromDepth
                                       Scopes = source.Root.AnyScope :: source.Scopes },
                                     [],
                                     None
@@ -515,6 +522,7 @@ module Scopes =
                                     | NewScope(x, i, _) ->
                                         NewScope(
                                             { source with
+                                                FromDepth = x.FromDepth
                                                 Scopes = x.CurrentScope :: source.Scopes },
                                             i,
                                             None
@@ -552,6 +560,7 @@ module Scopes =
                                     | NewScope(x, i, _) ->
                                         NewScope(
                                             { source with
+                                                FromDepth = x.FromDepth
                                                 Scopes = x.CurrentScope :: source.Scopes },
                                             i,
                                             None
@@ -586,6 +595,7 @@ module Scopes =
                                             | NewScope(x, i, _) ->
                                                 NewScope(
                                                     { source with
+                                                        FromDepth = x.FromDepth
                                                         Scopes = x.CurrentScope :: source.Scopes },
                                                     i,
                                                     None
