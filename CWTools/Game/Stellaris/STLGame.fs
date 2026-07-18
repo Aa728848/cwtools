@@ -644,7 +644,8 @@ module STLGameFunctions =
           projectCreationScopes: Map<string, Set<Scope>>
           projectLocationScopes: Map<string, Set<Scope>>
           situationTargetScopes: Map<string, Set<Scope>>
-          situationEventTargetScopes: Map<string, Set<Scope>> }
+          situationEventTargetScopes: Map<string, Set<Scope>>
+          expandedNodeOwners: Dictionary<Node, struct (Entity * Node)> }
 
     type internal CarrierScopeResolver
         (
@@ -656,7 +657,11 @@ module STLGameFunctions =
         let gate = obj ()
         let mutable building = false
         let mutable cached: CarrierInferenceSnapshot option = None
+        let mutable buildingExpandedNodeOwners: Dictionary<Node, struct (Entity * Node)> option = None
         let emptyVars = CWTools.Utilities.Utils2.PrefixOptimisedStringSet()
+
+        let emptyExpandedNodeOwners () =
+            Dictionary<Node, struct (Entity * Node)>(HashIdentity.Reference)
 
         let scopeByName name =
             scopeManager.AllScopes
@@ -1113,6 +1118,22 @@ module STLGameFunctions =
                 resources.AllEntities()
                 |> Seq.map (fun struct (entity, _) -> entity)
                 |> Seq.toArray
+
+            // Expanded inline-script nodes keep the template's source range. Keep
+            // their concrete caller/root ownership by object identity so contextual
+            // event-target inference does not jump back to the unexpanded template.
+            let expandedNodeOwners = emptyExpandedNodeOwners ()
+
+            for entity in entities do
+                for root in entity.entity.Nodes do
+                    for node in allNodes root do
+                        if
+                            not (String.IsNullOrWhiteSpace node.Position.FileName)
+                            && not (String.Equals(node.Position.FileName, entity.filepath, StringComparison.OrdinalIgnoreCase))
+                        then
+                            expandedNodeOwners[node] <- struct (entity, root)
+
+            buildingExpandedNodeOwners <- Some expandedNodeOwners
             let eventDefinitions = Dictionary<string, struct (Entity * Node)>(StringComparer.OrdinalIgnoreCase)
             let carrierEventIds = HashSet<string>(StringComparer.OrdinalIgnoreCase)
 
@@ -1349,6 +1370,16 @@ module STLGameFunctions =
             let mutable directEventSavedTargetScopes: Map<string, Map<string, Set<Scope>>> = Map.empty
             let mutable globalSavedTargetScopes: Map<string, Set<Scope>> = Map.empty
 
+            // ComputedData already records the scope at each concrete save site,
+            // including parameter-substituted inline-script expansions. Index it
+            // by target name so the event graph only has to add lifetime/ownership
+            // association instead of re-inferring a duplicated template range.
+            let savedTargetScopesByName =
+                lookup.savedEventTargets
+                |> Seq.groupBy (fun (name, _, _) -> name.ToLowerInvariant())
+                |> Seq.map (fun (name, saves) -> name, saves |> Seq.toArray)
+                |> Map.ofSeq
+
             // Rule-driven iterators such as random_owned_planet can only be
             // interpreted by the completed InfoService. During early game
             // construction, leave target bindings unresolved and rebuild this
@@ -1388,23 +1419,51 @@ module STLGameFunctions =
                         // normal expansion pass.
                         if rangeContainsRange root.Position node.Position then
                             let pathContext = contextInsideNodeFromRoot rootContext root node
+                            let isExpandedNode = expandedNodeOwners.ContainsKey node
                             for leaf in node.Leaves do
                                 let key = normalizeKey leaf.Key
                                 if key = "save_event_target_as" || key = "save_global_event_target_as" then
                                     let targetName = cleanValue leaf.ValueText
+                                    let canonicalSavedScope =
+                                        savedTargetScopesByName
+                                        |> Map.tryFind (targetName.ToLowerInvariant())
+                                        |> Option.map (fun saves ->
+                                            saves
+                                            |> Seq.choose (fun (_, position, scope) ->
+                                                if position.Equals leaf.Position then Some scope else None)
+                                            |> Set.ofSeq)
+                                        |> Option.filter (fun scopes -> not scopes.IsEmpty)
+                                        |> Option.bind chooseScope
+                                        |> Option.filter (fun scope ->
+                                            not (scope.Equals scopeManager.AnyScope)
+                                            && not (scope.Equals scopeManager.InvalidScope))
+
+                                    let pathNodeContext =
+                                        if
+                                            pathContext.CurrentScope.Equals scopeManager.AnyScope
+                                            || pathContext.CurrentScope.Equals scopeManager.InvalidScope
+                                        then
+                                            None
+                                        else
+                                            Some pathContext
+
                                     let nodeContext =
-                                        tryStaticContextAt entity leaf.Position
-                                        |> Option.filter (fun context ->
-                                            not (context.CurrentScope.Equals scopeManager.AnyScope)
-                                            && not (context.CurrentScope.Equals scopeManager.InvalidScope))
-                                        |> Option.orElseWith (fun () ->
-                                            if
-                                                pathContext.CurrentScope.Equals scopeManager.AnyScope
-                                                || pathContext.CurrentScope.Equals scopeManager.InvalidScope
-                                            then
-                                                None
-                                            else
-                                                Some pathContext)
+                                        match canonicalSavedScope with
+                                        | Some scope -> Some(setCurrent scope pathContext)
+                                        | None when isExpandedNode ->
+                                            // The template range may occur in several
+                                            // expansions inside the same caller file.
+                                            // A positional InfoService lookup can then
+                                            // select a different event root and report
+                                            // its Country scope. The concrete expanded
+                                            // root/path is unambiguous here.
+                                            pathNodeContext
+                                        | None ->
+                                            tryStaticContextAt entity leaf.Position
+                                            |> Option.filter (fun context ->
+                                                not (context.CurrentScope.Equals scopeManager.AnyScope)
+                                                && not (context.CurrentScope.Equals scopeManager.InvalidScope))
+                                            |> Option.orElseWith (fun () -> pathNodeContext)
 
                                     match nodeContext with
                                     | Some nodeContext when key = "save_global_event_target_as" ->
@@ -1469,7 +1528,8 @@ module STLGameFunctions =
               projectCreationScopes = projectCreationScopes
               projectLocationScopes = projectLocationScopes
               situationTargetScopes = situationScopes
-              situationEventTargetScopes = situationEventTargetScopes }
+              situationEventTargetScopes = situationEventTargetScopes
+              expandedNodeOwners = expandedNodeOwners }
 
         let currentSnapshot () =
             let version = ResourceManagerEager.currentVersion ()
@@ -1486,7 +1546,10 @@ module STLGameFunctions =
                       projectCreationScopes = Map.empty
                       projectLocationScopes = Map.empty
                       situationTargetScopes = Map.empty
-                      situationEventTargetScopes = Map.empty }
+                      situationEventTargetScopes = Map.empty
+                      expandedNodeOwners =
+                          buildingExpandedNodeOwners
+                          |> Option.defaultWith emptyExpandedNodeOwners }
                 | _ ->
                     building <- true
                     try
@@ -1494,14 +1557,18 @@ module STLGameFunctions =
                         cached <- Some snapshot
                         snapshot
                     finally
-                        building <- false)
+                        building <- false
+                        buildingExpandedNodeOwners <- None)
 
-        let tryEntityAndRoot (node: Node) =
-            resources.GetEntityByFilePath node.Position.FileName
-            |> Option.bind (fun struct (entity, _) ->
-                entity.entity.Nodes
-                |> Seq.tryFind (fun root -> rangeContainsRange root.Position node.Position)
-                |> Option.map (fun root -> entity, root))
+        let tryEntityAndRoot (snapshot: CarrierInferenceSnapshot) (node: Node) =
+            match snapshot.expandedNodeOwners.TryGetValue node with
+            | true, struct (entity, root) -> Some(entity, root)
+            | _ ->
+                resources.GetEntityByFilePath node.Position.FileName
+                |> Option.bind (fun struct (entity, _) ->
+                    entity.entity.Nodes
+                    |> Seq.tryFind (fun root -> rangeContainsRange root.Position node.Position)
+                    |> Option.map (fun root -> entity, root))
 
         member _.Invalidate() =
             lock gate (fun () -> cached <- None)
@@ -1519,7 +1586,7 @@ module STLGameFunctions =
                     let mutable resolved = context
                     let mutable changed = false
 
-                    match tryEntityAndRoot node with
+                    match tryEntityAndRoot snapshot node with
                     | Some(entity, root) ->
                         let rootKey = normalizeKey root.Key
                         if rootKey.EndsWith("_event") && node.Position.Equals root.Position then
@@ -1654,7 +1721,7 @@ module STLGameFunctions =
             let evidence = ResizeArray<string>()
             let mutable carrierRelevant = false
 
-            match tryEntityAndRoot node with
+            match tryEntityAndRoot snapshot node with
             | Some(entity, root) ->
                 let rootKey = normalizeKey root.Key
                 let path = tryPathTo node root |> Option.defaultValue [ root ]
@@ -2069,21 +2136,32 @@ type STLGame(setupSettings: StellarisSettings) =
         member _.OverrideModesInfo() = game.OverrideModesInfo()
 
         member _.ReplaceConfigRules rules =
-            game.ReplaceConfigRules
-                { ruleFiles = rules
-                  validateRules = true
-                  debugRulesOnly = false
-                  debugMode = false } //refreshRuleCaches game (Some { ruleFiles = rules; validateRules = true; debugRulesOnly = false; debugMode = false})
+            let result =
+                game.ReplaceConfigRules
+                    { ruleFiles = rules
+                      validateRules = true
+                      debugRulesOnly = false
+                      debugMode = false } //refreshRuleCaches game (Some { ruleFiles = rules; validateRules = true; debugRulesOnly = false; debugMode = false})
+            carrierScopeResolver.Invalidate()
+            result
 
-        member _.RefreshCaches() = game.RefreshCaches()
+        member _.RefreshCaches() =
+            game.RefreshCaches()
+            carrierScopeResolver.Invalidate()
+
         member _.PrepareRefreshCaches() = game.PrepareRefreshCaches()
-        member _.CommitRefreshCaches(staged) = game.CommitRefreshCaches(staged)
+
+        member _.CommitRefreshCaches(staged) =
+            let committed = game.CommitRefreshCaches(staged)
+            if committed then carrierScopeResolver.Invalidate()
+            committed
 
         member _.RefreshScriptedTypes files =
             let typeKeys = incrementalTypeKeysForFiles game files
             if typeKeys.IsEmpty then false
             else
                 game.RefreshScriptedTypesForFiles(files, typeKeys)
+                carrierScopeResolver.Invalidate()
                 true
 
         member _.RemoveScriptedTypes files =
@@ -2093,6 +2171,7 @@ type STLGame(setupSettings: StellarisSettings) =
                 for file in files do
                     game.RemoveFile file |> ignore
                 game.RefreshScriptedTypesForFiles(files, typeKeys)
+                carrierScopeResolver.Invalidate()
                 true
 
         member _.PrepareScriptedTypes files =
@@ -2100,7 +2179,10 @@ type STLGame(setupSettings: StellarisSettings) =
             if typeKeys.IsEmpty then None
             else game.PrepareScriptedTypesForFiles(files, typeKeys)
 
-        member _.CommitScriptedTypes staged = game.CommitScriptedTypesForFiles staged
+        member _.CommitScriptedTypes staged =
+            let committed = game.CommitScriptedTypesForFiles staged
+            if committed then carrierScopeResolver.Invalidate()
+            committed
 
         member _.RefreshLocalisationCaches() =
             game.LocalisationManager.UpdateProcessedLocalisation()

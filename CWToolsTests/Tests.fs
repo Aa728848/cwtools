@@ -2469,8 +2469,13 @@ let inlineScriptCompletionRegressionTests =
                   (callerErrors |> List.exists (fun error -> error.message.Contains("Missing inline_script")))
                   "Unicode inline_script paths should expand without a missing-script diagnostic"
 
+              let versionBeforeCallerRefresh = ResourceManagerEager.currentVersion ()
               let callers = stl.RefreshInlineScriptCallers [ scriptName + ".txt" ]
               Expect.contains callers callerFilename "Unicode inline_script references should remain indexable"
+              Expect.isGreaterThan
+                  (ResourceManagerEager.currentVersion ())
+                  versionBeforeCallerRefresh
+                  "Replacing expanded caller entities should invalidate resource-versioned semantic snapshots"
 
           testWithCapturedLogs "nested inline evaluates arithmetic script path suffixes" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/inlinescripts"

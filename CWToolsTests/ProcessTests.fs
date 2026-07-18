@@ -3752,6 +3752,206 @@ let nestedEventTargetTests =
                   expectScope "Planet" "inline_planet_scope_marker"
               finally
                   if Directory.Exists(root) then Directory.Delete(root, true)
+          testWithCapturedLogs "embedded empty inline parameter preserves saved system target scope"
+          <| fun () ->
+              let root =
+                  Path.Combine(Path.GetTempPath(), "cwtools-inline-system-target-scope-" + System.Guid.NewGuid().ToString("N"))
+
+              let eventsDir = Path.Combine(root, "events")
+              let inlineScriptsDir = Path.Combine(root, "common", "inline_scripts", "event_target_scope")
+              Directory.CreateDirectory(eventsDir) |> ignore
+              Directory.CreateDirectory(inlineScriptsDir) |> ignore
+              let eventFile = Path.Combine(eventsDir, "inline_system_target_scope_events.txt")
+              let inlineFile = Path.Combine(inlineScriptsDir, "system_target.txt")
+
+              let eventText =
+                  "namespace = inline_system_target_scope\n\
+                   country_event = {\n\
+                       id = inline_system_target_scope.pollution\n\
+                       hide_window = yes\n\
+                       is_triggered_only = yes\n\
+                       immediate = { save_event_target_as = portal_system }\n\
+                   }\n\
+                   inline_script = {\n\
+                       script = event_target_scope/system_target\n\
+                       CURRENT = \"\"\n\
+                   }\n\
+                   namespace = inline_system_target_scope_2\n\
+                   inline_script = {\n\
+                       script = event_target_scope/system_target\n\
+                       CURRENT = _2\n\
+                   }\n\
+                   namespace = inline_system_target_scope_3\n\
+                   inline_script = {\n\
+                       script = event_target_scope/system_target\n\
+                       CURRENT = _3\n\
+                   }"
+
+              let inlineText =
+                  "country_event = {\n\
+                       id = inline_system_target_scope$CURRENT$.1\n\
+                       hide_window = yes\n\
+                       is_triggered_only = yes\n\
+                       immediate = {\n\
+                           random_system = {\n\
+                               save_global_event_target_as = portal$CURRENT$_system\n\
+                           }\n\
+                           if = {\n\
+                               limit = {\n\
+                                   event_target:portal$CURRENT$_system = {\n\
+                                       any_ship_in_system = { always = yes }\n\
+                                   }\n\
+                               }\n\
+                           }\n\
+                       }\n\
+                   }"
+
+              File.WriteAllText(eventFile, eventText)
+              File.WriteAllText(inlineFile, inlineText)
+
+              try
+                  let configText = Tests.configFilesFromDir "./testfiles/stellarisconfig/config"
+
+                  let embedded = STLGameFunctions.createEmbeddedSettings [] [] configText None
+                  let country = scopeManager.ParseScope () "Country"
+                  let pollutedTargetLink =
+                      ScopedEffect(
+                          "event_target:portal_system",
+                          scopeManager.AllScopes,
+                          country,
+                          EffectType.Link,
+                          "Deliberately polluted flat target scope",
+                          "",
+                          true
+                      )
+
+                  let settings =
+                      { emptyStellarisSettings root with
+                          embedded =
+                              ManualSettings
+                                  { embedded with
+                                      eventTargetLinks = SimpleLink pollutedTargetLink :: embedded.eventTargetLinks }
+                          rules =
+                              Some
+                                  { ruleFiles = configText
+                                    validateRules = true
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+
+                  let stlGame = STLGame(settings)
+                  let stl = stlGame :> IGame<STLComputedData>
+
+                  let portalScopes =
+                      stlGame.Lookup.savedEventTargets
+                      |> Seq.filter (fun (name, _, _) -> name = "portal_system")
+                      |> Seq.map (fun (_, _, scope) -> scope.ToString())
+                      |> Seq.distinct
+                      |> Seq.sort
+                      |> Seq.toList
+
+                  Expect.equal
+                      portalScopes
+                      [ "Country"; "System" ]
+                      $"the regression needs an ambiguous flat target index: %A{portalScopes}"
+
+                  let wrongScopeErrors =
+                      stl.ValidateFile false eventFile
+                      |> List.filter (fun error ->
+                          error.code = "CW274"
+                          || (error.message.Contains("any_ship_in_system")
+                              && error.message.Contains("Country")
+                              && error.message.Contains("System")))
+
+                  Expect.isEmpty
+                      wrongScopeErrors
+                      $"the expanded global target should retain its System save scope: %A{wrongScopeErrors}"
+              finally
+                  if Directory.Exists(root) then Directory.Delete(root, true)
+          testWithCapturedLogs "expanded global target trusts concrete computed save scope"
+          <| fun () ->
+              let root =
+                  Path.Combine(Path.GetTempPath(), "cwtools-inline-computed-save-scope-" + System.Guid.NewGuid().ToString("N"))
+
+              let eventsDir = Path.Combine(root, "events")
+              let inlineScriptsDir = Path.Combine(root, "common", "inline_scripts", "event_target_scope")
+              Directory.CreateDirectory(eventsDir) |> ignore
+              Directory.CreateDirectory(inlineScriptsDir) |> ignore
+              let eventFile = Path.Combine(eventsDir, "inline_computed_save_scope_events.txt")
+              let inlineFile = Path.Combine(inlineScriptsDir, "computed_save_scope.txt")
+
+              File.WriteAllText(
+                  eventFile,
+                  "namespace = inline_computed_save_scope\n\
+                   inline_script = { script = event_target_scope/computed_save_scope }"
+              )
+
+              File.WriteAllText(
+                  inlineFile,
+                  "country_event = {\n\
+                       id = inline_computed_save_scope.1\n\
+                       hide_window = yes\n\
+                       is_triggered_only = yes\n\
+                       immediate = {\n\
+                           save_global_event_target_as = computed_system_target\n\
+                           if = {\n\
+                               limit = {\n\
+                                   event_target:computed_system_target = {\n\
+                                       any_ship_in_system = { always = yes }\n\
+                                   }\n\
+                               }\n\
+                           }\n\
+                       }\n\
+                   }"
+              )
+
+              try
+                  let configText = Tests.configFilesFromDir "./testfiles/stellarisconfig/config"
+                  let settings =
+                      { emptyStellarisSettings root with
+                          rules =
+                              Some
+                                  { ruleFiles = configText
+                                    validateRules = true
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+
+                  let stlGame = STLGame(settings)
+                  let stl = stlGame :> IGame<STLComputedData>
+                  let system = scopeManager.ParseScope () "System"
+
+                  // Reproduce the production split: the flat link and template
+                  // positional context say Country, while ComputedData has already
+                  // resolved this concrete save site to System.
+                  stlGame.Lookup.savedEventTargets <-
+                      ResizeArray(
+                          stlGame.Lookup.savedEventTargets
+                          |> Seq.map (fun (name, position, scope) ->
+                              if name = "computed_system_target" then name, position, system
+                              else name, position, scope)
+                      )
+
+                  let computedScopes =
+                      stlGame.Lookup.savedEventTargets
+                      |> Seq.filter (fun (name, _, _) -> name = "computed_system_target")
+                      |> Seq.map (fun (_, _, scope) -> scope.ToString())
+                      |> Seq.distinct
+                      |> Seq.toList
+
+                  Expect.equal computedScopes [ "System" ] "the concrete save record should be System"
+
+                  let wrongScopeErrors =
+                      stl.ValidateFile false eventFile
+                      |> List.filter (fun error ->
+                          error.code = "CW274"
+                          || (error.message.Contains("any_ship_in_system")
+                              && error.message.Contains("Country")
+                              && error.message.Contains("System")))
+
+                  Expect.isEmpty
+                      wrongScopeErrors
+                      $"expanded validation should use the computed save-site scope: %A{wrongScopeErrors}"
+              finally
+                  if Directory.Exists(root) then Directory.Delete(root, true)
           testCase "leaf call without params propagates concrete saves"
           <| fun () ->
               let input =

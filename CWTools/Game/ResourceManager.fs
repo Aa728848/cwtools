@@ -1459,6 +1459,11 @@ type ResourceManager<'T when 'T :> ComputedData>
                 |> Seq.length
                 |> ignore
 
+                // Expanded caller entities were replaced without going through
+                // UpdateFile. Advance the shared resource version so scope and
+                // language-feature snapshots cannot retain the old node objects.
+                ResourceManagerEager.nextVersion () |> ignore
+
             refreshInputs |> List.map (fun (path, _, _) -> path)
 
     let removeFile (filepath: string) =
