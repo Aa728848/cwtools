@@ -230,6 +230,7 @@ module EU4 =
         data.EffectBlocks <- effectBlocks
         data.TriggerBlocks <- triggersBlocks
         data.WithRulesData <- withRulesData
+        data.ScriptedEffectParams <- Some(getScriptedEffectParamsEntity e)
 
 module STL =
     open CWTools.Process

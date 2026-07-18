@@ -21,6 +21,46 @@ open CSharpHelpers
 
 // let inline ruleValidationServiceCreator(rootRules : RootRule<_> list, typedefs : TypeDefinition<_> list , types : Collections.Map<string, StringSet>, enums : Collections.Map<string, StringSet>, localisation : (Lang * Collections.Set<string>) list, files : Collections.Set<string>, triggers : Map<string,Effect<_>,InsensitiveStringComparer>, effects : Map<string,Effect<_>,InsensitiveStringComparer>, anyScope, changeScope, (defaultContext : ScopeContext<_>), checkLocField :( (Lang * Collections.Set<string> )list -> bool -> string -> _ -> ValidationResult)) =
 // let inline ruleValidationServiceCreator(rootRules : RootRule< ^T> list, typedefs : TypeDefinition<_> list , types : Collections.Map<string, StringSet>, enums : Collections.Map<string, StringSet>, localisation : (Lang * Collections.Set<string>) list, files : Collections.Set<string>, triggers : Map<string,Effect<_>,InsensitiveStringComparer>, effects : Map<string,Effect<_>,InsensitiveStringComparer>, anyScope, changeScope, (defaultContext : ScopeContext<_>), defaultLang) =
+module internal RuleValidationHelpers =
+    open CWTools.Parser
+
+    let normalizeConditionalLeaf (leaf: Leaf) =
+        let key = leaf.Key
+        let keyIds = leaf.KeyId
+        let metadata = stringManager.GetMetadataForID keyIds.lower
+        let hasConditionalPrefix =
+            metadata.startsWithSquareBracket && key.StartsWith("[[") && key.Contains("]")
+
+        if not hasConditionalPrefix then
+            key, keyIds, leaf
+        else
+            let prefixEnd = key.IndexOf(']')
+            let key, keyIds =
+                if prefixEnd >= 0 && prefixEnd + 1 < key.Length then
+                    let real = key.Substring(prefixEnd + 1)
+                    real, stringManager.InternIdentifierToken real
+                else
+                    key, keyIds
+
+            let validationLeaf =
+                match leaf.Value with
+                | Value.String value ->
+                    let text = value.GetString()
+                    if text.Length > 1 && text.[text.Length - 1] = ']' && text.IndexOf '[' < 0 then
+                        let stripped =
+                            Value.String(
+                                text.Substring(0, text.Length - 1)
+                                |> stringManager.InternIdentifierToken
+                            )
+                        let copy = Leaf(key, stripped, leaf.Position, leaf.Operator)
+                        copy.Trivia <- leaf.Trivia
+                        copy
+                    else
+                        leaf
+                | _ -> leaf
+
+            key, keyIds, validationLeaf
+
 type RuleValidationService
     (
         rootRules: RulesWrapper,
@@ -392,20 +432,7 @@ type RuleValidationService
                 (stringManager.GetMetadataForID l.KeyId.lower).containsDoubleDollar)
 
         let inline valueFun innerErrors (leaf: Leaf) =
-            let key = leaf.Key
-            let keyIds = leaf.KeyId
-
-            let key, keyIds =
-                let metadata = (stringManager.GetMetadataForID keyIds.lower)
-                if metadata.startsWithSquareBracket && key.StartsWith("[[") && key.Contains("]") then
-                    let prefixEnd = key.IndexOf(']')
-                    if prefixEnd >= 0 && prefixEnd + 1 < key.Length then
-                        let real = key.Substring(prefixEnd + 1)
-                        real, stringManager.InternIdentifierToken real
-                    else
-                        key, keyIds
-                else
-                    key, keyIds
+            let key, keyIds, validationLeaf = RuleValidationHelpers.normalizeConditionalLeaf leaf
 
             let inline createDefault () =
                 // 跳过以 @ 开头的变量引用，以及 key 中包含 $...$ 参数模式的条目
@@ -450,7 +477,7 @@ type RuleValidationService
                 lazyErrorMerge
                     rs
                     (function
-                    | (LeafRule(l, r), o) -> applyLeafRule startNode ctx o l r leaf
+                    | (LeafRule(l, r), o) -> applyLeafRule startNode ctx o l r validationLeaf
                     | _ -> failwith "Unexpected")
                     createDefault
                     innerErrors

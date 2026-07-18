@@ -3123,6 +3123,106 @@ let dynamicParameterScanTests =
               | Failure(e, _, _) -> Expect.isTrue false e ]
 
 [<Tests>]
+let eu4MetascriptRegressionTests =
+    let parseEntity text =
+        let logicalPath = "common/scripted_effects/test.txt"
+
+        match CKParser.parseString text logicalPath with
+        | Success(statements, _, _) ->
+            let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero statements
+
+            { filepath = logicalPath
+              logicalpath = logicalPath
+              rawEntity = node
+              entity = node
+              validate = true
+              entityType = EntityType.ScriptedEffects
+              overwrite = Overwrite.No }
+        | Failure(error, _, _) -> failwith error
+
+    let parseEffect text =
+        (parseEntity text).entity.Nodes |> Seq.exactlyOne
+
+    testList
+        "EU4 metascript regression"
+        [ testCase "incremental recompute refreshes bracket parameters"
+          <| fun () ->
+              let initial =
+                  parseEntity
+                      "my_scripted_effect = { set_global_flag = $prefix$_test_flag }"
+
+              let data = Compute.EU4.computeEU4Data (fun () -> None) initial
+              Expect.contains
+                  (data.ScriptedEffectParams |> Option.defaultValue [])
+                  "prefix"
+                  "Initial parameter scan should include dollar parameters"
+
+              let updated =
+                  parseEntity
+                      "my_scripted_effect = { set_global_flag = $prefix$_test_flag [[extra_flag] set_global_flag = extra_test_flag ] }"
+
+              Compute.EU4.computeEU4DataUpdate (fun () -> None) updated data
+
+              Expect.contains
+                  (data.ScriptedEffectParams |> Option.defaultValue [])
+                  "extra_flag"
+                  "Incremental recompute should refresh bracket parameters"
+
+          testCase "same-leaf conditional strips its glued closing bracket"
+          <| fun () ->
+              let effect =
+                  parseEffect
+                      "set_modifier_scripted_effect = { set_country_flag = used_example_effect_flag [[macro]add_country_modifier = example_macro_modifier] }"
+
+              let expanded =
+                  CWTools.Validation.Common.CommonValidation.applyBracketConditionals
+                      [ "macro", "enabled" ]
+                      effect.AllArray
+
+              let modifierLeaves =
+                  expanded
+                  |> Array.choose (function
+                      | LeafC leaf when leaf.Key = "add_country_modifier" -> Some leaf
+                      | _ -> None)
+
+              Expect.hasLength modifierLeaves 1 "A non-no EU4 macro value should include the conditional leaf"
+              Expect.equal
+                  modifierLeaves.[0].ValueText
+                  "example_macro_modifier"
+                  "The structural closing bracket must not remain in the modifier value"
+
+              let inactiveEffect =
+                  parseEffect
+                      "set_modifier_scripted_effect = { set_country_flag = used_example_effect_flag [[macro]add_country_modifier = example_macro_modifier] }"
+
+              let inactive =
+                  CWTools.Validation.Common.CommonValidation.applyBracketConditionals
+                      [ "macro", "no" ]
+                      inactiveEffect.AllArray
+
+              Expect.isFalse
+                  (inactive
+                   |> Array.exists (function
+                       | LeafC leaf when leaf.Key = "add_country_modifier" -> true
+                       | _ -> false))
+                  "EU4 macro = no should omit the conditional leaf"
+
+          testCase "definition validation strips a same-leaf structural close"
+          <| fun () ->
+              let effect =
+                  parseEffect
+                      "set_modifier_scripted_effect = { [[macro]add_country_modifier = example_macro_modifier] }"
+
+              let leaf = effect.Leaves |> Seq.exactlyOne
+              let key, _, validationLeaf = RuleValidationHelpers.normalizeConditionalLeaf leaf
+
+              Expect.equal key "add_country_modifier" "Validation should use the conditional leaf's real key"
+              Expect.equal
+                  validationLeaf.ValueText
+                  "example_macro_modifier"
+                  "Definition validation should not receive the structural closing bracket" ]
+
+[<Tests>]
 let nestedEventTargetTests =
     let mkScriptedEffect (node: Node) =
         ScriptedEffect(

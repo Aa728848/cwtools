@@ -44,7 +44,7 @@ module CommonValidation =
         else
             None
 
-    let private applyBracketConditionals (parameters: (string * string) list) (children: Child array) =
+    let internal applyBracketConditionals (parameters: (string * string) list) (children: Child array) =
         let values =
             parameters
             |> Seq.choose (fun (key, value) ->
@@ -256,6 +256,8 @@ module CommonValidation =
                                     // No matching close — the leaf itself is the entire conditional content
                                     if parameterAllowsBlock name negated then
                                         leaf.Key <- realKey
+                                        if valueHasGluedClose leaf.Value then
+                                            leaf.Value <- stripGluedClose leaf.Value
                                         loop (index + 1) (LeafC leaf :: acc)
                                     else
                                         loop (index + 1) acc
