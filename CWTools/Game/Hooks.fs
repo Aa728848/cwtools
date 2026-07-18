@@ -213,9 +213,17 @@ let refreshConfigBeforeFirstTypesHook (lookup: Lookup) (resources: IResourceAPI<
 
     let scriptedEffectKeys =
         (resources.AllEntities()
-         |> PSeq.map (fun struct (e, l) ->
-             (l.Force().ScriptedEffectParams
-              |> (Option.defaultWith (fun () -> Compute.EU4.getScriptedEffectParamsEntity e))))
+         |> PSeq.choose (fun struct (e, l) ->
+             if
+                 e.logicalpath.StartsWith("common/scripted_effects", System.StringComparison.OrdinalIgnoreCase)
+                 || e.logicalpath.StartsWith("common/scripted_triggers", System.StringComparison.OrdinalIgnoreCase)
+             then
+                 Some(
+                     l.Force().ScriptedEffectParams
+                     |> Option.defaultWith (fun () -> Compute.EU4.getScriptedEffectParamsEntity e)
+                 )
+             else
+                 None)
          |> Seq.collect id
          |> Seq.toArray)
 
@@ -236,9 +244,14 @@ let refreshConfigBeforeFirstTypesHook (lookup: Lookup) (resources: IResourceAPI<
     // 提取 script_value 参数
     let scriptValueKeys =
         (resources.AllEntities()
-         |> PSeq.map (fun struct (e, l) ->
-             (l.Force().ScriptValueParams
-              |> (Option.defaultWith (fun () -> Compute.Jomini.getScriptValueParamsEntity e))))
+         |> PSeq.choose (fun struct (e, l) ->
+             if e.logicalpath.StartsWith("common/script_values", System.StringComparison.OrdinalIgnoreCase) then
+                 Some(
+                     l.Force().ScriptValueParams
+                     |> Option.defaultWith (fun () -> Compute.Jomini.getScriptValueParamsEntity e)
+                 )
+             else
+                 None)
          |> Seq.collect id
          |> Seq.toArray)
 

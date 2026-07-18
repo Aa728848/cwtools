@@ -10,7 +10,6 @@ country_event = {
     }
 }
 
-#error
 country_event = {
     id = testse.2
     is_triggered_only = yes
@@ -19,7 +18,6 @@ country_event = {
     }
 }
 
-#error
 country_event = {
     id = testse.3
     is_triggered_only = yes

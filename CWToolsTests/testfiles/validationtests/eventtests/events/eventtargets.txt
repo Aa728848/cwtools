@@ -1,6 +1,5 @@
 namespace = test
 
-#error
 country_event = {
     is_triggered_only = yes
     id = event.1
@@ -10,7 +9,6 @@ country_event = {
     }
 }
 
-#error
 country_event = {
     is_triggered_only = yes
     id = event.2
@@ -22,7 +20,6 @@ country_event = {
 
 }
 
-#error
 country_event = {
     is_triggered_only = yes
     id = event.3

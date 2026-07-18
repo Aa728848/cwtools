@@ -3493,7 +3493,88 @@ let incrementalScriptedRefreshTests =
               stl.RefreshScriptedTypes [ triggerFile ] |> ignore
 
               let committed = stl.CommitScriptedTypes staged.Value
-              Expect.isFalse committed "commit must reject a staged result whose base type index was replaced" ]
+              Expect.isFalse committed "commit must reject a staged result whose base type index was replaced"
+
+          testWithCapturedLogs "commit refreshes scripted parameter enums" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripteddefaults"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let effectFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_effects", "test.txt"))
+              let eventFile = Path.GetFullPath(Path.Combine(folder, "events", "test.txt"))
+              let updatedEffects =
+                  File.ReadAllText(effectFile)
+                  + "\nscripted_effect_incremental_param = { set_country_flag = $incremental_param$ }\n"
+
+              stl.UpdateFile false effectFile (Some updatedEffects) |> ignore
+
+              let staged = stl.PrepareScriptedTypes [ effectFile ]
+              Expect.isSome staged "prepare should stage a scripted effect parameter change"
+              let stagedEnums =
+                  staged.Value.newEnumDefs
+                  :?> Map<string, string * (string * range option) array>
+              let stagedParams =
+                  stagedEnums.["scripted_effect_params"]
+                  |> snd
+                  |> Array.map fst
+              Expect.contains
+                  stagedParams
+                  "incremental_param"
+                  "the staged enum should contain the newly parsed parameter"
+              Expect.isTrue
+                  (stl.CommitScriptedTypes staged.Value)
+                  "commit should install the updated scripted parameter enum"
+
+              let eventText =
+                  """
+namespace = incremental_param
+
+country_event = {
+    is_triggered_only = yes
+    option = {
+        scripted_effect_incremental_param = {
+            incremental_param = yes
+        }
+    }
+}
+"""
+
+              let errors = stl.UpdateFile false eventFile (Some eventText)
+              let parameterErrors =
+                  errors
+                  |> List.filter (fun error ->
+                      error.message.Contains("incremental_param", StringComparison.Ordinal)
+                      || error.message.Contains("scripted_effect_params", StringComparison.Ordinal))
+
+              Expect.isEmpty
+                  parameterErrors
+                  $"incremental commit should validate the new scripted parameter without a full refresh: %A{parameterErrors |> List.map _.message}"
+
+              stl.UpdateFile false effectFile (Some(File.ReadAllText effectFile)) |> ignore
+              let removal = stl.PrepareScriptedTypes [ effectFile ]
+              Expect.isSome removal "prepare should stage scripted parameter removal"
+              let removalEnums =
+                  removal.Value.newEnumDefs
+                  :?> Map<string, string * (string * range option) array>
+              let removalParams =
+                  removalEnums.["scripted_effect_params"]
+                  |> snd
+                  |> Array.map fst
+              Expect.isFalse
+                  (removalParams |> Array.contains "incremental_param")
+                  "the staged enum should remove parameters no longer present in resources"
+              Expect.isTrue
+                  (stl.CommitScriptedTypes removal.Value)
+                  "commit should install the enum after a scripted parameter is removed" ]
 
 [<Tests>]
 let irSubfolderTests =

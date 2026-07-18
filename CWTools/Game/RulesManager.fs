@@ -165,6 +165,16 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     let mutable tempEnumMap: FrozenDictionary<string, string * PrefixOptimisedStringSet> =
         FrozenDictionary.Empty
 
+    let enumMapFrom (enumDefs: Map<string, string * (string * range option) array>) =
+        (enumDefs
+         |> Map.toSeq
+         |> PSeq.map (fun (k, (d, s)) -> KeyValuePair(k, (d, s |> Array.map fst |> createStringSet))))
+            .ToFrozenDictionary()
+
+    let refreshDynamicParameterEnums () =
+        settings.refreshConfigBeforeFirstTypesHook lookup resources embeddedSettings
+        tempEnumMap <- enumMapFrom lookup.enumDefs
+
     let mutable rulesDataGenerated = false
     let mutable baseConfigRules: RootRule array = [||]
 
@@ -636,13 +646,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
         lookup.enumDefs <- addEmbeddedEnumDefData newEnumDefs
 
-        settings.refreshConfigBeforeFirstTypesHook lookup resources embeddedSettings
-
-        tempEnumMap <-
-            (lookup.enumDefs
-             |> Map.toSeq
-             |> PSeq.map (fun (k, (d, s)) -> KeyValuePair(k, (d, s |> Array.map fst |> createStringSet))))
-                .ToFrozenDictionary()
+        refreshDynamicParameterEnums ()
 
         /// First pass type defs
         let loc = currentLoc ()
@@ -1221,6 +1225,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let fileSet = files |> List.map normaliseFilePath |> Set.ofList
 
         lookup.configRules <- settings.loadConfigRulesHook baseConfigRules lookup embeddedSettings
+        refreshDynamicParameterEnums ()
         let rulesWrapper = rulesWrapperFor lookup.configRules
         let loc = currentLoc ()
         let allFiles = currentFiles ()
@@ -1371,39 +1376,61 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
     let prepareScriptedTypes (files: string list) (typeKeys: string list) : StagedScriptedTypes option =
         let timer = System.Diagnostics.Stopwatch.StartNew()
+        let original = lookup
+        let baseEnumDefs = original.enumDefs
+        let baseTempEnumMap = tempEnumMap
+        let clone = original.ShallowClone() :?> 'L
+        lookup <- clone
 
-        match prepareTypeIndex files typeKeys with
-        | None -> None
-        | Some stagedIndex ->
-            let rulesWrapper = rulesWrapperFor lookup.configRules
-            let loc = currentLoc ()
-            let allFiles = currentFiles ()
+        try
+            refreshDynamicParameterEnums ()
 
-            let ruleValidationService, infoService, completionService =
-                buildServices rulesWrapper stagedIndex.tempTypeMap loc allFiles
+            match prepareTypeIndex files typeKeys with
+            | None -> None
+            | Some stagedIndex ->
+                let rulesWrapper = rulesWrapperFor lookup.configRules
+                let loc = currentLoc ()
+                let allFiles = currentFiles ()
 
-            // Pay the lazy inverted-map cost here (read lock) rather than on the first
-            // write-locked validation after commit.
-            infoService.WarmTypeLocalisationIndex()
+                let ruleValidationService, infoService, completionService =
+                    buildServices rulesWrapper stagedIndex.tempTypeMap loc allFiles
 
-            logInfo $"Prepare scripted types: files=%d{files.Length}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
+                // Pay the lazy inverted-map cost here (read lock) rather than on the first
+                // write-locked validation after commit.
+                infoService.WarmTypeLocalisationIndex()
 
-            Some
-                { typeDefInfo = stagedIndex.typeDefInfo
-                  tempTypeMap = stagedIndex.tempTypeMap
-                  typeDefInfoForValidation = stagedIndex.typeDefInfoForValidation
-                  baseTypeDefInfo = stagedIndex.baseTypeDefInfo
-                  ruleService = box ruleValidationService
-                  infoService = box infoService
-                  completionService = box completionService }
+                logInfo $"Prepare scripted types: files=%d{files.Length}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
+
+                Some
+                    { typeDefInfo = stagedIndex.typeDefInfo
+                      tempTypeMap = stagedIndex.tempTypeMap
+                      typeDefInfoForValidation = stagedIndex.typeDefInfoForValidation
+                      baseTypeDefInfo = stagedIndex.baseTypeDefInfo
+                      baseEnumDefs = box baseEnumDefs
+                      newEnumDefs = box lookup.enumDefs
+                      newTempEnumMap = box tempEnumMap
+                      ruleService = box ruleValidationService
+                      infoService = box infoService
+                      completionService = box completionService }
+        finally
+            lookup <- original
+            tempEnumMap <- baseTempEnumMap
 
     let commitScriptedTypes (staged: StagedScriptedTypes) =
-        if not (System.Object.ReferenceEquals(lookup.typeDefInfo, staged.baseTypeDefInfo)) then
+        if
+            not (System.Object.ReferenceEquals(lookup.typeDefInfo, staged.baseTypeDefInfo))
+            || not (System.Object.ReferenceEquals(lookup.enumDefs, staged.baseEnumDefs))
+        then
             None
         else
             lookup.typeDefInfo <- staged.typeDefInfo
             tempTypeMap <- staged.tempTypeMap
             lookup.typeDefInfoForValidation <- staged.typeDefInfoForValidation
+            lookup.enumDefs <- staged.newEnumDefs :?> Map<string, string * (string * range option) array>
+
+            tempEnumMap <-
+                staged.newTempEnumMap :?> FrozenDictionary<string, string * PrefixOptimisedStringSet>
+
             Some(
                 staged.ruleService :?> RuleValidationService,
                 staged.infoService :?> InfoService,

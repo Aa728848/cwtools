@@ -75,6 +75,10 @@ type StagedScriptedTypes =
       typeDefInfoForValidation: Map<string, struct (string * range) array>
       /// lookup.typeDefInfo reference the fold was seeded from; commit-time ReferenceEquals guard
       baseTypeDefInfo: Map<string, TypeDefInfo array>
+      /// Dynamic enum state used by scripted parameters is staged with the type index.
+      baseEnumDefs: obj
+      newEnumDefs: obj
+      newTempEnumMap: obj
       ruleService: obj
       infoService: obj
       completionService: obj }

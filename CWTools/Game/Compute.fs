@@ -325,6 +325,7 @@ module STL =
         data.EffectBlocks <- effectBlocks
         data.TriggerBlocks <- triggersBlocks
         data.WithRulesData <- withRulesData
+        data.ScriptedEffectParams <- Some(EU4.getScriptedEffectParamsEntity e)
 
 module Jomini =
     open CWTools.Process
@@ -513,4 +514,5 @@ module Jomini =
         data.EffectBlocks <- effectBlocks
         data.TriggerBlocks <- triggersBlocks
         data.WithRulesData <- withRulesData
+        data.ScriptedEffectParams <- Some(getScriptedEffectParamsEntity e)
         data.ScriptValueParams <- Some(getScriptValueParamsEntity e)

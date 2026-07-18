@@ -2237,7 +2237,7 @@ let testsv =
                   Expect.sequenceEqual suggestions expected "Completion should match"
               | Failure(e, _, _) -> Expect.isTrue false e
 
-          testWithCapturedLogs "test root completion"
+          testWithCapturedLogs "test completion before an existing root"
           <| fun () ->
               let input =
                   "\n\
@@ -2305,8 +2305,11 @@ let testsv =
                           | Detailed _ -> failwith "todo")
                       |> Seq.sort
 
-                  let expected = [ "create_starbase"; "create_starbase" ] |> Seq.sort
-                  Expect.sequenceEqual suggestions expected "Completion should match"
+                  let expected = [ "size"; "owner"; "building"; "effect"; "module" ] |> Seq.sort
+                  Expect.sequenceEqual
+                      suggestions
+                      expected
+                      "Completion recovery before an existing root should use that root's fields"
               | Failure(e, _, _) -> Expect.isTrue false e
 
           testWithCapturedLogs "test scalar completion type hint"
@@ -2379,7 +2382,7 @@ let testsv =
                   Expect.sequenceEqual suggestions expected "Completion should match"
               | Failure(e, _, _) -> Expect.isTrue false e
 
-          testWithCapturedLogs "test on_action root subtype completion"
+          testWithCapturedLogs "test partial on_action root omits static subtype completion"
           <| fun () ->
               let configtext =
                   [ "./testfiles/configtests/config/on_actions.cwt",
@@ -2419,9 +2422,9 @@ let testsv =
                       | Detailed _ -> failwith "todo")
                   |> Seq.toList
 
-              Expect.contains suggestions "on_game_start" "Completion should include vanilla on_action key"
-              Expect.contains suggestions "on_monthly_pulse" "Completion should include vanilla on_action key"
-              Expect.isFalse (suggestions |> List.contains "on_action") "Subtype-only root completion should not suggest the type name"
+              Expect.isEmpty
+                  suggestions
+                  "Partial on_action roots should not emit static subtype or type-name completions"
 
           testWithCapturedLogs "test test ship_behavior"
           <| fun () ->
@@ -3167,6 +3170,50 @@ let eu4MetascriptRegressionTests =
                   (data.ScriptedEffectParams |> Option.defaultValue [])
                   "extra_flag"
                   "Incremental recompute should refresh bracket parameters"
+
+          testCase "Stellaris incremental recompute refreshes parameters"
+          <| fun () ->
+              let initial =
+                  parseEntity
+                      "my_scripted_effect = { set_global_flag = $initial_param$ }"
+
+              let data = Compute.STL.computeSTLData (fun () -> None) initial
+
+              let updated =
+                  parseEntity
+                      "my_scripted_effect = { set_global_flag = $updated_param$ }"
+
+              Compute.STL.computeSTLDataUpdate (fun () -> None) updated data
+
+              Expect.contains
+                  (data.ScriptedEffectParams |> Option.defaultValue [])
+                  "updated_param"
+                  "Stellaris incremental recompute should refresh scripted parameters"
+              Expect.isFalse
+                  ((data.ScriptedEffectParams |> Option.defaultValue []) |> List.contains "initial_param")
+                  "Stellaris incremental recompute should discard removed scripted parameters"
+
+          testCase "Jomini incremental recompute refreshes parameters"
+          <| fun () ->
+              let initial =
+                  parseEntity
+                      "my_scripted_effect = { set_global_flag = $initial_param$ }"
+
+              let data = Compute.Jomini.computeJominiData (fun () -> None) initial
+
+              let updated =
+                  parseEntity
+                      "my_scripted_effect = { set_global_flag = $updated_param$ }"
+
+              Compute.Jomini.computeJominiDataUpdate (fun () -> None) updated data
+
+              Expect.contains
+                  (data.ScriptedEffectParams |> Option.defaultValue [])
+                  "updated_param"
+                  "Jomini incremental recompute should refresh scripted parameters"
+              Expect.isFalse
+                  ((data.ScriptedEffectParams |> Option.defaultValue []) |> List.contains "initial_param")
+                  "Jomini incremental recompute should discard removed scripted parameters"
 
           testCase "same-leaf conditional strips its glued closing bracket"
           <| fun () ->
