@@ -175,6 +175,56 @@ type ValidationManager<'T when 'T :> ComputedData>
     // if cache.ContainsKey entity.filepath then cache.[entity.filepath] <- errors else cache.Add(entity.filepath, errors)
     let getErrorsForEntity (entity: Entity) = errorCache.GetErrorsForEntity entity
 
+    /// Validate only the edited entities against CWT rules. This intentionally skips
+    /// validators that inspect the full resource set; it is the latency-sensitive path
+    /// used while typing; save-time or explicit validation supplies global diagnostics.
+    let validateInteractive (entities: struct (Entity * Lazy<'T>) list) =
+        if not settings.useRules || services.ruleValidationService.IsNone then
+            []
+        else
+            let impactedFileBag = ConcurrentBag<string>()
+
+            let ruleValidate (e: Entity) =
+                let res = services.ruleValidationService.Value.RuleValidateEntity e
+
+                let errors =
+                    res
+                    |> function
+                        | Invalid(_, es) -> es
+                        | _ -> []
+
+                let impactedFiles = addToCache e errors
+                impactedFiles |> Seq.iter impactedFileBag.Add
+                let fileIndex = fileIndexOfFile e.filepath
+
+                res
+                |> function
+                    | Invalid(_, es) ->
+                        Invalid(Guid.NewGuid(), es |> List.filter (fun error -> error.range.FileIndex = fileIndex))
+                    | _ -> OK
+
+            let directErrors =
+                entities
+                |> List.map (fun struct (e, _) -> e)
+                <&!!&> ruleValidate
+                |> function
+                    | Invalid(_, es) -> es
+                    | _ -> []
+
+            let nonSelfErrors =
+                entities
+                |> List.choose (fun struct (e, _) -> errorCache.GetNonSelfErrorsForFile e)
+                |> List.collect id
+
+            let impactedErrors =
+                impactedFileBag
+                |> Seq.choose errorCache.GetErrorsForFile
+                |> Seq.collect id
+                |> List.ofSeq
+
+            directErrors @ nonSelfErrors @ impactedErrors
+            |> List.filter (fun error -> error.code <> "CW100")
+
     let validate (shallow: bool) (entities: struct (Entity * Lazy<'T>) list) =
         log (sprintf "Validating %i files" entities.Length)
         // log $"Validation cache size %i{errorCache.}"
@@ -197,44 +247,7 @@ type ValidationManager<'T when 'T :> ComputedData>
         let res = runValidators (fun f -> f oldEntities newEntities) validators
         // log "Validating rules"
         // let rres = (if settings.useRules && services.ruleValidationService.IsSome then (runValidators (fun f -> f oldEntities newEntities) [services.ruleValidationService.Value.RuleValidate(), "rules"]) else [])
-        let impactedFileBag = ConcurrentBag<string>()
-
-        let ruleValidate =
-            (fun (e: Entity) ->
-                let res = services.ruleValidationService.Value.RuleValidateEntity e
-
-                let errors =
-                    res
-                    |> (function
-                    | Invalid(_, es) -> es
-                    | _ -> [])
-
-                let impactedFiles = addToCache e errors
-                impactedFiles |> Seq.iter impactedFileBag.Add
-                let fileIndex = fileIndexOfFile e.filepath
-
-                res
-                |> (function
-                | Invalid(_, es) -> Invalid(Guid.NewGuid(), es |> List.filter (fun e -> e.range.FileIndex = fileIndex))
-                | _ -> OK))
-
-        let rres =
-            if settings.useRules && services.ruleValidationService.IsSome then
-                (entities |> List.map (fun struct (e, _) -> e) <&!!&> ruleValidate
-                 |> (function
-                 | Invalid(_, es) -> es
-                 | _ -> []))
-                @ (entities
-                   |> List.choose (fun struct (e, _) -> errorCache.GetNonSelfErrorsForFile e)
-                   |> List.collect id)
-                @ (impactedFileBag
-                   |> Seq.choose errorCache.GetErrorsForFile
-                   |> Seq.collect id
-                   |> List.ofSeq)
-            else
-                []
-
-        let rres = rres |> List.filter (fun err -> err.code <> "CW100")
+        let rres = validateInteractive entities
 
         let shallow, deep =
             if settings.debugRulesOnly then
@@ -406,6 +419,7 @@ type ValidationManager<'T when 'T :> ComputedData>
 
 
     member _.Validate(shallow: bool, entities: struct (Entity * Lazy<'T>) list) = validate shallow entities
+    member _.ValidateInteractive(entities: struct (Entity * Lazy<'T>) list) = validateInteractive entities
     member _.ValidateLocalisation(entities: struct (Entity * Lazy<'T>) list) = validateLocalisation entities
     member _.ValidateGlobalLocalisation() = globalTypeDefLoc ()
 

@@ -129,6 +129,8 @@ type IGame =
     abstract AllFiles: unit -> Resource list
     abstract AllLoadedLocalisation: unit -> string list
     abstract UpdateFile: bool -> string -> string option -> CWError list
+    /// Latency-sensitive editor update: refresh the resource and run only current-entity rule validation.
+    abstract UpdateFileInteractive: string -> string option -> CWError list
     abstract ValidateFile: bool -> string -> CWError list
     abstract Complete: pos -> string -> string -> CompletionResponse list
     abstract GoToType: pos -> string -> string -> range option

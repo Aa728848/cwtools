@@ -233,6 +233,46 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         log $"Update file Time: %i{timer.ElapsedMilliseconds}"
         res
 
+    /// Update the in-memory resource used by language features while typing, but avoid
+    /// validators that enumerate the full game/localisation data set. Save-time or explicit
+    /// validation remains responsible for complete global diagnostics.
+    let updateFileInteractive filepath (fileText: string option) =
+        log $"updateFileInteractive %s{filepath}"
+        let timer = System.Diagnostics.Stopwatch.StartNew()
+
+        let res =
+            match filepath with
+            | x when x.EndsWith localisationExtension ->
+                let file = fileText |> Option.defaultWith (fun () -> File.ReadAllText filepath)
+                let resourceInput =
+                    LanguageFeatures.makeFileWithContentResourceInput fileManager filepath file
+                let resource, _ = this.Resources.UpdateFile(resourceInput)
+
+                match resource with
+                | FileWithContentResource(_, r) -> this.LocalisationManager.UpdateLocalisationFile r
+                | _ -> logWarning (sprintf "Localisation file failed to parse %s" filepath)
+
+                []
+            | x when PdxShaderFeatures.isShaderFile x ->
+                let file = fileText |> Option.defaultWith (fun () -> File.ReadAllText(filepath, encoding))
+                let resource = LanguageFeatures.makeFileWithContentResourceInput fileManager filepath file
+                this.Resources.UpdateFile resource |> ignore
+                PdxShaderFeatures.validate this.Resources filepath file
+            | _ ->
+                let file = fileText |> Option.defaultWith (fun () -> File.ReadAllText(filepath, encoding))
+                let resource = LanguageFeatures.makeEntityResourceInput fileManager filepath file
+                let newEntities = [ this.Resources.UpdateFile resource ] |> List.choose snd
+                afterUpdateFile this filepath
+                let currentErrors = validationManager.ValidateInteractive newEntities
+                let cachedDeepErrors =
+                    match errorCache.TryGetValue(filepath) with
+                    | true, errors -> errors
+                    | _ -> []
+                currentErrors @ cachedDeepErrors
+
+        log $"Interactive update file time: %i{timer.ElapsedMilliseconds}"
+        res
+
     let entityByFilePathWithFallback filepath =
         match resourceManager.Api.GetEntityByFilePath filepath with
         | Some entity -> Some entity
@@ -427,6 +467,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member _.ValidationManager = validationManager
     member _.Settings = settings
     member _.UpdateFile shallow file text = updateFile shallow file text
+    member _.UpdateFileInteractive file text = updateFileInteractive file text
     member _.ValidateFile shallow file = validateFile shallow file
     member _.RemoveFile file = resourceManager.Api.RemoveFile file
 

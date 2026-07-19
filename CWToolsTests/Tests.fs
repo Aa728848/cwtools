@@ -4010,6 +4010,19 @@ let onActionLivenessTests =
         let updatePath =
             Path.GetFullPath "./testfiles/onactiontests/gamefiles/common/on_actions/test_actions.txt"
 
+        let interactiveErrors =
+            let text =
+                File.ReadAllText(updatePath)
+                + "\non_test_interactive = { invalid_interactive_key = yes }\n"
+            stl.UpdateFileInteractive updatePath (Some text)
+
+        Expect.isEmpty
+            (interactiveErrors |> List.filter (fun e -> e.code = "CW239"))
+            "Interactive updates should defer global lookup diagnostics until the normal validation pass"
+        Expect.isTrue
+            (interactiveErrors |> List.exists (fun e -> e.message.Contains "invalid_interactive_key"))
+            $"Interactive updates should still report current-entity CWT errors: %A{interactiveErrors |> List.map _.message}"
+
         let updateErrors =
             stl.UpdateFile true updatePath None
             |> List.filter (fun e -> e.code = "CW239")
