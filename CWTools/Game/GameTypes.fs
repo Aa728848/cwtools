@@ -69,6 +69,19 @@ type CompletionResponse =
     static member CreateSnippet(label, snippet, desc) =
         Snippet(label, snippet, desc, None, CompletionCategory.Other)
 
+type InteractiveFileKind =
+    | EntityFile
+    | LocalisationFile
+    | ShaderFile
+
+/// Prepared editor update. The resource is parsed but has not yet been committed
+/// to the live game state, so callers may build it without taking the write lock.
+type StagedFileUpdate =
+    { filepath: string
+      fileText: string
+      kind: InteractiveFileKind
+      resourceUpdate: PreparedResourceUpdate }
+
 type StagedScriptedTypes =
     { typeDefInfo: Map<string, TypeDefInfo array>
       tempTypeMap: Map<string, CWTools.Utilities.Utils2.PrefixOptimisedStringSet>
@@ -131,6 +144,12 @@ type IGame =
     abstract UpdateFile: bool -> string -> string option -> CWError list
     /// Latency-sensitive editor update: refresh the resource and run only current-entity rule validation.
     abstract UpdateFileInteractive: string -> string option -> CWError list
+    /// Parse an editor update without mutating the live game state.
+    abstract PrepareUpdateFileInteractive: string -> string option -> StagedFileUpdate
+    /// Atomically install a prepared editor resource. The caller holds the write lock.
+    abstract CommitUpdateFileInteractive: StagedFileUpdate -> bool
+    /// Validate the committed editor resource without mutating validation caches.
+    abstract ValidateFileInteractive: StagedFileUpdate -> CWError list
     abstract ValidateFile: bool -> string -> CWError list
     abstract Complete: pos -> string -> string -> CompletionResponse list
     abstract GoToType: pos -> string -> string -> range option

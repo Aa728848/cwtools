@@ -193,6 +193,13 @@ type ResourceInput =
     | CachedResourceInput of Resource * Entity
     | FileWithContentResourceInput of FileWithContentResourceInput
 
+/// Parsed single-file update that has not yet mutated the live resource maps.
+/// Parsing is intentionally separated from commit so editor updates only need
+/// a short write-locked swap phase.
+type PreparedResourceUpdate =
+    { parsedResource: Resource
+      parsedEntity: Entity option }
+
 
 
 
@@ -1362,15 +1369,19 @@ type ResourceManager<'T when 'T :> ComputedData>
         let _ = Task.Run(fun () -> forceEagerData eagerVersion)
         res
 
-    /// 单文件编辑的轻量路径：跳过 updateOverwrite 和 forceEagerData，
-    /// 避免每次编辑都对整个项目做全量扫描和后台预热。
-    /// 完整的 overwrite 重建和 eager 预热仍在 ForceRecompute（delayedAnalyze）中执行。
-    let updateFile file =
-        ResourceManagerEager.nextVersion () |> ignore
-        // 1. 解析文件并生成 Entity
-        let (resource, entity) = parseFileThenEntity file
+    /// Parse a single file without changing the live resource maps.
+    let prepareFile file =
+        let resource, entity = parseFileThenEntity file
+        { parsedResource = resource; parsedEntity = entity }
 
-        // 2. 保存结果到 fileMap/entitiesMap，保留旧 Entity 的 overwrite 状态
+    /// Commit a previously parsed single-file update. The caller serialises this
+    /// short mutation phase with other game-state writers.
+    let commitPreparedFile (prepared: PreparedResourceUpdate) =
+        ResourceManagerEager.nextVersion () |> ignore
+        let resource = prepared.parsedResource
+        let entity = prepared.parsedEntity
+
+        // Save results to fileMap/entitiesMap, preserving the old overwrite state.
         let savedResults =
             seq {
                 match resource with
@@ -1402,7 +1413,7 @@ type ResourceManager<'T when 'T :> ComputedData>
                     yield resource, None
             } |> Seq.toList
 
-        // 3. 处理 inline script 展开（仅针对本文件）
+        // Expand inline scripts for this file after it becomes the live resource.
         let mutable res = savedResults
         if enableInlineScripts then
             res <- updateInlineScripts res |> Seq.toList
@@ -1414,9 +1425,15 @@ type ResourceManager<'T when 'T :> ComputedData>
         // 跳过 forceEagerData — Lazy 值按需求值，避免全量预热导致巨额分配
 
         if res.Length > 1 then
-            log (sprintf "File %A returned multiple resources" file)
+            log (sprintf "Prepared file %A returned multiple resources" prepared.parsedResource)
 
         res.[0]
+
+    /// Single-file update used by save/deep-validation paths. Keeping this
+    /// wrapper preserves the existing API while editor updates can call the two
+    /// phases independently.
+    let updateFile file =
+        file |> prepareFile |> commitPreparedFile
 
     let normaliseFilePath (path: string) =
         try
@@ -1513,6 +1530,8 @@ type ResourceManager<'T when 'T :> ComputedData>
         | _ -> None
 
     member _.ManualProcessResource = parseFileThenEntity >> snd
+    member _.PrepareFile = prepareFile
+    member _.CommitPreparedFile = commitPreparedFile
 
     member _.ManualProcess (filename: string) (filetext: string) =
         let parsed = CKParser.parseString filetext filename

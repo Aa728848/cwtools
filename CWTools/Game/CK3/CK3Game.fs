@@ -251,6 +251,9 @@ type CK3Game(setupSettings: CK3Settings) =
         member _.StaticModifiers() = [||] //lookup.staticModifiers
         member _.UpdateFile shallow file text = game.UpdateFile shallow file text
         member _.UpdateFileInteractive file text = game.UpdateFileInteractive file text
+        member _.PrepareUpdateFileInteractive file text = game.PrepareUpdateFileInteractive file text
+        member _.CommitUpdateFileInteractive staged = game.CommitUpdateFileInteractive staged
+        member _.ValidateFileInteractive staged = game.ValidateFileInteractive staged
         member _.ValidateFile shallow file = game.ValidateFile shallow file
         member _.AllEntities() = resources.AllEntities()
 

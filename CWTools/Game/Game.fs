@@ -233,43 +233,68 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         log $"Update file Time: %i{timer.ElapsedMilliseconds}"
         res
 
-    /// Update the in-memory resource used by language features while typing, but avoid
-    /// validators that enumerate the full game/localisation data set. Save-time or explicit
-    /// validation remains responsible for complete global diagnostics.
+    /// Parse an editor update without mutating the live resource maps.
+    let prepareUpdateFileInteractive filepath (fileText: string option) =
+        let fullPath = Path.GetFullPath filepath
+        let kind, file, resourceInput =
+            match fullPath with
+            | x when x.EndsWith localisationExtension ->
+                let file = fileText |> Option.defaultWith (fun () -> File.ReadAllText fullPath)
+                LocalisationFile,
+                file,
+                LanguageFeatures.makeFileWithContentResourceInput fileManager fullPath file
+            | x when PdxShaderFeatures.isShaderFile x ->
+                let file = fileText |> Option.defaultWith (fun () -> File.ReadAllText(fullPath, encoding))
+                ShaderFile,
+                file,
+                LanguageFeatures.makeFileWithContentResourceInput fileManager fullPath file
+            | _ ->
+                let file = fileText |> Option.defaultWith (fun () -> File.ReadAllText(fullPath, encoding))
+                EntityFile,
+                file,
+                LanguageFeatures.makeEntityResourceInput fileManager fullPath file
+
+        { filepath = fullPath
+          fileText = file
+          kind = kind
+          resourceUpdate = resourceManager.PrepareFile resourceInput }
+
+    /// Install a prepared editor resource. Parsing and rule validation are not
+    /// part of this mutation phase, keeping the caller's write lock short.
+    let commitUpdateFileInteractive (staged: StagedFileUpdate) =
+        let resource, entity = resourceManager.CommitPreparedFile staged.resourceUpdate
+
+        match staged.kind with
+        | LocalisationFile ->
+            match resource with
+            | FileWithContentResource(_, r) -> this.LocalisationManager.UpdateLocalisationFile r
+            | _ -> logWarning (sprintf "Localisation file failed to parse %s" staged.filepath)
+        | ShaderFile -> ()
+        | EntityFile ->
+            afterUpdateFile this staged.filepath
+            entity
+            |> Option.iter (fun current -> validationManager.InvalidateInteractive [ current ])
+
+        true
+
+    /// Validate the committed editor resource without updating cross-file or
+    /// deep-validation caches. Those caches are repopulated by save/deep lint.
+    let validateFileInteractive (staged: StagedFileUpdate) =
+        match staged.kind with
+        | LocalisationFile -> []
+        | ShaderFile -> PdxShaderFeatures.validate this.Resources staged.filepath staged.fileText
+        | EntityFile ->
+            match resourceManager.Api.GetEntityByFilePath staged.filepath with
+            | Some entity -> validationManager.ValidateInteractiveDetached [ entity ]
+            | None -> []
+
+    /// Compatibility wrapper for callers that do not split prepare/commit/validate.
     let updateFileInteractive filepath (fileText: string option) =
         log $"updateFileInteractive %s{filepath}"
         let timer = System.Diagnostics.Stopwatch.StartNew()
-
-        let res =
-            match filepath with
-            | x when x.EndsWith localisationExtension ->
-                let file = fileText |> Option.defaultWith (fun () -> File.ReadAllText filepath)
-                let resourceInput =
-                    LanguageFeatures.makeFileWithContentResourceInput fileManager filepath file
-                let resource, _ = this.Resources.UpdateFile(resourceInput)
-
-                match resource with
-                | FileWithContentResource(_, r) -> this.LocalisationManager.UpdateLocalisationFile r
-                | _ -> logWarning (sprintf "Localisation file failed to parse %s" filepath)
-
-                []
-            | x when PdxShaderFeatures.isShaderFile x ->
-                let file = fileText |> Option.defaultWith (fun () -> File.ReadAllText(filepath, encoding))
-                let resource = LanguageFeatures.makeFileWithContentResourceInput fileManager filepath file
-                this.Resources.UpdateFile resource |> ignore
-                PdxShaderFeatures.validate this.Resources filepath file
-            | _ ->
-                let file = fileText |> Option.defaultWith (fun () -> File.ReadAllText(filepath, encoding))
-                let resource = LanguageFeatures.makeEntityResourceInput fileManager filepath file
-                let newEntities = [ this.Resources.UpdateFile resource ] |> List.choose snd
-                afterUpdateFile this filepath
-                let currentErrors = validationManager.ValidateInteractive newEntities
-                let cachedDeepErrors =
-                    match errorCache.TryGetValue(filepath) with
-                    | true, errors -> errors
-                    | _ -> []
-                currentErrors @ cachedDeepErrors
-
+        let staged = prepareUpdateFileInteractive filepath fileText
+        commitUpdateFileInteractive staged |> ignore
+        let res = validateFileInteractive staged
         log $"Interactive update file time: %i{timer.ElapsedMilliseconds}"
         res
 
@@ -468,6 +493,9 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member _.Settings = settings
     member _.UpdateFile shallow file text = updateFile shallow file text
     member _.UpdateFileInteractive file text = updateFileInteractive file text
+    member _.PrepareUpdateFileInteractive file text = prepareUpdateFileInteractive file text
+    member _.CommitUpdateFileInteractive staged = commitUpdateFileInteractive staged
+    member _.ValidateFileInteractive staged = validateFileInteractive staged
     member _.ValidateFile shallow file = validateFile shallow file
     member _.RemoveFile file = resourceManager.Api.RemoveFile file
 

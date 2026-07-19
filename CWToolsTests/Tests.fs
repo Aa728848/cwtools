@@ -4010,18 +4010,47 @@ let onActionLivenessTests =
         let updatePath =
             Path.GetFullPath "./testfiles/onactiontests/gamefiles/common/on_actions/test_actions.txt"
 
-        let interactiveErrors =
-            let text =
-                File.ReadAllText(updatePath)
-                + "\non_test_interactive = { invalid_interactive_key = yes }\n"
-            stl.UpdateFileInteractive updatePath (Some text)
+        // Populate the legacy deep cache first; an editor validation must not
+        // carry those old global diagnostics into the new document version.
+        stl.UpdateFile false updatePath None |> ignore
+
+        let text =
+            File.ReadAllText(updatePath)
+            + "\non_test_interactive = { invalid_interactive_key = yes }\n"
+
+        let entityBeforePrepare =
+            stl.AllEntities()
+            |> Seq.find (fun struct (entity, _) -> entity.filepath = updatePath)
+            |> fun struct (entity, _) -> entity
+
+        let stagedInteractive = stl.PrepareUpdateFileInteractive updatePath (Some text)
+
+        let entityAfterPrepare =
+            stl.AllEntities()
+            |> Seq.find (fun struct (entity, _) -> entity.filepath = updatePath)
+            |> fun struct (entity, _) -> entity
+
+        Expect.isTrue
+            (Object.ReferenceEquals(entityBeforePrepare, entityAfterPrepare))
+            "Preparing an editor update must not mutate the live resource map"
+
+        Expect.isTrue
+            (stl.CommitUpdateFileInteractive stagedInteractive)
+            "Prepared editor update should commit"
+
+        let interactiveErrors = stl.ValidateFileInteractive stagedInteractive
 
         Expect.isEmpty
             (interactiveErrors |> List.filter (fun e -> e.code = "CW239"))
-            "Interactive updates should defer global lookup diagnostics until the normal validation pass"
+            "Interactive updates should defer old/global lookup diagnostics until the normal validation pass"
         Expect.isTrue
             (interactiveErrors |> List.exists (fun e -> e.message.Contains "invalid_interactive_key"))
             $"Interactive updates should still report current-entity CWT errors: %A{interactiveErrors |> List.map _.message}"
+
+        let compatibilityErrors = stl.UpdateFileInteractive updatePath (Some text)
+        Expect.isTrue
+            (compatibilityErrors |> List.exists (fun e -> e.message.Contains "invalid_interactive_key"))
+            "The compatibility UpdateFileInteractive wrapper should preserve detached validation"
 
         let updateErrors =
             stl.UpdateFile true updatePath None
