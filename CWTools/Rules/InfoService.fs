@@ -1818,12 +1818,21 @@ type InfoService
             entity.logicalpath
 
     let validateLocalisationFromTypes (entity: Entity) =
+        let containsTypeValue (typeName: string) (value: string) =
+            match types.TryGetValue typeName with
+            | true, values -> values.Contains value
+            | false, _ ->
+                // Rule/type names are normally identical. Preserve the previous
+                // case-insensitive behaviour for custom configs with mixed casing.
+                types
+                |> Seq.exists (fun pair -> pair.Key == typeName && pair.Value.Contains value)
+
         let fLeaf (res: ValidationResult) (leaf: Leaf) ((field, _): NewRule) =
             match field with
             | LeafRule(_, TypeField(TypeType.Simple t)) ->
                 let value = leaf.ValueText
 
-                if types |> Seq.exists (fun pair -> pair.Key == t && pair.Value.Contains(value)) then
+                if containsTypeValue t value then
                     (FieldValidators.validateTypeLocalisation typedefs invertedTypeMap.Value localisation t value leaf)
                     <&&> res
                 else
@@ -1831,7 +1840,7 @@ type InfoService
             | LeafRule(TypeField(TypeType.Simple t), _) ->
                 let value = leaf.Key
 
-                if types |> Seq.exists (fun pair -> pair.Key == t && pair.Value.Contains(value)) then
+                if containsTypeValue t value then
                     (FieldValidators.validateTypeLocalisation typedefs invertedTypeMap.Value localisation t value leaf)
                     <&&> res
                 else
@@ -1856,7 +1865,7 @@ type InfoService
             | LeafValueRule(TypeField(TypeType.Simple t)) ->
                 let value = leafvalue.ValueText
 
-                if types |> Seq.exists (fun pair -> pair.Key == t && pair.Value.Contains(value)) then
+                if containsTypeValue t value then
                     (FieldValidators.validateTypeLocalisation typedefs invertedTypeMap.Value localisation t value leafvalue)
                     <&&> res
                 else
@@ -1868,7 +1877,7 @@ type InfoService
             | NodeRule(TypeField(TypeType.Simple t), _) ->
                 let value = node.Key
 
-                if types |> Seq.exists (fun pair -> pair.Key == t && pair.Value.Contains(value)) then
+                if containsTypeValue t value then
                     (FieldValidators.validateTypeLocalisation typedefs invertedTypeMap.Value localisation t value node)
                     <&&> res
                 else

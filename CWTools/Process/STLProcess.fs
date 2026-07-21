@@ -11,8 +11,72 @@ open CWTools.Common
 
 module STLProcess =
 
-    //TODO remove all this
-    let rec scriptedTriggerScope
+    [<Struct>]
+    type private ScopeMask =
+        val Bits0: uint64
+        val Bits1: uint64
+        val Bits2: uint64
+        val Bits3: uint64
+
+        new(bits0, bits1, bits2, bits3) =
+            { Bits0 = bits0
+              Bits1 = bits1
+              Bits2 = bits2
+              Bits3 = bits3 }
+
+    let private emptyScopeMask = ScopeMask(0UL, 0UL, 0UL, 0UL)
+
+    let private scopeMaskOfList (scopes: Scope list) =
+        let mutable bits0 = 0UL
+        let mutable bits1 = 0UL
+        let mutable bits2 = 0UL
+        let mutable bits3 = 0UL
+
+        for scope in scopes do
+            let tag = int scope.Tag
+            let bit = 1UL <<< (tag &&& 63)
+
+            match tag >>> 6 with
+            | 0 -> bits0 <- bits0 ||| bit
+            | 1 -> bits1 <- bits1 ||| bit
+            | 2 -> bits2 <- bits2 ||| bit
+            | _ -> bits3 <- bits3 ||| bit
+
+        ScopeMask(bits0, bits1, bits2, bits3)
+
+    let private intersectScopeMasks (left: ScopeMask) (right: ScopeMask) =
+        ScopeMask(
+            left.Bits0 &&& right.Bits0,
+            left.Bits1 &&& right.Bits1,
+            left.Bits2 &&& right.Bits2,
+            left.Bits3 &&& right.Bits3
+        )
+
+    let private isEmptyScopeMask (mask: ScopeMask) =
+        (mask.Bits0 ||| mask.Bits1 ||| mask.Bits2 ||| mask.Bits3) = 0UL
+
+    let private scopeMaskContains (mask: ScopeMask) (scope: Scope) =
+        let tag = int scope.Tag
+        let bit = 1UL <<< (tag &&& 63)
+
+        match tag >>> 6 with
+        | 0 -> (mask.Bits0 &&& bit) <> 0UL
+        | 1 -> (mask.Bits1 &&& bit) <> 0UL
+        | 2 -> (mask.Bits2 &&& bit) <> 0UL
+        | _ -> (mask.Bits3 &&& bit) <> 0UL
+
+    let private isRecursiveScopeBlock (key: string) =
+        key == "OR"
+        || key == "AND"
+        || key == "NOR"
+        || key == "NAND"
+        || key == "NOT"
+        || key == "if"
+        || key == "else"
+        || key == "hidden_effect"
+        || key == "limit"
+
+    let private inferScriptedTriggerScopes
         (strict: bool)
         (vanillaTriggersAndEffects: Dictionary<StringToken, Scope list>)
         (newTriggersAndEffects: Map<StringToken, Scope list>)
@@ -20,57 +84,64 @@ module STLProcess =
         (root: string)
         (node: Node)
         =
-        let anyBlockKeys =
-            [ "OR"; "AND"; "NOR"; "NAND"; "NOT"; "if"; "else"; "hidden_effect" ]
+        let allScopes = scopeManager.AllScopes
+        let allScopesMask = scopeMaskOfList allScopes
 
-        let nodeScopes =
-            node.Children
-            |> List.map (function
-                | x when x.Key = root -> scopeManager.AllScopes |> Set.ofList
-                | x when x.Key.StartsWith("event_target:", StringComparison.OrdinalIgnoreCase) ->
-                    scopeManager.AllScopes |> Set.ofList
-                // | x when targetKeys |> List.exists (fun y -> y == x.Key) ->
-                //     allScopes
-                | x when anyBlockKeys |> List.exists (fun y -> y == x.Key) ->
-                    scriptedTriggerScope strict vanillaTriggersAndEffects newTriggersAndEffects scopedEffects root x
-                | x when x.Key == "limit" ->
-                    scriptedTriggerScope strict vanillaTriggersAndEffects newTriggersAndEffects scopedEffects root x
-                | x -> Scopes.STL.sourceScope scopedEffects x.Key |> Set.ofList
-            // match STLScopes.sourceScope x.Key with
-            // | Some v -> v
-            // | None -> effects |> List.filter (fun (n, _) -> n = x.Key) |> List.map (fun (_, ss) -> ss) |> List.collect id
-            )
+        let normalizeMask mask =
+            if isEmptyScopeMask mask && not strict then allScopesMask else mask
 
-        let valueScopes =
-            node.Values
-            //|> List.filter (fun v -> v.Key.StartsWith("@"))
-            |> List.map (function
-                | x when x.Key.StartsWith('@') -> scopeManager.AllScopes |> Set.ofList
-                | x when x.Key = root -> scopeManager.AllScopes |> Set.ofList
-                | x ->
-                    match vanillaTriggersAndEffects.TryGetValue x.KeyId.normal with
-                    | true, scopeSet -> scopeSet |> Set.ofList
-                    | false, _ ->
-                        (Map.tryFind x.KeyId.normal newTriggersAndEffects)
-                        |> Option.map Set.ofList
-                        |> Option.defaultValue Set.empty)
-        // |> Seq.tryFind (fun e -> e.Name.normal = x.KeyId.normal)
-        // |> (function
-        // | Some e -> e.ScopesSet
-        // | None -> Set.empty))
+        let rec inferScopeMask (current: Node) =
+            let mutable combined = allScopesMask
 
-        let combinedScopes =
-            nodeScopes @ valueScopes
-            |> List.map (function
-                | x when Set.isEmpty x ->
-                    (if strict then
-                         Set.empty
-                     else
-                         scopeManager.AllScopes |> Set.ofList)
-                | x -> x)
+            let addScopes scopes =
+                combined <- intersectScopeMasks combined (normalizeMask scopes)
 
-        combinedScopes |> List.fold Set.intersect (scopeManager.AllScopes |> Set.ofList)
-    //combinedScopes |> List.fold (fun a b -> Set.intersect (Set.ofList a) (Set.ofList b) |> Set.toList) allScopes
+            for child in current.Children do
+                let childScopes =
+                    if
+                        child.Key = root
+                        || child.Key.StartsWith("event_target:", StringComparison.OrdinalIgnoreCase)
+                    then
+                        allScopesMask
+                    elif isRecursiveScopeBlock child.Key then
+                        inferScopeMask child
+                    else
+                        Scopes.STL.sourceScope scopedEffects child.Key |> scopeMaskOfList
+
+                addScopes childScopes
+
+            for value in current.Values do
+                let valueScopes =
+                    if value.Key.StartsWith('@') || value.Key = root then
+                        allScopesMask
+                    else
+                        match vanillaTriggersAndEffects.TryGetValue value.KeyId.normal with
+                        | true, scopes -> scopeMaskOfList scopes
+                        | false, _ ->
+                            match Map.tryFind value.KeyId.normal newTriggersAndEffects with
+                            | Some scopes -> scopeMaskOfList scopes
+                            | None -> emptyScopeMask
+
+                addScopes valueScopes
+
+            combined
+
+        // Scope implements the ordering used by the previous Set.toList result.
+        inferScopeMask node
+        |> fun mask -> allScopes |> List.filter (scopeMaskContains mask)
+        |> List.sort
+
+    // Kept as a Set-returning API for existing consumers outside the Stellaris lookup path.
+    let scriptedTriggerScope
+        (strict: bool)
+        (vanillaTriggersAndEffects: Dictionary<StringToken, Scope list>)
+        (newTriggersAndEffects: Map<StringToken, Scope list>)
+        (scopedEffects: Map<StringToken, Scope list>)
+        (root: string)
+        (node: Node)
+        =
+        inferScriptedTriggerScopes strict vanillaTriggersAndEffects newTriggersAndEffects scopedEffects root node
+        |> Set.ofList
 
     /// Substitute parameters in a string. Parameters are in the form $PARAM$ or $PARAM|default$
     let private parameterPattern =
@@ -225,7 +296,7 @@ module STLProcess =
         ((node, comments): Node * string list)
         =
         let scopes =
-            scriptedTriggerScope
+            inferScriptedTriggerScopes
                 (not firstRun)
                 vanillaTriggerAndEffectDict
                 newTriggerAndEffectMap
@@ -241,7 +312,7 @@ module STLProcess =
 
         ScriptedEffect(
             node.KeyId,
-            scopes |> Set.toList,
+            scopes,
             effectType,
             commentString,
             globals |> Set.toList,

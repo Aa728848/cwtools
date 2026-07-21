@@ -71,6 +71,150 @@ let carrierScopeContractTests =
                   [ ship; country; carrier ]
                   "ship contracts should accept the Carrier union" } ]
 
+[<Tests>]
+let nameSuggestionTests =
+    testList
+        "name suggestions"
+        [ test "levenshtein cutoff is case insensitive" {
+              Expect.equal
+                  (NameSuggestion.levenshteinWithin 1 "Planet" "plant")
+                  (ValueSome 1)
+                  "one deletion should be within the cutoff"
+
+              Expect.equal
+                  (NameSuggestion.levenshteinWithin 2 "country" "planet")
+                  ValueNone
+                  "distant names should stop outside the cutoff" }
+
+          test "closest suggestion reuses the same distance semantics" {
+              Expect.equal
+                  (NameSuggestion.suggestClosest "planrt" [ "country"; "planet"; "fleet" ])
+                  (Some "planet")
+                  "the closest candidate should still be selected" } ]
+
+[<Tests>]
+let stringResourceManagerTests =
+    testList
+        "string resource manager"
+        [ test "parallel first use allocates one exact token" {
+              let manager = StringResourceManager()
+
+              let tokens =
+                  Array.Parallel.init 10000 (fun _ -> manager.InternIdentifierToken "ConcurrentKey")
+
+              Expect.isTrue
+                  (tokens |> Array.forall ((=) tokens[0]))
+                  "parallel callers should receive the same token"
+
+              Expect.equal manager.StringCount 2 "only exact and lowercase keys should be retained"
+              Expect.equal manager.IntCount 2 "racing factories must not leak integer mappings"
+              Expect.equal manager.TokenIdCounter 2 "racing factories must not consume unused IDs" }
+
+          test "deserialized manager rebuilds insertion locks" {
+              let manager = StringResourceManager()
+              let original = manager.InternIdentifierToken "MixedCase"
+              let serializer = FsPickler.CreateBinarySerializer(picklerResolver = Serializer.picklerCache)
+              let restored = manager |> serializer.Pickle |> serializer.UnPickle<StringResourceManager>
+              let existing = restored.InternIdentifierToken "MixedCase"
+              let variant = restored.InternIdentifierToken "MIXEDCASE"
+              Expect.equal existing original "existing tokens should survive serialization"
+              Expect.equal variant.lower original.lower "new case variants should reuse the lowercase token" } ]
+
+[<Tests>]
+let scriptedTriggerScopeInferenceTests =
+    testSequenced
+    <| testList
+        "scripted trigger scope inference"
+        [ test "fixed-width scope intersections preserve strict and relaxed inference" {
+              let inputs =
+                  Array.init 130 (fun i ->
+                      let name = sprintf "scope_%03d" i
+
+                      { ScopeInput.name = name
+                        aliases = [ name ]
+                        isSubscopeOf = []
+                        dataTypeName = None })
+
+              try
+                  scopeManager.ReInit(inputs, [||])
+                  let parseScope name = scopeManager.ParseScope () name
+                  let low = parseScope "scope_003"
+                  let shared = parseScope "scope_068"
+                  let high = parseScope "scope_120"
+                  let token name = StringResource.stringManager.InternIdentifierToken name
+                  let vanilla = Collections.Generic.Dictionary<StringToken, Scope list>()
+                  vanilla[(token "left").normal] <- [ low; shared ]
+                  vanilla[(token "right").normal] <- [ shared; high ]
+                  let noNewEffects: Map<StringToken, Scope list> = Map.empty
+                  let noScopedEffects: Map<StringToken, Scope list> = Map.empty
+
+                  let infer strict text =
+                      match CKParser.parseString text "common/scripted_triggers/test.txt" with
+                      | Success(statements, _, _) ->
+                          let root = STLProcess.shipProcess.ProcessNode () "root" range.Zero statements
+                          let trigger = root.Children |> List.exactlyOne
+
+                          STLProcess.scriptedTriggerScope
+                              strict
+                              vanilla
+                              noNewEffects
+                              noScopedEffects
+                              trigger.Key
+                              trigger
+                      | Failure(error, _, _) -> failtest error
+
+                  let known =
+                      infer
+                          true
+                          "test_trigger = { left = yes AND = { right = yes } }"
+
+                  let withUnknown =
+                      "test_trigger = { left = yes AND = { right = yes unknown = yes } }"
+
+                  Expect.equal known (Set.singleton shared) "known scopes should intersect across mask words"
+                  Expect.isEmpty (infer true withUnknown) "strict inference should reject an unknown trigger"
+
+                  Expect.equal
+                      (infer false withUnknown)
+                      (Set.singleton shared)
+                      "first-pass inference should treat an unknown trigger as unconstrained"
+              finally
+                  UtilityParser.initializeScopes None (Some(defaultScopeInputs ())) } ]
+
+[<Tests>]
+let scriptedDefinitionCommentTests =
+    testList
+        "scripted definition comments"
+        [ test "single-pass lookup preserves first-key and comment ordering semantics" {
+              let text =
+                  "# first\n\
+                   # second\n\
+                   duplicate = { }\n\
+                   separator = yes\n\
+                   # later\n\
+                   duplicate = { }\n\
+                   # other\n\
+                   distinct = { }"
+
+              match CKParser.parseString text "common/scripted_effects/test.txt" with
+              | Success(statements, _, _) ->
+                  let root = STLProcess.shipProcess.ProcessNode () "root" range.Zero statements
+                  let definitions = STLLookup.getChildrenWithComments root
+                  Expect.equal definitions.Length 3 "all top-level nodes should be returned"
+
+                  let firstComments = definitions[0] |> snd
+                  let duplicateComments = definitions[1] |> snd
+                  let distinctComments = definitions[2] |> snd
+                  Expect.equal firstComments [ " second"; " first" ] "adjacent comments retain their prior order"
+
+                  Expect.equal
+                      duplicateComments
+                      firstComments
+                      "duplicate keys should continue to use the first definition's comments"
+
+                  Expect.equal distinctComments [ " other" ] "non-node children should reset pending comments"
+              | Failure(error, _, _) -> failtest error } ]
+
 let emptyEmbeddedSettings =
     { triggers = []
       effects = []

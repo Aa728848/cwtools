@@ -16,7 +16,6 @@ open CWTools.Common.STLConstants
 open CWTools.Utilities.Position
 open CWTools.Utilities.Utils
 open CWTools.Utilities
-open System.Threading.Tasks
 open CWTools.Utilities.StringResource
 
 module ResourceManagerEager =
@@ -1303,17 +1302,6 @@ type ResourceManager<'T when 'T :> ComputedData>
         entitiesMap.Values
         |> PSeq.iter (fun (struct (e, l)) -> computedDataUpdateFunction e (l.Force()))
 
-    let forceEagerData expectedVersion =
-        entitiesMap.Values.ToArray()
-        |> (fun array ->
-            Array.randomShuffleInPlace array
-            array)
-        |> Array.chunkBySize 64
-        |> Array.iter (fun batch ->
-            if ResourceManagerEager.currentVersion () = expectedVersion then
-                batch |> Array.iter (fun (struct (_, l)) -> l.Force() |> ignore)
-                Thread.Yield() |> ignore)
-
     let forceRecompute () =
         // 失效 inline_script 缓存，确保下一次展开使用最新数据
         invalidateInlineScriptsCache ()
@@ -1325,9 +1313,10 @@ type ResourceManager<'T when 'T :> ComputedData>
 
             entitiesMap[pair.Key] <- struct (entity, lazyi)
 
-        let eagerVersion = ResourceManagerEager.nextVersion ()
-        let _ = Task.Run(fun () -> forceEagerData eagerVersion)
-        ()
+        // Validation and language features force the data they actually consume.
+        // A competing whole-workspace prewarm can evaluate PublicationOnly lazies
+        // more than once and amplify peak allocation on large workspaces.
+        ResourceManagerEager.nextVersion () |> ignore
 
     let dynamicParameterPaths =
         [| "common/scripted_effects/"
@@ -1365,8 +1354,9 @@ type ResourceManager<'T when 'T :> ComputedData>
 
         rebuildInlineScriptCallerIndex ()
 
-        let eagerVersion = ResourceManagerEager.nextVersion ()
-        let _ = Task.Run(fun () -> forceEagerData eagerVersion)
+        // Advance the shared version without starting a second full-workspace
+        // computation alongside rule setup and initial validation.
+        ResourceManagerEager.nextVersion () |> ignore
         res
 
     /// Parse a single file without changing the live resource maps.

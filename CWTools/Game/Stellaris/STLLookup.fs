@@ -10,16 +10,26 @@ open System
 
 module STLLookup =
     let getChildrenWithComments (root: Node) =
-        let findComment t s (a: Child) =
-            match (s, a) with
-            | (b, c), _ when b -> (b, c)
-            | (_, c), CommentC(comment) -> (false, comment.Comment :: c)
-            | (_, c), NodeC n when n.Key = t -> (true, c)
-            | (_, _), _ -> (false, [])
+        let firstCommentsByKey = Dictionary<string, string list>(StringComparer.Ordinal)
+        let result = ResizeArray<Node * string list>()
+        let mutable pendingComments = []
 
-        root.Nodes
-        |> Seq.map (fun e -> e, root.AllArray |> Array.fold (findComment e.Key) (false, []) |> snd)
-        |> Seq.toList
+        for child in root.AllArray do
+            match child with
+            | CommentC comment -> pendingComments <- comment.Comment :: pendingComments
+            | NodeC node ->
+                let comments =
+                    match firstCommentsByKey.TryGetValue node.Key with
+                    | true, existing -> existing
+                    | false, _ ->
+                        firstCommentsByKey.Add(node.Key, pendingComments)
+                        pendingComments
+
+                result.Add(node, comments)
+                pendingComments <- []
+            | _ -> pendingComments <- []
+
+        List.ofSeq result
 
     let private isExplicitCountComparison (node: Node) =
         node.Values

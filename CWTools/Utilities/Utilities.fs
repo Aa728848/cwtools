@@ -1,6 +1,7 @@
 namespace CWTools.Utilities
 
 open System
+open System.Buffers
 open System.Collections.Concurrent
 open System.Collections.Frozen
 open System.Collections.Generic
@@ -191,15 +192,12 @@ type StringResourceManager() =
     let strings = new ConcurrentDictionary<string, StringTokens>()
     let ints = new ConcurrentDictionary<StringToken, string>()
     let metadata = new ConcurrentDictionary<StringToken, StringMetadata>()
-    // Fast-path cache: exact case-sensitive key → already-interned token.
-    // Avoids redundant ID allocation when the same (key, lower) pair is interned repeatedly.
     [<NonSerialized>]
-    let mutable exactCache = new ConcurrentDictionary<string, StringTokens>()
+    let mutable internLocks = Array.init 64 (fun _ -> obj ())
 
     let mutable i = 0
 
-    let addDataFunc (key: string) =
-        let ls = key.ToLower().Trim('"')
+    let addData (key: string) (ls: string) =
         let quoted = key.StartsWith '\"' && key.EndsWith '\"'
 
         match strings.TryGetValue(ls) with
@@ -247,24 +245,27 @@ type StringResourceManager() =
 
             normalToken
 
-    [<NonSerialized>]
-    let mutable addData: Func<string, StringTokens> =
-        Func<string, StringTokens>(addDataFunc)
-
     [<OnDeserialized>]
     member _.OnDeserialized(_context: StreamingContext) =
-        addData <- Func<string, StringTokens>(addDataFunc)
-        if isNull exactCache then
-            exactCache <- new ConcurrentDictionary<string, StringTokens>()
+        internLocks <- Array.init 64 (fun _ -> obj ())
 
-    member x.InternIdentifierToken(s: string) : StringTokens =
-        // Fast path: exact case-sensitive match avoids GetOrAdd overhead and redundant ID allocation
-        match exactCache.TryGetValue(s) with
+    member _.InternIdentifierToken(s: string) : StringTokens =
+        match strings.TryGetValue(s) with
         | true, token -> token
         | false, _ ->
-            let token = strings.GetOrAdd(s, addData)
-            exactCache.TryAdd(s, token) |> ignore
-            token
+            let lower = s.ToLower().Trim('"')
+            let hash = StringComparer.Ordinal.GetHashCode(lower) &&& Int32.MaxValue
+
+            lock internLocks[hash % internLocks.Length] (fun () ->
+                match strings.TryGetValue(s) with
+                | true, token -> token
+                | false, _ ->
+                    let candidate = addData s lower
+
+                    if strings.TryAdd(s, candidate) then
+                        candidate
+                    else
+                        strings[s])
 
     member x.GetStringForIDs(id: StringTokens) = ints[id.normal]
     member x.GetLowerStringForIDs(id: StringTokens) = ints[id.lower]
@@ -381,15 +382,22 @@ module NameSuggestion =
         elif length <= 12 then 2
         else 3
 
-    /// Case-insensitive Levenshtein distance with a cutoff: ValueNone if the
-    /// distance exceeds maxDist (computation stops early when it must).
-    let levenshteinWithin (maxDist: int) (a: string) (b: string) =
+    let private levenshteinWithinBuffers
+        (maxDist: int)
+        (a: string)
+        (b: string)
+        (prev: int array)
+        (curr: int array)
+        =
         if maxDist < 0 || abs (a.Length - b.Length) > maxDist then
             ValueNone
         else
             let la, lb = a.Length, b.Length
-            let mutable prev = Array.init (lb + 1) id
-            let mutable curr = Array.zeroCreate (lb + 1)
+            for j in 0..lb do
+                prev.[j] <- j
+
+            let mutable prev = prev
+            let mutable curr = curr
             let mutable exceeded = false
             let mutable i = 1
 
@@ -414,6 +422,22 @@ module NameSuggestion =
             else if prev.[lb] <= maxDist then ValueSome prev.[lb]
             else ValueNone
 
+    /// Case-insensitive Levenshtein distance with a cutoff: ValueNone if the
+    /// distance exceeds maxDist (computation stops early when it must).
+    let levenshteinWithin (maxDist: int) (a: string) (b: string) =
+        if maxDist < 0 || abs (a.Length - b.Length) > maxDist then
+            ValueNone
+        else
+            let rowLength = b.Length + 1
+            let prev = ArrayPool<int>.Shared.Rent rowLength
+            let curr = ArrayPool<int>.Shared.Rent rowLength
+
+            try
+                levenshteinWithinBuffers maxDist a b prev curr
+            finally
+                ArrayPool<int>.Shared.Return prev
+                ArrayPool<int>.Shared.Return curr
+
     /// The closest candidate within an edit-distance budget scaled by the
     /// value's length, or None. Values shorter than 4 chars are skipped (too noisy).
     let suggestClosest (value: string) (candidates: string seq) : string option =
@@ -424,20 +448,28 @@ module NameSuggestion =
             let mutable best: string option = None
             let mutable bestDist = maxDist + 1
             let mutable scanned = 0
-            use e = candidates.GetEnumerator()
+            let maxRowLength = value.Length + maxDist + 1
+            let prev = ArrayPool<int>.Shared.Rent maxRowLength
+            let curr = ArrayPool<int>.Shared.Rent maxRowLength
 
-            while bestDist > 1 && scanned < MaxCandidates && e.MoveNext() do
-                let candidate = e.Current
-                scanned <- scanned + 1
+            try
+                use e = candidates.GetEnumerator()
 
-                if not (isNull candidate) && candidate.Length > 0 then
-                    match levenshteinWithin (bestDist - 1) value candidate with
-                    | ValueSome d when d >= 1 ->
-                        bestDist <- d
-                        best <- Some candidate
-                    | _ -> ()
+                while bestDist > 1 && scanned < MaxCandidates && e.MoveNext() do
+                    let candidate = e.Current
+                    scanned <- scanned + 1
 
-            best
+                    if not (isNull candidate) && candidate.Length > 0 then
+                        match levenshteinWithinBuffers (bestDist - 1) value candidate prev curr with
+                        | ValueSome d when d >= 1 ->
+                            bestDist <- d
+                            best <- Some candidate
+                        | _ -> ()
+
+                best
+            finally
+                ArrayPool<int>.Shared.Return prev
+                ArrayPool<int>.Shared.Return curr
 
     /// Formats " (did you mean 'x'?)" for appending to an error message, or "".
     let didYouMean (value: string) (candidates: string seq) =

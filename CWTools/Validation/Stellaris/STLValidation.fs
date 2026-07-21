@@ -75,14 +75,11 @@ module STLValidation =
                             message = "Related source" } ] }
         | None -> error
 
-    let checkUsedVariables (node: Node) (variables: string list) (variableValues: (string * string) list) =
-        let variables = variables |> Set.ofList
-
-        let variableValues =
-            variableValues
-            |> Seq.distinctBy fst
-            |> Map.ofSeq
-
+    let checkUsedVariables
+        (node: Node)
+        (variables: Set<string>)
+        (variableValues: Map<string, string>)
+        =
         let fNode =
             (fun (x: Node) children ->
                 let values =
@@ -243,7 +240,18 @@ module STLValidation =
                 |> List.map getDefinedVariableValues
                 |> List.collect id
 
-            let globalVars = globalVarPairsFromEntities |> List.map fst |> List.distinct
+            // These collections are shared by every entity in the validation pass. Rebuilding
+            // their balanced trees per entity dominates allocation in large workspaces.
+            let globalVars =
+                globalVarPairsFromEntities
+                |> Seq.map fst
+                |> Set.ofSeq
+
+            let globalVarValues =
+                globalVarPairsFromEntities
+                |> Seq.distinctBy fst
+                |> Map.ofSeq
+
             let nodes = es.All
 
             let inlineScriptsToValidate =
@@ -311,11 +319,23 @@ module STLValidation =
                 let definedPairs = getDefinedVariableValues node
                 let defined = definedPairs |> List.map fst
                 let callerVariables = callerVariablesFor node
+
+                let variables =
+                    defined @ callerVariables
+                    |> List.fold (fun variables variable -> Set.add variable variables) globalVars
+
+                // The previous `definedPairs @ globals |> distinctBy fst` made the first local
+                // definition win over later duplicates and globals. foldBack preserves that
+                // precedence while structurally sharing the global map.
+                let variableValues =
+                    (definedPairs, globalVarValues)
+                    ||> List.foldBack (fun (name, value) values -> Map.add name value values)
+
                 let errors =
                     checkUsedVariables
                         node
-                        (defined @ callerVariables @ globalVars)
-                        (definedPairs @ globalVarPairsFromEntities)
+                        variables
+                        variableValues
                 errors)
     //x |> List.fold (<&&>) OK
 
