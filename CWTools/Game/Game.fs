@@ -298,20 +298,21 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         log $"Interactive update file time: %i{timer.ElapsedMilliseconds}"
         res
 
+    let normaliseComparableFilePath filepath =
+        let fullPath =
+            try FileInfo(filepath).FullName.Replace('\\', '/')
+            with _ -> filepath.Replace('\\', '/')
+        if System.OperatingSystem.IsWindows() then fullPath.ToLowerInvariant() else fullPath
+
     let entityByFilePathWithFallback filepath =
         match resourceManager.Api.GetEntityByFilePath filepath with
         | Some entity -> Some entity
         | None ->
-            let target =
-                try FileInfo(filepath).FullName.Replace('\\', '/').ToLowerInvariant()
-                with _ -> filepath.Replace('\\', '/').ToLowerInvariant()
+            let target = normaliseComparableFilePath filepath
 
             resourceManager.Api.AllEntities()
             |> Seq.tryFind (fun struct (entity, _) ->
-                let candidate =
-                    try FileInfo(entity.filepath).FullName.Replace('\\', '/').ToLowerInvariant()
-                    with _ -> entity.filepath.Replace('\\', '/').ToLowerInvariant()
-                candidate = target)
+                normaliseComparableFilePath entity.filepath = target)
 
     let validateFile (shallow: bool) filepath =
         log $"validateFile %s{filepath}"
@@ -334,6 +335,18 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
         log $"Validate file Time: %i{timer.ElapsedMilliseconds}"
         res
+
+    let validateFiles (filepaths: string list) =
+        log $"validateFiles count=%i{filepaths.Length}"
+        let timer = System.Diagnostics.Stopwatch.StartNew()
+        let entities =
+            filepaths
+            |> List.distinctBy normaliseComparableFilePath
+            |> List.choose entityByFilePathWithFallback
+
+        let shallowres, deepres = validationManager.Validate(false, entities)
+        log $"Validate files Time: %i{timer.ElapsedMilliseconds} files=%i{entities.Length}"
+        shallowres @ deepres
 
     let initialLoad () =
         let timer = System.Diagnostics.Stopwatch()
@@ -497,6 +510,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member _.CommitUpdateFileInteractive staged = commitUpdateFileInteractive staged
     member _.ValidateFileInteractive staged = validateFileInteractive staged
     member _.ValidateFile shallow file = validateFile shallow file
+    member _.ValidateFiles files = validateFiles files
     member _.RemoveFile file = resourceManager.Api.RemoveFile file
 
     member _.RefreshValidationManager() =

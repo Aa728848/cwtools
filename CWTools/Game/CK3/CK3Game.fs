@@ -255,6 +255,7 @@ type CK3Game(setupSettings: CK3Settings) =
         member _.CommitUpdateFileInteractive staged = game.CommitUpdateFileInteractive staged
         member _.ValidateFileInteractive staged = game.ValidateFileInteractive staged
         member _.ValidateFile shallow file = game.ValidateFile shallow file
+        member _.ValidateFiles files = game.ValidateFiles files
         member _.AllEntities() = resources.AllEntities()
 
         member _.References() =

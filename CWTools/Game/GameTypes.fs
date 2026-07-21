@@ -151,6 +151,8 @@ type IGame =
     /// Validate the committed editor resource without mutating validation caches.
     abstract ValidateFileInteractive: StagedFileUpdate -> CWError list
     abstract ValidateFile: bool -> string -> CWError list
+    /// Deep-validate several files in one validation round so shared indexes are built once.
+    abstract ValidateFiles: string list -> CWError list
     abstract Complete: pos -> string -> string -> CompletionResponse list
     abstract GoToType: pos -> string -> string -> range option
     abstract FindAllRefs: pos -> string -> string -> range list option

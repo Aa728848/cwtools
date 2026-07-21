@@ -218,10 +218,22 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     let currentFiles () =
         addEmbeddedFiles(resources.GetFileNames().ToHashSet()).ToFrozenSet()
 
-    let typeMapFromTypeDefInfo (typeDefInfo: Map<string, TypeDefInfo array>) =
+    let typeMapFromTypeDefInfo
+        (previousTypeMap: Map<string, PrefixOptimisedStringSet>)
+        (typeDefInfo: Map<string, TypeDefInfo array>)
+        =
         typeDefInfo
         |> Map.toSeq
-        |> PSeq.map (fun (k, s) -> k, s |> Seq.map _.id |> createStringSet)
+        |> PSeq.map (fun (k, values) ->
+            let previous = previousTypeMap |> Map.tryFind k
+
+            match previous with
+            | Some set when
+                set.Count = values.Length
+                && values |> Array.forall (fun value -> set.Contains value.id)
+                ->
+                k, set
+            | _ -> k, values |> Seq.map _.id |> createStringSet)
         |> Map.ofSeq
 
     let typeDefInfoForValidationFrom (typeDefInfo: Map<string, TypeDefInfo array>) =
@@ -673,7 +685,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
             lookup.typeDefInfo <- addEmbeddedTypeDefData typeDefInfo // |> Map.map (fun _ v -> v |> List.map (fun (_, t, r) -> (t, r)))
 
-            typeMapFromTypeDefInfo lookup.typeDefInfo
+            typeMapFromTypeDefInfo tempTypeMap lookup.typeDefInfo
 
         logDiag $"Pre-refresh types time: %0.3f{float timer.ElapsedMilliseconds / 1000.0}"
         timer.Restart()
@@ -711,7 +723,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
         settings.refreshConfigAfterFirstTypesHook lookup resources embeddedSettings
 
-        tempTypeMap <- typeMapFromTypeDefInfo lookup.typeDefInfo
+        tempTypeMap <- typeMapFromTypeDefInfo tempTypeMap lookup.typeDefInfo
 
         let processLoc, validateLoc = settings.locFunctions lookup
 

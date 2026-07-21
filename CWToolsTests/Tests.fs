@@ -2740,9 +2740,7 @@ let inlineScriptCompletionRegressionTests =
                       "parameter_variable_regression = { inline_script = { script = parameter_variable_regression VARIABLE = missing_variable } }")
               |> ignore
 
-              let assertParameterErrors phase =
-                  let diagnostics = stl.ValidationErrors()
-
+              let assertParameterErrors phase diagnostics =
                   for expectedVariable in [ "@missing_variable"; "@expression_missing_variable" ] do
                       let parameterError =
                           diagnostics
@@ -2770,7 +2768,12 @@ let inlineScriptCompletionRegressionTests =
                               ))
                           $"{phase}: parameterized CW101 for {expectedVariable} should be owned by dynamic call-site validation"
 
-              assertParameterErrors "initial validation"
+              assertParameterErrors "initial validation" (stl.ValidationErrors())
+
+              // Dynamic diagnostics are displayed at the definition range, while
+              // their Related source identifies the entity that must be revalidated.
+              let batchDiagnostics = stl.ValidateFiles [ inlineFilename; callerFilename ]
+              assertParameterErrors "batched file validation" batchDiagnostics
 
               // Mirror the server's Ctrl+S path: update the definition, rebuild
               // all indexed callers, refresh rules, warm dynamic data, then run
@@ -2780,7 +2783,7 @@ let inlineScriptCompletionRegressionTests =
               Expect.contains refreshedCallers callerFilename "Save refresh should find the inline caller"
               stl.RefreshCaches()
               stl.ForceDynamicParameterData(2000, 2000) |> ignore
-              assertParameterErrors "post-save deferred validation"
+              assertParameterErrors "post-save deferred validation" (stl.ValidationErrors())
 
           testWithCapturedLogs "inline save does not incrementally drop caller-generated type ids" <| fun () ->
               let folder =

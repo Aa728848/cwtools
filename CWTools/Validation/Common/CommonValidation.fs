@@ -565,16 +565,10 @@ module CommonValidation =
         (currentFilePath: string)
         (n: Node)
         callSite
-        (globalVars: (string * string) list)
+        (globalVarNames: Set<string>)
+        (globalVarValues: Map<string, string>)
         =
         try
-            let globalVarNames = globalVars |> List.map fst |> Set.ofList
-
-            let globalVarValues =
-                globalVars
-                |> Seq.distinctBy fst
-                |> Map.ofSeq
-
             let rec collectVars (node: Node) acc =
                 let acc =
                     if node.Key.StartsWith("@") && not (node.Key.StartsWith("@[")) && not (node.Key.StartsWith(@"@\[")) && not (node.Key.Contains("$")) then
@@ -631,6 +625,15 @@ module CommonValidation =
     let valScriptedEffectParams<'T when 'T :> ComputedData> : CWTools.Games.LookupFileValidator<'T> =
         (fun fileManager rulesValidator lu res es ->
             let res = res.AllEntities()
+
+            // These lookups are shared by every expanded call-site validation. Building
+            // them per call creates quadratic allocation pressure in large workspaces.
+            let globalVarNames = lu.scriptedVariables |> List.map fst |> Set.ofList
+
+            let globalVarValues =
+                lu.scriptedVariables
+                |> Seq.distinctBy fst
+                |> Map.ofSeq
 
             let entityMap =
                 res |> Seq.map (fun struct (e, d) -> e.filepath, struct (e, d)) |> Map.ofSeq
@@ -791,7 +794,8 @@ module CommonValidation =
                     foldOverNode seParams (stringReplace seParams) newNode
                     // eprintfn "%A %A" (CKPrinter.api.prettyPrintStatements newNode.ToRaw) (seParams)
                     // Validate variables after parameter substitution
-                    let varValidation = validateVariablesInExpandedNode logicalpath newNode callSite lu.scriptedVariables
+                    let varValidation =
+                        validateVariablesInExpandedNode logicalpath newNode callSite globalVarNames globalVarValues
                     let ruleRes = rv.ManualRuleValidate(logicalpath, rootNode)
                     // eprintfn "%A %A" logicalpath res
                     let scriptedKind =
@@ -880,6 +884,13 @@ module CommonValidation =
     let valScriptValueParams<'T when 'T :> ComputedData> : CWTools.Games.LookupFileValidator<'T> =
         (fun fileManager rulesValidator lu res es ->
             let res = res.AllEntities()
+
+            let globalVarNames = lu.scriptedVariables |> List.map fst |> Set.ofList
+
+            let globalVarValues =
+                lu.scriptedVariables
+                |> Seq.distinctBy fst
+                |> Map.ofSeq
 
             let entityMap =
                 res |> Seq.map (fun struct (e, d) -> e.filepath, struct (e, d)) |> Map.ofSeq
@@ -1004,7 +1015,8 @@ module CommonValidation =
                     foldOverNode seParams (stringReplace seParams) newNode
 
                     // Validate variables after parameter substitution
-                    let varValidation = validateVariablesInExpandedNode logicalpath newNode callSite lu.scriptedVariables
+                    let varValidation =
+                        validateVariablesInExpandedNode logicalpath newNode callSite globalVarNames globalVarValues
                     //                    logInfo (sprintf "vsvp d %A %A" (CKPrinter.api.prettyPrintStatement newNode.ToRaw) (seParams))
                     let ruleRes = rv.ManualRuleValidate(logicalpath, rootNode)
                     // eprintfn "%A %A" logicalpath res
