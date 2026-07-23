@@ -288,6 +288,20 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             | Some entity -> validationManager.ValidateInteractiveDetached [ entity ]
             | None -> []
 
+    let validateFileInteractiveCancellable (staged: StagedFileUpdate) (shouldCancel: unit -> bool) =
+        if shouldCancel () then
+            None
+        else
+            match staged.kind with
+            | LocalisationFile -> Some []
+            | ShaderFile ->
+                let result = PdxShaderFeatures.validate this.Resources staged.filepath staged.fileText
+                if shouldCancel () then None else Some result
+            | EntityFile ->
+                match resourceManager.Api.GetEntityByFilePath staged.filepath with
+                | Some entity -> validationManager.ValidateInteractiveDetachedCancellable([ entity ], shouldCancel)
+                | None -> Some []
+
     /// Compatibility wrapper for callers that do not split prepare/commit/validate.
     let updateFileInteractive filepath (fileText: string option) =
         log $"updateFileInteractive %s{filepath}"
@@ -335,6 +349,37 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
         log $"Validate file Time: %i{timer.ElapsedMilliseconds}"
         res
+
+    let validateFileCancellable (shallow: bool) filepath (shouldCancel: unit -> bool) =
+        log $"validateFileCancellable %s{filepath}"
+        let timer = System.Diagnostics.Stopwatch.StartNew()
+        let result =
+            if shouldCancel () then
+                None
+            else
+                match entityByFilePathWithFallback filepath with
+                | None -> Some []
+                | Some entity ->
+                    match validationManager.ValidateCancellable(shallow, [ entity ], shouldCancel) with
+                    | None -> None
+                    | Some(shallowres, deepres) ->
+                        if shouldCancel () then
+                            None
+                        else
+                            let localisationErrors = validationManager.ValidateLocalisation [ entity ]
+                            if shouldCancel () then
+                                None
+                            else
+                                let shallowres = shallowres @ localisationErrors
+                                if shallow then
+                                    let deep = match errorCache.TryGetValue(filepath) with true, v -> v | _ -> []
+                                    Some(shallowres @ deep)
+                                else
+                                    errorCache.[filepath] <- deepres
+                                    Some(shallowres @ deepres)
+
+        log $"Validate cancellable file Time: %i{timer.ElapsedMilliseconds}"
+        result
 
     let validateFiles (filepaths: string list) =
         log $"validateFiles count=%i{filepaths.Length}"
@@ -509,7 +554,11 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member _.PrepareUpdateFileInteractive file text = prepareUpdateFileInteractive file text
     member _.CommitUpdateFileInteractive staged = commitUpdateFileInteractive staged
     member _.ValidateFileInteractive staged = validateFileInteractive staged
+    member _.ValidateFileInteractiveCancellable staged shouldCancel =
+        validateFileInteractiveCancellable staged shouldCancel
     member _.ValidateFile shallow file = validateFile shallow file
+    member _.ValidateFileCancellable shallow file shouldCancel =
+        validateFileCancellable shallow file shouldCancel
     member _.ValidateFiles files = validateFiles files
     member _.RemoveFile file = resourceManager.Api.RemoveFile file
 
@@ -536,6 +585,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     /// 在文件编辑时调用，确保 shallow lint 不会返回过时的 deep 错误。
     member _.InvalidateFileCache(filepath: string) =
         errorCache.TryRemove(filepath) |> ignore
+        validationManager.InvalidateFile filepath
 
     member _.RefreshInlineScriptCallers(scriptNames: string list) =
         let callers = resourceManager.Api.RefreshInlineScriptCallers scriptNames

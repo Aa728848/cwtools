@@ -86,6 +86,22 @@ type RuleValidationService
 
     let extendedConfigMetadata = defaultArg extendedConfigMetadata ExtendedConfigMetadata.empty
     let scopeContextOverride = defaultArg scopeContextOverride (fun _ _ -> None)
+    let cancellationCheck = System.Threading.AsyncLocal<unit -> bool>()
+
+    let validationCancelled () =
+        let check = cancellationCheck.Value
+        not (isNull (box check)) && check ()
+
+    let foldUntilCancelled (folder: 'State -> 'Item -> 'State) (state: 'State) (items: seq<'Item>) =
+        let mutable result = state
+        use iterator = items.GetEnumerator()
+        let mutable keepGoing = not (validationCancelled ())
+
+        while keepGoing && iterator.MoveNext() do
+            result <- folder result iterator.Current
+            keepGoing <- not (validationCancelled ())
+
+        result
 
     let applyScopeContextOverride (node: IClause) (context: ScopeContext) =
         scopeContextOverride node context |> Option.defaultValue context
@@ -849,11 +865,11 @@ type RuleValidationService
                     innerErrors
             | _ -> innerErrors
 
-        (applyToAll startNode.Leaves valueFun errors)
-        |> (applyToAll startNode.Nodes nodeFun)
-        |> (applyToAll startNode.LeafValues leafValueFun)
-        |> (applyToAll startNode.ValueClauses valueClauseFun)
-        |> (applyToAll rules (checkCardinality startNode))
+        (foldUntilCancelled valueFun errors startNode.Leaves)
+        |> (fun current -> foldUntilCancelled nodeFun current startNode.Nodes)
+        |> (fun current -> foldUntilCancelled leafValueFun current startNode.LeafValues)
+        |> (fun current -> foldUntilCancelled valueClauseFun current startNode.ValueClauses)
+        |> (fun current -> foldUntilCancelled (checkCardinality startNode) current rules)
 
     and applyValueField severity (vt: CWTools.Rules.ValueType) (leaf: Leaf) =
         FieldValidators.checkValidValue varMap enumsMap localisation severity vt leaf.ValueId leaf
@@ -1432,4 +1448,20 @@ type RuleValidationService
             <&!!&> validate)
 
     member this.RuleValidateEntity = (fun e -> validate (e.logicalpath, e.entity))
+
+    /// Validate one entity against an exact caller snapshot. The predicate is
+    /// sampled between clauses/rules; a cancelled run returns no partial result.
+    member this.RuleValidateEntityCancellable(entity, shouldCancel: unit -> bool) =
+        let previous = cancellationCheck.Value
+        cancellationCheck.Value <- shouldCancel
+
+        try
+            if shouldCancel () then
+                None
+            else
+                let result = validate (entity.logicalpath, entity.entity)
+                if shouldCancel () then None else Some result
+        finally
+            cancellationCheck.Value <- previous
+
     member this.ManualRuleValidate = validate

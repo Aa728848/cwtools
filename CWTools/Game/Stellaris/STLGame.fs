@@ -2228,3 +2228,10 @@ type STLGame(setupSettings: StellarisSettings) =
             let typeKeys = incrementalTypeKeysForFiles game files
             if typeKeys.IsEmpty then false
             else game.RemoveTypeIndexForFiles(files, typeKeys)
+
+    interface ICancellableFileValidation with
+        member _.ValidateFileInteractiveCancellable(staged, shouldCancel) =
+            game.ValidateFileInteractiveCancellable staged shouldCancel
+
+        member _.ValidateFileCancellable(shallow, file, shouldCancel) =
+            game.ValidateFileCancellable shallow file shouldCancel

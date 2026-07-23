@@ -246,6 +246,26 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 else
                     None))
 
+    let typeDefInfoForValidationForKey (values: TypeDefInfo array) =
+        values
+        |> Array.choose (fun tdi ->
+            if tdi.validate then
+                Some(struct (tdi.id, tdi.range))
+            else
+                None)
+
+    /// Equality for the parts of TypeDefInfo consumed by rule, completion, and
+    /// localisation services. Ranges are navigation-only and intentionally ignored.
+    let typeDefInfoSemanticallyEqual (left: TypeDefInfo) (right: TypeDefInfo) =
+        left.id = right.id
+        && left.validate = right.validate
+        && left.explicitLocalisation = right.explicitLocalisation
+        && left.subtypes = right.subtypes
+
+    let typeDefInfoArraysSemanticallyEqual (left: TypeDefInfo array) (right: TypeDefInfo array) =
+        left.Length = right.Length
+        && Array.forall2 typeDefInfoSemanticallyEqual left right
+
     // The structures below only change on a full refreshConfig (or an explicit rules reload),
     // so rebuilding them on every incremental scripted-type commit is wasted work inside the
     // save path. All caches key on reference identity of their immutable sources: any real
@@ -1364,19 +1384,43 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     typeDefInfo |> Map.add typeKey (Array.append existing updated))
                 baseTypeDefInfo
 
-        let newTempTypeMap =
+        let newTempTypeMap: Map<string, PrefixOptimisedStringSet> =
             typeKeys
             |> List.fold
-                (fun acc typeKey ->
-                    let ids =
+                (fun (acc: Map<string, PrefixOptimisedStringSet>) typeKey ->
+                    let values =
                         newTypeDefInfo
                         |> Map.tryFind typeKey
                         |> Option.defaultValue [||]
-                        |> Seq.map _.id
-                    Map.add typeKey (createStringSet ids) acc)
+
+                    match acc |> Map.tryFind typeKey with
+                    | Some existing when
+                        existing.Count = values.Length
+                        && values |> Array.forall (fun value -> existing.Contains value.id)
+                        -> acc
+                    | _ ->
+                        Map.add typeKey (values |> Seq.map _.id |> createStringSet) acc)
                 baseTempTypeMap
 
-        let newTypeDefInfoForValidation = typeDefInfoForValidationFrom newTypeDefInfo
+        // Only touched keys need new validation arrays. Untouched arrays are shared
+        // with the live lookup instead of rebuilding the whole project-wide map.
+        let newTypeDefInfoForValidation =
+            typeKeys
+            |> List.fold
+                (fun acc typeKey ->
+                    let values =
+                        newTypeDefInfo
+                        |> Map.tryFind typeKey
+                        |> Option.defaultValue [||]
+                    Map.add typeKey (typeDefInfoForValidationForKey values) acc)
+                lookup.typeDefInfoForValidation
+
+        let semanticChanged =
+            typeKeys
+            |> List.exists (fun typeKey ->
+                let oldValues = baseTypeDefInfo |> Map.tryFind typeKey |> Option.defaultValue [||]
+                let newValues = newTypeDefInfo |> Map.tryFind typeKey |> Option.defaultValue [||]
+                not (typeDefInfoArraysSemanticallyEqual oldValues newValues))
 
         logInfo $"Prepare type index: files=%d{files.Length}, typeKeys=%d{typeKeys.Length}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
 
@@ -1384,6 +1428,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             { typeDefInfo = newTypeDefInfo
               tempTypeMap = newTempTypeMap
               typeDefInfoForValidation = newTypeDefInfoForValidation
+              semanticChanged = semanticChanged
               baseTypeDefInfo = baseTypeDefInfo }
 
     let prepareScriptedTypes (files: string list) (typeKeys: string list) : StagedScriptedTypes option =
@@ -1406,10 +1451,6 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
                 let ruleValidationService, infoService, completionService =
                     buildServices rulesWrapper stagedIndex.tempTypeMap loc allFiles
-
-                // Pay the lazy inverted-map cost here (read lock) rather than on the first
-                // write-locked validation after commit.
-                infoService.WarmTypeLocalisationIndex()
 
                 logInfo $"Prepare scripted types: files=%d{files.Length}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
 
@@ -1475,9 +1516,6 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
         try
             let ruleValidationService, infoService, completionService = refreshConfig ()
-            // Pay the lazy inverted-map cost during the read-locked prepare, not after commit.
-            infoService.WarmTypeLocalisationIndex()
-
             let staged =
                 { refreshedLookup = box clone
                   baseTypeDefInfo = box baseTypeDefInfo

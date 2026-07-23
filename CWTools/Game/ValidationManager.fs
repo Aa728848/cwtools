@@ -166,6 +166,75 @@ type ValidationManager<'T when 'T :> ComputedData>
     let resources = services.resources
     let validators = settings.validators
     let errorCache = errorCache
+    let cancellationCheck = System.Threading.AsyncLocal<unit -> bool>()
+
+    // A DidChange interactive pass and the following save often validate the exact
+    // same immutable Entity with the exact same RuleValidationService. Keep a small
+    // bounded LRU of completed results so save-time deep validation can reuse them
+    // without retaining results for an unbounded number of edited workspace files.
+    let maxDetachedRuleResults = 32
+    let detachedRuleResults =
+        Dictionary<string, struct (Entity * RuleValidationService * ValidationResult)>()
+    let detachedRuleResultOrder = LinkedList<string>()
+    let detachedRuleResultNodes = Dictionary<string, LinkedListNode<string>>()
+    let detachedRuleResultGate = obj ()
+
+    let removeDetachedRuleResultUnsafe filepath =
+        detachedRuleResults.Remove filepath |> ignore
+        match detachedRuleResultNodes.TryGetValue filepath with
+        | true, node ->
+            detachedRuleResultOrder.Remove node
+            detachedRuleResultNodes.Remove filepath |> ignore
+        | _ -> ()
+
+    let removeDetachedRuleResult filepath =
+        lock detachedRuleResultGate (fun () -> removeDetachedRuleResultUnsafe filepath)
+
+    let storeDetachedRuleResult (entity: Entity) (service: RuleValidationService) result =
+        lock detachedRuleResultGate (fun () ->
+            detachedRuleResults.[entity.filepath] <- struct (entity, service, result)
+
+            match detachedRuleResultNodes.TryGetValue entity.filepath with
+            | true, node ->
+                detachedRuleResultOrder.Remove node
+                detachedRuleResultOrder.AddLast node
+            | _ ->
+                let node = detachedRuleResultOrder.AddLast entity.filepath
+                detachedRuleResultNodes.[entity.filepath] <- node
+
+            while detachedRuleResults.Count > maxDetachedRuleResults do
+                removeDetachedRuleResultUnsafe detachedRuleResultOrder.First.Value)
+
+    let validationCancelled () =
+        let check = cancellationCheck.Value
+        not (isNull (box check)) && check ()
+
+    let runRuleValidation (entity: Entity) =
+        match services.ruleValidationService with
+        | None -> Some OK
+        | Some service ->
+            let check = cancellationCheck.Value
+            if isNull (box check) then
+                Some(service.RuleValidateEntity entity)
+            else
+                service.RuleValidateEntityCancellable(entity, check)
+
+    let tryTakeDetachedRuleResult (entity: Entity) =
+        lock detachedRuleResultGate (fun () ->
+            match services.ruleValidationService with
+            | Some service ->
+                match detachedRuleResults.TryGetValue entity.filepath with
+                | true, struct (cachedEntity, cachedService, result) when
+                    Object.ReferenceEquals(cachedEntity, entity)
+                    && Object.ReferenceEquals(cachedService, service)
+                    ->
+                    removeDetachedRuleResultUnsafe entity.filepath
+                    Some result
+                | true, _ ->
+                    removeDetachedRuleResultUnsafe entity.filepath
+                    None
+                | _ -> None
+            | None -> None)
 
     let addToCache (entity: Entity) errors =
         // Try to get all other files which this file had generated errors for
@@ -187,7 +256,14 @@ type ValidationManager<'T when 'T :> ComputedData>
             |> List.collect (fun struct (entity, _) ->
                 let fileIndex = fileIndexOfFile entity.filepath
 
-                services.ruleValidationService.Value.RuleValidateEntity entity
+                let result =
+                    match runRuleValidation entity with
+                    | Some result -> result
+                    | None -> raise (OperationCanceledException("Rule validation snapshot was superseded."))
+
+                storeDetachedRuleResult entity services.ruleValidationService.Value result
+
+                result
                 |> function
                     | Invalid(_, errors) ->
                         errors
@@ -201,7 +277,9 @@ type ValidationManager<'T when 'T :> ComputedData>
     /// cross-file cache; save/deep validation remains its authoritative writer.
     let invalidateInteractive (entities: struct (Entity * Lazy<'T>) list) =
         entities
-        |> List.iter (fun struct (entity, _) -> addToCache entity Seq.empty |> ignore)
+        |> List.iter (fun struct (entity, _) ->
+            removeDetachedRuleResult entity.filepath
+            addToCache entity Seq.empty |> ignore)
 
     /// Validate only the edited entities against CWT rules. This intentionally skips
     /// validators that inspect the full resource set; it is the latency-sensitive path
@@ -211,25 +289,40 @@ type ValidationManager<'T when 'T :> ComputedData>
             []
         else
             let impactedFileBag = ConcurrentBag<string>()
+            use ruleCancellation = new System.Threading.CancellationTokenSource()
+
+            let cancelledResult () =
+                ruleCancellation.Cancel()
+                OK
 
             let ruleValidate (e: Entity) =
-                let res = services.ruleValidationService.Value.RuleValidateEntity e
+                if validationCancelled () then
+                    cancelledResult ()
+                else
+                    let result =
+                        match tryTakeDetachedRuleResult e with
+                        | Some cached -> Some cached
+                        | None -> runRuleValidation e
 
-                let errors =
-                    res
-                    |> function
-                        | Invalid(_, es) -> es
-                        | _ -> []
+                    match result with
+                    | None -> cancelledResult ()
+                    | Some _ when validationCancelled () -> cancelledResult ()
+                    | Some res ->
+                        let errors =
+                            res
+                            |> function
+                                | Invalid(_, es) -> es
+                                | _ -> []
 
-                let impactedFiles = addToCache e errors
-                impactedFiles |> Seq.iter impactedFileBag.Add
-                let fileIndex = fileIndexOfFile e.filepath
+                        let impactedFiles = addToCache e errors
+                        impactedFiles |> Seq.iter impactedFileBag.Add
+                        let fileIndex = fileIndexOfFile e.filepath
 
-                res
-                |> function
-                    | Invalid(_, es) ->
-                        Invalid(Guid.NewGuid(), es |> List.filter (fun error -> error.range.FileIndex = fileIndex))
-                    | _ -> OK
+                        res
+                        |> function
+                            | Invalid(_, es) ->
+                                Invalid(Guid.NewGuid(), es |> List.filter (fun error -> error.range.FileIndex = fileIndex))
+                            | _ -> OK
 
             let directErrors =
                 entities
@@ -238,6 +331,12 @@ type ValidationManager<'T when 'T :> ComputedData>
                 |> function
                     | Invalid(_, es) -> es
                     | _ -> []
+
+            // Parallel rule workers communicate cancellation through a shared flag.
+            // Raising inside PLINQ would wrap OperationCanceledException and leak it
+            // past the cancellable API instead of returning None to the LSP caller.
+            if ruleCancellation.IsCancellationRequested || validationCancelled () then
+                raise (OperationCanceledException("Rule validation snapshot was superseded."))
 
             let nonSelfErrors =
                 entities
@@ -447,16 +546,56 @@ type ValidationManager<'T when 'T :> ComputedData>
 
 
     member _.Validate(shallow: bool, entities: struct (Entity * Lazy<'T>) list) = validate shallow entities
+    member _.ValidateCancellable(shallow: bool, entities: struct (Entity * Lazy<'T>) list, shouldCancel: unit -> bool) =
+        let previous = cancellationCheck.Value
+        cancellationCheck.Value <- shouldCancel
+
+        try
+            if shouldCancel () then
+                None
+            else
+                try
+                    let result = validate shallow entities
+                    if shouldCancel () then None else Some result
+                with :? OperationCanceledException ->
+                    None
+        finally
+            cancellationCheck.Value <- previous
+
     member _.ValidateInteractive(entities: struct (Entity * Lazy<'T>) list) = validateInteractive entities
     member _.ValidateInteractiveDetached(entities: struct (Entity * Lazy<'T>) list) =
         validateInteractiveDetached entities
+    member _.ValidateInteractiveDetachedCancellable(entities: struct (Entity * Lazy<'T>) list, shouldCancel: unit -> bool) =
+        let previous = cancellationCheck.Value
+        cancellationCheck.Value <- shouldCancel
+
+        try
+            if shouldCancel () then
+                None
+            else
+                try
+                    let result = validateInteractiveDetached entities
+                    if shouldCancel () then None else Some result
+                with :? OperationCanceledException ->
+                    None
+        finally
+            cancellationCheck.Value <- previous
+
     member _.InvalidateInteractive(entities: struct (Entity * Lazy<'T>) list) =
         invalidateInteractive entities
     member _.ValidateLocalisation(entities: struct (Entity * Lazy<'T>) list) = validateLocalisation entities
     member _.ValidateGlobalLocalisation() = globalTypeDefLoc ()
 
     /// 清理不存在文件的缓存条目，防止内存泄漏
-    member _.Cleanup(existingFiles: Set<string>) = errorCache.Cleanup existingFiles
+    member _.Cleanup(existingFiles: Set<string>) =
+        errorCache.Cleanup existingFiles
+        lock detachedRuleResultGate (fun () ->
+            for filePath in detachedRuleResults.Keys |> Seq.toArray do
+                if not (existingFiles.Contains filePath) then
+                    removeDetachedRuleResultUnsafe filePath)
+
+    member _.InvalidateFile(filepath: string) =
+        removeDetachedRuleResult filepath
 
     member _.CachedRuleErrors(entities: struct (Entity * Lazy<'T>) list) =
         let res =

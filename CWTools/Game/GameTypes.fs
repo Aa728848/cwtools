@@ -100,6 +100,10 @@ type StagedTypeIndex =
     { typeDefInfo: Map<string, TypeDefInfo array>
       tempTypeMap: Map<string, CWTools.Utilities.Utils2.PrefixOptimisedStringSet>
       typeDefInfoForValidation: Map<string, struct (string * range) array>
+      /// True only when validation/completion-visible type metadata changed.
+      /// Source ranges are deliberately excluded so body-only edits can update
+      /// navigation positions without forcing a full rules/localisation rebuild.
+      semanticChanged: bool
       /// lookup.typeDefInfo reference the fold was seeded from; commit-time ReferenceEquals guard
       baseTypeDefInfo: Map<string, TypeDefInfo array> }
 
@@ -123,6 +127,15 @@ type IIncrementalTypeIndex =
     abstract PrepareTypeIndex: string list -> StagedTypeIndex option
     abstract CommitTypeIndex: StagedTypeIndex -> bool
     abstract RemoveTypeIndex: string list -> bool
+
+/// Optional cooperative cancellation for latency-sensitive editor validation.
+/// Returning None means the caller's snapshot was superseded and no partial
+/// diagnostics or validation-cache writes are safe to publish.
+type ICancellableFileValidation =
+    abstract ValidateFileInteractiveCancellable:
+        StagedFileUpdate * (unit -> bool) -> CWError list option
+    abstract ValidateFileCancellable:
+        bool * string * (unit -> bool) -> CWError list option
 
 type ScopeInferenceInfo =
     { kind: string

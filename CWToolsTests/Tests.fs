@@ -3642,6 +3642,57 @@ let incrementalScriptedRefreshTests =
               let committed = stl.CommitScriptedTypes staged.Value
               Expect.isFalse committed "commit must reject a staged result whose base type index was replaced"
 
+          testWithCapturedLogs "type-index stage distinguishes range-only and semantic changes" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let triggerFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
+              let index = stl :?> IIncrementalTypeIndex
+              let originalText = File.ReadAllText triggerFile
+
+              stl.UpdateFile true triggerFile (Some("\n" + originalText)) |> ignore
+              let rangeOnly = index.PrepareTypeIndex [ triggerFile ]
+              Expect.isSome rangeOnly "range-only edit should produce an incremental stage"
+              Expect.isFalse
+                  rangeOnly.Value.semanticChanged
+                  "moving unchanged definitions must not dirty validation/completion semantics"
+
+              let renamedText =
+                  originalText.Replace(
+                      "test_scripted_trigger_ship =",
+                      "test_scripted_trigger_ship_renamed =",
+                      StringComparison.Ordinal
+                  )
+              stl.UpdateFile true triggerFile (Some renamedText) |> ignore
+              let renamed = index.PrepareTypeIndex [ triggerFile ]
+              Expect.isSome renamed "renamed definition should produce an incremental stage"
+              Expect.isTrue
+                  renamed.Value.semanticChanged
+                  "definition identity changes must conservatively dirty global semantics"
+
+          testWithCapturedLogs "cancellable file validation returns no partial result" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let triggerFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
+              let cancellable = stl :?> ICancellableFileValidation
+
+              let cancelled =
+                  cancellable.ValidateFileCancellable(false, triggerFile, (fun () -> true))
+              Expect.isNone cancelled "an already superseded snapshot must stop before validation"
+
+              let mutable cancellationChecks = 0
+              let cancelledDuringValidation =
+                  cancellable.ValidateFileCancellable(
+                      false,
+                      triggerFile,
+                      (fun () ->
+                          cancellationChecks <- cancellationChecks + 1
+                          cancellationChecks > 3)
+                  )
+              Expect.isGreaterThan cancellationChecks 3 "validation should sample cancellation within rule work"
+              Expect.isNone cancelledDuringValidation "a mid-validation cancellation must discard partial diagnostics"
+
+              let completed =
+                  cancellable.ValidateFileCancellable(false, triggerFile, (fun () -> false))
+              Expect.isSome completed "the same cancellable path must preserve normal validation results"
+
           testWithCapturedLogs "commit refreshes scripted parameter enums" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripteddefaults"
               let configtext = configFilesFromDir folder
