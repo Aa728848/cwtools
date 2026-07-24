@@ -178,6 +178,64 @@ type ValidationManager<'T when 'T :> ComputedData>
     let detachedRuleResultOrder = LinkedList<string>()
     let detachedRuleResultNodes = Dictionary<string, LinkedListNode<string>>()
     let detachedRuleResultGate = obj ()
+    let pathComparer = if OperatingSystem.IsWindows() then StringComparer.OrdinalIgnoreCase else StringComparer.Ordinal
+    let localisationReferenceGate = obj ()
+    let localisationKeysByFile = Dictionary<string, Set<string>>(pathComparer)
+    let localisationFilesByKey = Dictionary<string, HashSet<string>>(StringComparer.Ordinal)
+    let mutable localisationReferenceIndexBuilt = false
+
+    let removeLocalisationReferencesForFileUnsafe filepath =
+        match localisationKeysByFile.TryGetValue filepath with
+        | true, keys ->
+            for key in keys do
+                match localisationFilesByKey.TryGetValue key with
+                | true, files ->
+                    files.Remove filepath |> ignore
+                    if files.Count = 0 then localisationFilesByKey.Remove key |> ignore
+                | false, _ -> ()
+            localisationKeysByFile.Remove filepath |> ignore
+        | false, _ -> ()
+
+    let addLocalisationReferencesUnsafe filepath keys =
+        removeLocalisationReferencesForFileUnsafe filepath
+        localisationKeysByFile.[filepath] <- keys
+        for key in keys do
+            let files =
+                match localisationFilesByKey.TryGetValue key with
+                | true, existing -> existing
+                | false, _ ->
+                    let created = HashSet<string>(pathComparer)
+                    localisationFilesByKey.Add(key, created)
+                    created
+            files.Add filepath |> ignore
+
+    let addLocalisationReferencesForEntityUnsafe (entity: Entity) =
+        match services.infoService with
+        | Some infoService -> addLocalisationReferencesUnsafe entity.filepath (infoService.GetReferencedLocalisationKeys entity)
+        | None -> removeLocalisationReferencesForFileUnsafe entity.filepath
+
+    let ensureLocalisationReferenceIndexUnsafe () =
+        if not localisationReferenceIndexBuilt then
+            localisationKeysByFile.Clear()
+            localisationFilesByKey.Clear()
+            for struct (entity, _) in resources.ValidatableEntities() do
+                addLocalisationReferencesForEntityUnsafe entity
+            localisationReferenceIndexBuilt <- true
+
+    let localisationFilesForKeys (keys: seq<string>) =
+        lock localisationReferenceGate (fun () ->
+            ensureLocalisationReferenceIndexUnsafe ()
+            let files = HashSet<string>(pathComparer)
+            for key in keys do
+                match localisationFilesByKey.TryGetValue key with
+                | true, referencedBy -> files.UnionWith referencedBy
+                | false, _ -> ()
+            files |> Seq.toArray)
+
+    let entitiesForFiles (files: Set<string>) =
+        files
+        |> Seq.choose (fun filepath -> resources.GetEntityByFilePath filepath)
+        |> Seq.toList
 
     let removeDetachedRuleResultUnsafe filepath =
         detachedRuleResults.Remove filepath |> ignore
@@ -280,6 +338,10 @@ type ValidationManager<'T when 'T :> ComputedData>
         |> List.iter (fun struct (entity, _) ->
             removeDetachedRuleResult entity.filepath
             addToCache entity Seq.empty |> ignore)
+        lock localisationReferenceGate (fun () ->
+            if localisationReferenceIndexBuilt then
+                for struct (entity, _) in entities do
+                    addLocalisationReferencesForEntityUnsafe entity)
 
     /// Validate only the edited entities against CWT rules. This intentionally skips
     /// validators that inspect the full resource set; it is the latency-sensitive path
@@ -426,7 +488,7 @@ type ValidationManager<'T when 'T :> ComputedData>
 
         shallow, deep
 
-    let validateLocalisation (entities: struct (Entity * Lazy<'T>) list) =
+    let validateLocalisation buildReferenceIndex (entities: struct (Entity * Lazy<'T>) list) =
         log (sprintf "Localisation check %i files" entities.Length)
         let timer = System.Diagnostics.Stopwatch()
         timer.Start()
@@ -438,14 +500,34 @@ type ValidationManager<'T when 'T :> ComputedData>
              |> List.map (fun v -> v oldEntities (services.localisationKeys ()) newEntities)
              |> List.fold (<&&>) OK)
 
+        let collectedReferences = ConcurrentBag<string * Set<string>>()
         let typeVs =
-            if settings.useRules && services.infoService.IsSome then
+            if services.infoService.IsSome && (settings.useRules || buildReferenceIndex) then
                 (entities
                  |> List.map (fun struct (e, _) -> e)
-                 |> PSeq.map services.infoService.Value.GetTypeLocalisationErrors)
+                 |> PSeq.map (fun entity ->
+                     let errors =
+                         if settings.useRules then
+                             services.infoService.Value.GetTypeLocalisationErrors entity
+                         else
+                             OK
+                     if buildReferenceIndex then
+                         collectedReferences.Add(
+                             entity.filepath,
+                             services.infoService.Value.GetReferencedLocalisationKeys entity
+                         )
+                     errors))
                 |> Seq.fold (<&&>) OK
             else
                 OK
+
+        if buildReferenceIndex && services.infoService.IsSome then
+            lock localisationReferenceGate (fun () ->
+                localisationKeysByFile.Clear()
+                localisationFilesByKey.Clear()
+                for filepath, keys in collectedReferences do
+                    addLocalisationReferencesUnsafe filepath keys
+                localisationReferenceIndexBuilt <- true)
 
         let vs = if settings.debugRulesOnly then typeVs else vs <&&> typeVs
         log (sprintf "Localisation check took %ims" timer.ElapsedMilliseconds)
@@ -488,61 +570,97 @@ type ValidationManager<'T when 'T :> ComputedData>
             | Some root -> { newctx with Root = root }
             | None -> newctx
 
-    let globalTypeDefLoc () =
+    let globalTypeLocalisationIndex =
+        lazy
+            let index = Dictionary<string, ResizeArray<struct (range * TypeLocalisation)>>(StringComparer.Ordinal)
+            let typeDefinitions = Dictionary<string, TypeDefinition>(StringComparer.Ordinal)
+            for definition in services.lookup.typeDefs do
+                typeDefinitions.TryAdd(definition.name, definition) |> ignore
+
+            let addExpectedKey key range localisation =
+                let entries =
+                    match index.TryGetValue key with
+                    | true, existing -> existing
+                    | false, _ ->
+                        let created = ResizeArray<struct (range * TypeLocalisation)>()
+                        index.Add(key, created)
+                        created
+                entries.Add(struct (range, localisation))
+
+            let addLocalisations (values: struct (string * range) array) (localisations: TypeLocalisation list) =
+                for localisation in localisations do
+                    if localisation.required && localisation.explicitField.IsNone then
+                        for struct (value, range) in values do
+                            if not (value.Contains '.') then
+                                addExpectedKey (localisation.prefix + value + localisation.suffix) range localisation
+
+            for pair in services.lookup.typeDefInfoForValidation do
+                let typeName = pair.Key
+                let values = pair.Value
+                match typeDefinitions.TryGetValue typeName with
+                | true, definition -> addLocalisations values definition.localisation
+                | false, _ -> ()
+
+                let splitType = typeName.Split('.', 2)
+                if splitType.Length > 1 then
+                    match typeDefinitions.TryGetValue splitType.[0] with
+                    | true, definition ->
+                        match definition.subtypes |> List.tryFind (fun subtype -> subtype.name = splitType.[1]) with
+                        | Some subtype -> addLocalisations values subtype.localisation
+                        | None -> ()
+                    | false, _ -> ()
+            index
+
+    let validateGlobalTypeLocalisationEntries (entries: seq<string * struct (range * TypeLocalisation)>) =
         let valLocCommand = validateLocalisationCommand services.lookup
 
-        let validateLoc (values: struct (string * range) array) (locdef: TypeLocalisation) =
-            let res1 (value: string) =
-                let validate (locentry: LocEntry) =
-                    valLocCommand locentry (createScopeContextFromReplace locdef.replaceScopes)
-
+        entries
+        |> Seq.fold (fun result (locKey, struct (range, localisation)) ->
+            let commandErrors =
                 services.lookup.proccessedLoc
-                |> List.fold
-                    (fun r (_, m) ->
-                        Map.tryFind value m
-                        |> function
-                            | Some le -> validate le <&&> r
-                            | None -> r)
-                    OK
-            //     let value = locdef.prefix + value + locdef.suffix
-            //     validateLocalisationCommand (createScopeContextFromReplace locdef.replaceScopes) value
-            // let validateLocEntry (locentry : LocEntry<_>) =
-            // locentry.
-            // services.lookup.proccessedLoc |> List.fold (fun state (l, keys)  -> state <&&> (Map.tryFind value keys |> Option.map validateLocEntry |> Option.defaultValue OK ) OK
-            values |> Seq.filter (fun struct (s, _) -> s.Contains('.') |> not)
-            <&!&> (fun struct (key, range) ->
-                let fakeLeaf = LeafValue(Value.Bool true, range)
-                let lockey = locdef.prefix + key + locdef.suffix
+                |> List.fold (fun state (_, processed) ->
+                    match Map.tryFind locKey processed with
+                    | Some locEntry ->
+                        valLocCommand locEntry (createScopeContextFromReplace localisation.replaceScopes)
+                        <&&> state
+                    | None -> state) OK
 
-                if locdef.explicitField.IsNone then res1 lockey else OK
-                <&&> checkLocKeysLeafOrNode (services.localisationKeys ()) lockey fakeLeaf)
+            let fakeLeaf = LeafValue(Value.Bool true, range)
+            result
+            <&&> commandErrors
+            <&&> checkLocKeysLeafOrNode (services.localisationKeys ()) locKey fakeLeaf) OK
 
-        let validateType (typename: string) (values: struct (string * range) array) =
-            match services.lookup.typeDefs |> List.tryFind (fun td -> td.name = typename) with
-            | None -> OK
-            | Some td ->
-                td.localisation |> List.filter (fun locdef -> locdef.required)
-                <&!&> validateLoc values
+    let indexedGlobalTypeLocalisationEntries () =
+        globalTypeLocalisationIndex.Value
+        |> Seq.collect (fun pair -> pair.Value |> Seq.map (fun entry -> pair.Key, entry))
 
-        let validateSubType (typename: string) (values: struct (string * range) array) =
-            let splittype = typename.Split('.', 2)
+    let globalTypeDefLoc () =
+        indexedGlobalTypeLocalisationEntries ()
+        |> validateGlobalTypeLocalisationEntries
 
-            if splittype.Length > 1 then
-                match services.lookup.typeDefs |> List.tryFind (fun td -> td.name = splittype.[0]) with
-                | None -> OK
-                | Some td ->
-                    match td.subtypes |> List.tryFind (fun st -> st.name = splittype.[1]) with
-                    | None -> OK
-                    | Some st ->
-                        st.localisation |> List.filter (fun locdef -> locdef.required)
-                        <&!&> validateLoc values
-            else
-                OK
+    let globalTypeDefLocForKeys (keys: seq<string>) =
+        keys
+        |> Seq.distinct
+        |> Seq.collect (fun key ->
+            match globalTypeLocalisationIndex.Value.TryGetValue key with
+            | true, entries -> entries |> Seq.map (fun entry -> key, entry)
+            | false, _ -> Seq.empty)
+        |> validateGlobalTypeLocalisationEntries
 
-        services.lookup.typeDefInfoForValidation |> Map.toList
-        <&!&> (fun (t, l) -> validateType t l)
-        <&&> (services.lookup.typeDefInfoForValidation |> Map.toList
-              <&!&> (fun (t, l) -> validateSubType t l))
+    let globalTypeDefLocFilesForKeys (keys: seq<string>) =
+        keys
+        |> Seq.distinct
+        |> Seq.collect (fun key ->
+            match globalTypeLocalisationIndex.Value.TryGetValue key with
+            | true, entries -> entries |> Seq.map (fun struct (range, _) -> range.FileName)
+            | false, _ -> Seq.empty)
+        |> Seq.distinct
+        |> Seq.toArray
+
+    let globalTypeDefLocForFiles (files: Set<string>) =
+        indexedGlobalTypeLocalisationEntries ()
+        |> Seq.filter (fun (_, struct (range, _)) -> files.Contains range.FileName)
+        |> validateGlobalTypeLocalisationEntries
 
 
     member _.Validate(shallow: bool, entities: struct (Entity * Lazy<'T>) list) = validate shallow entities
@@ -583,8 +701,25 @@ type ValidationManager<'T when 'T :> ComputedData>
 
     member _.InvalidateInteractive(entities: struct (Entity * Lazy<'T>) list) =
         invalidateInteractive entities
-    member _.ValidateLocalisation(entities: struct (Entity * Lazy<'T>) list) = validateLocalisation entities
+    member _.ValidateLocalisation(entities: struct (Entity * Lazy<'T>) list) = validateLocalisation false entities
+    member _.ValidateAllLocalisation(entities: struct (Entity * Lazy<'T>) list) = validateLocalisation true entities
     member _.ValidateGlobalLocalisation() = globalTypeDefLoc ()
+    member _.ValidateGlobalLocalisationForKeys(keys: seq<string>) = globalTypeDefLocForKeys keys
+    member _.GlobalLocalisationFilesForKeys(keys: seq<string>) = globalTypeDefLocFilesForKeys keys
+    member _.ValidateGlobalLocalisationForFiles(files: Set<string>) = globalTypeDefLocForFiles files
+    member _.LocalisationFilesForKeys(keys: seq<string>) = localisationFilesForKeys keys
+    member _.ValidateLocalisationFiles(files: Set<string>) = entitiesForFiles files |> validateLocalisation false
+
+    member this.CachedRuleLocalisationErrorsForFiles(files: Set<string>) =
+        let locKeysArray = services.localisationKeys ()
+        this.CachedRuleErrors(entitiesForFiles files)
+        |> List.filter (fun error ->
+            if error.code = "CW100" then
+                match error.data with
+                | Some key -> not (locKeysArray |> Array.exists (fun (_, keys) -> keys.Contains key))
+                | None -> true
+            else
+                false)
 
     /// 清理不存在文件的缓存条目，防止内存泄漏
     member _.Cleanup(existingFiles: Set<string>) =
@@ -593,6 +728,11 @@ type ValidationManager<'T when 'T :> ComputedData>
             for filePath in detachedRuleResults.Keys |> Seq.toArray do
                 if not (existingFiles.Contains filePath) then
                     removeDetachedRuleResultUnsafe filePath)
+        lock localisationReferenceGate (fun () ->
+            if localisationReferenceIndexBuilt then
+                for filePath in localisationKeysByFile.Keys |> Seq.toArray do
+                    if not (existingFiles.Contains filePath) then
+                        removeLocalisationReferencesForFileUnsafe filePath)
 
     member _.InvalidateFile(filepath: string) =
         removeDetachedRuleResult filepath

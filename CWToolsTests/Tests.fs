@@ -841,6 +841,180 @@ let tests =
               Expect.isFalse
                   (errors |> List.exists (fun e -> e.code = "CW259"))
                   "case-mismatched localisation references must not be treated as self-references"
+
+          testWithCapturedLogs "incremental key add revalidates referencing files exactly"
+          <| fun () ->
+              let configtext =
+                  [ "./testfiles/localisationtests/test.cwt",
+                    (File.ReadAllText "./testfiles/localisationtests/test.cwt")
+                        .Replace("event = {", "event = {" + Environment.NewLine + "    desc = localisation")
+                    "./testfiles/localisationtests/localisation.cwt",
+                    File.ReadAllText "./testfiles/localisationtests/localisation.cwt" ]
+              let embeddedLocPath = Path.GetFullPath("./testfiles/localisationtests/localisation/l_english.yml")
+              let originalLoc = File.ReadAllText embeddedLocPath
+              let settings = emptyStellarisSettings "./testfiles/localisationtests/gamefiles"
+              let settings =
+                  { settings with
+                      embedded = FromConfig([ embeddedLocPath, originalLoc ], [])
+                      validation =
+                          { settings.validation with
+                              langs = [| STL STLLang.English |] }
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = false
+                                debugRulesOnly = false
+                                debugMode = false } }
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              stl.LocalisationErrors(true, true) |> ignore
+              let incremental = stl :?> IIncrementalLocalisation
+              let locPath =
+                  stl.AllFiles()
+                  |> List.pick (function
+                      | FileWithContentResource(_, file) when file.filetext.Contains("test_required_desc") -> Some file.filepath
+                      | _ -> None)
+              let updatedLoc = originalLoc + Environment.NewLine + " test:0 \"resolved\"" + Environment.NewLine
+              stl.UpdateFile false locPath (Some updatedLoc) |> ignore
+              let delta = incremental.TakeLocalisationDelta()
+              Expect.isSome delta "localisation update should publish an incremental delta"
+              Expect.contains delta.Value.changedKeys "test" "added key should be present in the delta"
+              let result = incremental.ValidateLocalisationDelta delta.Value
+              let eventFile =
+                  stl.AllEntities()
+                  |> Seq.map (fun struct (entity, _) -> entity.filepath)
+                  |> Seq.find (fun filepath -> filepath.EndsWith("test_events.txt"))
+              Expect.contains
+                  result.affectedFiles
+                  eventFile
+                  "a script file referencing the added key must be revalidated"
+              Expect.isFalse
+                  (result.errors
+                   |> List.exists (fun error -> error.range.FileName = eventFile && error.data = Some "test"))
+                  "the incremental pass must remove the resolved missing-localisation diagnostic"
+
+              let affected = result.affectedFiles |> Set.ofArray
+              let errorFacts (errors: CWError list) =
+                  errors
+                  |> List.filter (fun error -> affected.Contains error.range.FileName)
+                  |> List.map (fun error ->
+                      error.code,
+                      error.range.FileName,
+                      error.range.StartLine,
+                      error.range.StartColumn,
+                      error.message)
+                  |> Set.ofList
+              let fullFacts = stl.LocalisationErrors(true, true) |> errorFacts
+              Expect.equal
+                  (errorFacts result.errors)
+                  fullFacts
+                  "incremental diagnostics for affected files must equal a full localisation pass"
+
+          testWithCapturedLogs "incremental key add follows localisation reference in-edges"
+          <| fun () ->
+              let tempFolder = Path.Combine(Path.GetTempPath(), "cwtools-loc-delta-" + Guid.NewGuid().ToString("N"))
+              let tempLocalisationFolder = Path.Combine(tempFolder, "localisation")
+              Directory.CreateDirectory tempLocalisationFolder |> ignore
+              try
+                  let sourcePath = Path.Combine(tempLocalisationFolder, "source_l_english.yml")
+                  let targetPath = Path.Combine(tempLocalisationFolder, "target_l_english.yml")
+                  let utf8Bom = Text.UTF8Encoding(true)
+                  let sourceText = "l_english:" + Environment.NewLine + " source_ref:0 \"$target_ref$\"" + Environment.NewLine
+                  let targetText = "l_english:" + Environment.NewLine + " other:0 \"other\"" + Environment.NewLine
+                  File.WriteAllText(sourcePath, sourceText, utf8Bom)
+                  File.WriteAllText(targetPath, targetText, utf8Bom)
+
+                  let configtext =
+                      [ "./testfiles/localisationtests/test.cwt", File.ReadAllText "./testfiles/localisationtests/test.cwt"
+                        "./testfiles/localisationtests/localisation.cwt",
+                        File.ReadAllText "./testfiles/localisationtests/localisation.cwt" ]
+                  let settings = emptyStellarisSettings tempFolder
+                  let settings =
+                      { settings with
+                          validation =
+                              { settings.validation with
+                                  langs = [| STL STLLang.English |] }
+                          rules =
+                              Some
+                                  { ruleFiles = configtext
+                                    validateRules = false
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+                  let stl = STLGame(settings) :> IGame<STLComputedData>
+                  stl.LocalisationErrors(true, true) |> ignore
+                  let incremental = stl :?> IIncrementalLocalisation
+                  let loadedTargetPath =
+                      stl.AllFiles()
+                      |> List.pick (function
+                          | FileWithContentResource(_, file) when file.filetext.Contains("other:0") -> Some file.filepath
+                          | _ -> None)
+                  let loadedSourcePath =
+                      stl.AllFiles()
+                      |> List.pick (function
+                          | FileWithContentResource(_, file) when file.filetext.Contains("source_ref:0") -> Some file.filepath
+                          | _ -> None)
+                  let updatedTarget = targetText + " target_ref:0 \"resolved\"" + Environment.NewLine
+                  stl.UpdateFile false loadedTargetPath (Some updatedTarget) |> ignore
+                  let delta = incremental.TakeLocalisationDelta()
+                  Expect.isSome delta "target key addition should publish a delta"
+                  Expect.contains
+                      delta.Value.affectedLocalisationFiles
+                      loadedSourcePath
+                      "the source entry referencing the changed key must be invalidated"
+                  let result = incremental.ValidateLocalisationDelta delta.Value
+                  Expect.contains result.affectedFiles loadedSourcePath "the source localisation file must be replaced"
+                  Expect.isFalse
+                      (result.errors
+                       |> List.exists (fun error ->
+                           error.range.FileName = loadedSourcePath
+                           && error.message.Contains("target_ref")))
+                      "resolved inbound references must not retain an undefined-reference diagnostic"
+              finally
+                  try Directory.Delete(tempFolder, true) with _ -> ()
+
+          testWithCapturedLogs "incremental required type localisation reaches definitions and references"
+          <| fun () ->
+              let folder = "./testfiles/configtests/rulestests/STL/loc"
+              let rulesPath = Path.Combine(folder, "rules.cwt")
+              let settings = emptyStellarisSettings folder
+              let settings =
+                  { settings with
+                      rules =
+                          Some
+                              { ruleFiles = [ rulesPath, File.ReadAllText rulesPath ]
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              stl.LocalisationErrors(true, true) |> ignore
+              let locPath, locText =
+                  stl.AllFiles()
+                  |> List.pick (function
+                      | FileWithContentResource(_, file) when file.filepath.EndsWith("l_english.yml") ->
+                          Some(file.filepath, file.filetext)
+                      | _ -> None)
+              let updatedLoc =
+                  locText + Environment.NewLine + " my_ship_no_loc_required:0 \"resolved\"" + Environment.NewLine
+              stl.UpdateFile false locPath (Some updatedLoc) |> ignore
+              let incremental = stl :?> IIncrementalLocalisation
+              let delta = incremental.TakeLocalisationDelta()
+              Expect.isSome delta "required type localisation addition should publish a delta"
+              let result = incremental.ValidateLocalisationDelta delta.Value
+              let shipSizeFile =
+                  stl.AllEntities()
+                  |> Seq.map (fun struct (entity, _) -> entity.filepath)
+                  |> Seq.find (fun filepath -> filepath.Contains("ship_sizes") && filepath.EndsWith("test.txt"))
+              let eventFile =
+                  stl.AllEntities()
+                  |> Seq.map (fun struct (entity, _) -> entity.filepath)
+                  |> Seq.find (fun filepath -> filepath.EndsWith("test_events.txt"))
+              Expect.contains
+                  result.affectedFiles
+                  shipSizeFile
+                  "global required-localisation diagnostics on the type definition file must be replaced"
+              Expect.contains
+                  result.affectedFiles
+                  eventFile
+                  "type references that require the changed localisation key must be revalidated"
           ]
 
 let rec getAllFolders dirs =
@@ -3668,6 +3842,41 @@ let incrementalScriptedRefreshTests =
                   renamed.Value.semanticChanged
                   "definition identity changes must conservatively dirty global semantics"
 
+          testWithCapturedLogs "semantic signature ignores ranges but tracks cross-file definitions" <| fun () ->
+              let folder = "./testfiles/localisationtests/gamefiles"
+              let configPath = "./testfiles/localisationtests/test.cwt"
+              let settings = emptyStellarisSettings folder
+              let settings =
+                  { settings with
+                      rules =
+                          Some
+                              { ruleFiles = [ configPath, File.ReadAllText configPath ]
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let provider = stl :?> ISemanticDeltaProvider
+              let eventFile =
+                  stl.AllEntities()
+                  |> Seq.map (fun struct (entity, _) -> entity.filepath)
+                  |> Seq.find (fun filepath -> filepath.EndsWith("test_events.txt"))
+              let originalText = File.ReadAllText eventFile
+              let originalSignature = provider.SemanticSignatureForFile eventFile
+              Expect.isSome originalSignature "loaded event should expose a semantic signature"
+
+              stl.UpdateFile true eventFile (Some(Environment.NewLine + originalText)) |> ignore
+              Expect.equal
+                  (provider.SemanticSignatureForFile eventFile)
+                  originalSignature
+                  "range-only movement must not dirty the semantic contribution"
+
+              let renamedText = originalText.Replace("defined_event", "renamed_event", StringComparison.Ordinal)
+              stl.UpdateFile true eventFile (Some renamedText) |> ignore
+              Expect.notEqual
+                  (provider.SemanticSignatureForFile eventFile)
+                  originalSignature
+                  "changing a saved event target must dirty global validation semantics"
+
           testWithCapturedLogs "cancellable file validation returns no partial result" <| fun () ->
               let stl, folder = stlScriptedGame ()
               let triggerFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
@@ -4390,20 +4599,22 @@ on_destroy_planet_with_GE_PLANET_KILLER_DELUGE_unqueued = {
 let stagedRefreshTests =
     testList
         "staged refresh"
-        [ testWithCapturedLogs "lookup shallow clone and absorb"
+        [ testWithCapturedLogs "lookup shallow clone and field snapshot"
           <| fun () ->
               let original = Lookup()
               original.scriptedVariables <- [ "@a", "1" ]
               original.typeDefInfo <- Map.ofList [ "t", [||] ]
-              let clone = original.ShallowClone()
+              let mutable clone = original.ShallowClone()
               clone.scriptedVariables <- [ "@b", "2" ]
               clone.typeDefInfo <- Map.ofList [ "t2", [||] ]
               Expect.equal original.scriptedVariables [ "@a", "1" ] "clone mutation must not touch the original"
               Expect.isTrue (original.typeDefInfo.ContainsKey "t") "original typeDefInfo untouched"
-              original.AbsorbFieldsFrom clone
-              Expect.equal original.scriptedVariables [ "@b", "2" ] "absorb copies simple fields"
-              Expect.isTrue (original.typeDefInfo.ContainsKey "t2") "absorb copies map fields"
-              Expect.isFalse (original.typeDefInfo.ContainsKey "t") "absorb replaces, not merges"
+              let snapshot = clone.CreateFieldSnapshot()
+              clone <- null
+              original.ApplyFieldSnapshot snapshot
+              Expect.equal original.scriptedVariables [ "@b", "2" ] "snapshot copies simple fields"
+              Expect.isTrue (original.typeDefInfo.ContainsKey "t2") "snapshot copies map fields"
+              Expect.isFalse (original.typeDefInfo.ContainsKey "t") "snapshot replaces, not merges"
 
           testWithCapturedLogs "prepare/commit refresh matches locked refresh"
           <| fun () ->

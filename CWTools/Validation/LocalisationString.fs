@@ -214,32 +214,24 @@ module LocalisationString =
             |> Array.iter keys.UnionWith
 
             m
-            |> Map.map (fun _ e -> e.refs <&!&> checkRef hardcodedLocalisation scriptedVarNames lang keys e)
-            |> Map.toList
-            |> List.map snd
-            |> List.fold (<&&>) OK
-            <&&> (m
-                  |> Map.map (fun _ e -> e.scopes <&!&> validateContextResult e)
-                  |> Map.toList
-                  |> List.map snd
-                  |> List.fold (<&&>) OK)
-            <&&> (m
-                  |> Map.map (validateQuotes)
-                  |> Map.toList
-                  |> List.map snd
-                  |> List.fold (<&&>) OK)
-            <&&> (m
-                  |> Map.map (validateInvalidChars)
-                  |> Map.toList
-                  |> List.map snd
-                  |> List.fold (<&&>) OK)
+            |> Map.fold (fun state _ entry ->
+                state
+                <&&> (entry.refs
+                      |> List.fold
+                          (fun current reference ->
+                              current
+                              <&&> checkRef hardcodedLocalisation scriptedVarNames lang keys entry reference)
+                          OK)
+                <&&> (entry.scopes
+                      |> List.fold (fun current scope -> current <&&> validateContextResult entry scope) OK)
+                <&&> validateQuotes entry.key entry
+                <&&> validateInvalidChars entry.key entry) OK
 
 
         let validateReplaceMe (lang, m: Map<string, LocEntry>) =
             m
-            |> Map.toList
-            |> List.fold
-                (fun s (k, v) ->
+            |> Map.fold
+                (fun s _ v ->
                     if v.desc == "\"REPLACE_ME\"" || v.desc == "\"TODO_CD\"" then
                         s
                         <&&> Invalid(
@@ -250,7 +242,8 @@ module LocalisationString =
                         s)
                 OK
 
-        api <&!&> validateLocMap <&&> (api <&!&> validateReplaceMe)
+        api
+        |> List.fold (fun state entries -> state <&&> validateLocMap entries <&&> validateReplaceMe entries) OK
 
     let processLocalisationBase
         localisationCommandValidator

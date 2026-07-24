@@ -198,8 +198,6 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 | FileWithContentResource(_, r) -> this.LocalisationManager.UpdateLocalisationFile r
                 | _ -> logWarning (sprintf "Localisation file failed to parse %s" filepath)
 
-                let ges = globalLocalisation (this)
-                this.LocalisationManager.globalLocalisationErrors <- Some ges
                 []
             | x when PdxShaderFeatures.isShaderFile x ->
                 let file =
@@ -217,6 +215,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 let resource = LanguageFeatures.makeEntityResourceInput fileManager filepath file
                 let newEntities = [ this.Resources.UpdateFile resource ] |> List.choose snd
                 afterUpdateFile this filepath
+                validationManager.InvalidateInteractive newEntities
 
                 match shallow with
                 | true ->

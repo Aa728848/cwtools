@@ -1817,6 +1817,22 @@ type InfoService
             entity.entity
             entity.logicalpath
 
+    let semanticSignatureForEntity entity =
+        let variables = singleFold getDefVarInEntity entity
+        let savedTargets = getSavedScopesInEntityFolder entity
+        seq {
+            for pair in variables do
+                let kind = pair.Key
+                let values = pair.Value
+                for value, _ in values do
+                    yield "variable\u001f" + kind + "\u001f" + value
+            for name, _, scope in savedTargets do
+                yield "event_target\u001f" + name + "\u001f" + scope.ToString()
+        }
+        |> Seq.distinct
+        |> Seq.sort
+        |> Seq.toArray
+
     let validateLocalisationFromTypes (entity: Entity) =
         let containsTypeValue (typeName: string) (value: string) =
             match types.TryGetValue typeName with
@@ -1907,6 +1923,91 @@ type InfoService
 
         res
 
+    let referencedLocalisationKeys (entity: Entity) =
+        let containsTypeValue (typeName: string) (value: string) =
+            match types.TryGetValue typeName with
+            | true, values -> values.Contains value
+            | false, _ ->
+                types
+                |> Seq.exists (fun pair -> pair.Key == typeName && pair.Value.Contains value)
+
+        let trimPrefixes (value: string) =
+            let value = value.Trim('"')
+            if value.StartsWith("text:", StringComparison.OrdinalIgnoreCase) then value.Substring(5)
+            elif value.StartsWith("desc:", StringComparison.OrdinalIgnoreCase) then value.Substring(5)
+            elif value.StartsWith("background:", StringComparison.OrdinalIgnoreCase) then value.Substring(11)
+            elif value.StartsWith("icon:", StringComparison.OrdinalIgnoreCase) then value.Substring(5)
+            else value
+
+        let trimPrefixedValue (value: string) =
+            let value = value.Trim('"')
+            let colonIndex = value.IndexOf(':')
+            if colonIndex > 0 && colonIndex + 1 < value.Length && value.[colonIndex + 1] <> '\\' && value.[colonIndex + 1] <> '/' then
+                value.Substring(colonIndex + 1)
+            else
+                value
+
+        let addKey (keys: Set<string>) key =
+            if String.IsNullOrWhiteSpace key then keys else Set.add key keys
+
+        let addTypeKeys keys typeName value =
+            if containsTypeValue typeName value then
+                FieldValidators.typeLocalisationKeys typedefs invertedTypeMap.Value typeName value
+                |> Array.fold addKey keys
+            else
+                keys
+
+        let fLeaf keys (leaf: Leaf) ((field, _): NewRule) =
+            match field with
+            | LeafRule(_, TypeField(TypeType.Simple typeName)) ->
+                addTypeKeys keys typeName (trimPrefixes leaf.ValueText)
+            | LeafRule(TypeField(TypeType.Simple typeName), _) ->
+                addTypeKeys keys typeName (trimPrefixes leaf.Key)
+            | LeafRule(_, PrefixedField(TypeField(TypeType.Simple typeName))) ->
+                addTypeKeys keys typeName (trimPrefixedValue leaf.ValueText)
+            | LeafRule(PrefixedField(TypeField(TypeType.Simple typeName)), _) ->
+                addTypeKeys keys typeName (trimPrefixedValue leaf.Key)
+            | LeafRule(_, LocalisationField _)
+            | LeafRule(_, PrefixedField(LocalisationField _)) ->
+                let value =
+                    match field with
+                    | LeafRule(_, PrefixedField(LocalisationField _)) -> trimPrefixedValue leaf.ValueText
+                    | _ -> trimPrefixes leaf.ValueText
+                addKey keys value
+            | LeafRule(LocalisationField _, _)
+            | LeafRule(PrefixedField(LocalisationField _), _) ->
+                let value =
+                    match field with
+                    | LeafRule(PrefixedField(LocalisationField _), _) -> trimPrefixedValue leaf.Key
+                    | _ -> trimPrefixes leaf.Key
+                addKey keys value
+            | _ -> keys
+
+        let fLeafValue keys (leafValue: LeafValue) (field, _) =
+            match field with
+            | LeafValueRule(TypeField(TypeType.Simple typeName)) ->
+                addTypeKeys keys typeName (trimPrefixes leafValue.ValueText)
+            | LeafValueRule(PrefixedField(TypeField(TypeType.Simple typeName))) ->
+                addTypeKeys keys typeName (trimPrefixedValue leafValue.ValueText)
+            | LeafValueRule(LocalisationField _) -> addKey keys (trimPrefixes leafValue.ValueText)
+            | LeafValueRule(PrefixedField(LocalisationField _)) ->
+                addKey keys (trimPrefixedValue leafValue.ValueText)
+            | _ -> keys
+
+        let fNode keys (node: Node) (field, _) =
+            match field with
+            | NodeRule(TypeField(TypeType.Simple typeName), _) ->
+                addTypeKeys keys typeName (trimPrefixes node.Key)
+            | NodeRule(PrefixedField(TypeField(TypeType.Simple typeName)), _) ->
+                addTypeKeys keys typeName (trimPrefixedValue node.Key)
+            | NodeRule(LocalisationField _, _) -> addKey keys (trimPrefixes node.Key)
+            | NodeRule(PrefixedField(LocalisationField _), _) -> addKey keys (trimPrefixedValue node.Key)
+            | _ -> keys
+
+        let fComment keys _ _ = keys
+        let fValueClause keys _ _ = keys
+        foldCollect infoService fLeaf fLeafValue fComment fNode fValueClause Set.empty entity.entity entity.logicalpath
+
     member _.GetInfo(pos: pos, entity: Entity) =
         (getInfoAtPos pos entity) |> Option.map (fun (p, e) -> p.scopes, e)
 
@@ -1917,6 +2018,8 @@ type InfoService
     member _.GetDefinedVariables(entity: Entity) = singleFold getDefVarInEntity entity
     member _.GetSavedEventTargets(entity: Entity) = getSavedScopesInEntityFolder entity
     member _.GetTypeLocalisationErrors(entity: Entity) = validateLocalisationFromTypes entity
+    member _.GetReferencedLocalisationKeys(entity: Entity) = referencedLocalisationKeys entity
+    member _.GetSemanticSignature(entity: Entity) = semanticSignatureForEntity entity
 
     /// Force the lazy type-localisation inverted map. Called from staged prepare paths so
     /// the O(total type ids) build happens off the write lock instead of on the first

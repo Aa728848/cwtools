@@ -7,7 +7,13 @@ open CWTools.Utilities.Position
 open Files
 open CWTools.Process.Localisation
 
-
+/// Field-only snapshot used by staged cache refreshes. The values remain
+/// structurally shared with the refreshed lookup, but the temporary lookup
+/// object itself is released as soon as prepare finishes.
+type LookupFieldSnapshot =
+    internal
+        { runtimeType: System.Type
+          fields: struct (System.Reflection.FieldInfo * obj) array }
 
 type Lookup() =
 
@@ -98,14 +104,10 @@ type Lookup() =
     /// original's consistent state.
     member this.ShallowClone() : Lookup = this.MemberwiseClone() :?> Lookup
 
-    /// Copy every instance field (including subclass fields) from another lookup of the
-    /// same runtime type. Commits a staged refresh back onto the shared instance under
-    /// the write lock without changing its object identity.
-    member this.AbsorbFieldsFrom(other: Lookup) =
-        if not (System.Object.ReferenceEquals(this.GetType(), other.GetType())) then
-            invalidArg "other" "AbsorbFieldsFrom requires the same runtime lookup type"
+    static member private InstanceFields(runtimeType: System.Type) =
+        let fields = ResizeArray<System.Reflection.FieldInfo>()
 
-        let rec copyFields (t: System.Type) =
+        let rec collectFields (t: System.Type) =
             if not (isNull t) && t <> typeof<obj> then
                 let flags =
                     System.Reflection.BindingFlags.DeclaredOnly
@@ -114,11 +116,30 @@ type Lookup() =
                     ||| System.Reflection.BindingFlags.NonPublic
 
                 for field in t.GetFields(flags) do
-                    field.SetValue(this, field.GetValue(other))
+                    fields.Add field
 
-                copyFields t.BaseType
+                collectFields t.BaseType
 
-        copyFields (this.GetType())
+        collectFields runtimeType
+        fields.ToArray()
+
+    /// Capture only the field references produced by a staged refresh. This keeps
+    /// structural sharing without retaining the complete temporary lookup clone.
+    member this.CreateFieldSnapshot() =
+        let runtimeType = this.GetType()
+        { runtimeType = runtimeType
+          fields =
+            Lookup.InstanceFields(runtimeType)
+            |> Array.map (fun field -> struct (field, field.GetValue(this))) }
+
+    /// Apply a field snapshot under the game-state write lock without changing
+    /// the shared lookup object's identity.
+    member this.ApplyFieldSnapshot(snapshot: LookupFieldSnapshot) =
+        if not (System.Object.ReferenceEquals(this.GetType(), snapshot.runtimeType)) then
+            invalidArg "snapshot" "Lookup field snapshot has a different runtime type"
+
+        for struct (field, value) in snapshot.fields do
+            field.SetValue(this, value)
 
 type JominiLookup() =
     inherit Lookup()

@@ -1,6 +1,7 @@
 namespace CWTools.Games.Stellaris
 
 open System
+open System.Collections.Generic
 open System.Diagnostics
 open CWTools.Game
 open CWTools.Parser
@@ -194,7 +195,19 @@ module STLGameFunctions =
                     None)
             |> Seq.toList
 
-        (indexedTypeKeys @ (files |> List.choose scriptedTypeKeyForPath))
+        let currentTypeKeys =
+            files
+            |> Seq.choose (fun filepath -> game.Resources.GetEntityByFilePath filepath)
+            |> Seq.collect (fun struct (entity, _) ->
+                game.Lookup.typeDefs
+                |> Seq.choose (fun definition ->
+                    if CSharpHelpers.FieldValidatorsHelper.CheckPathDir(definition.pathOptions, entity.logicalpath) then
+                        Some definition.name
+                    else
+                        None))
+            |> Seq.toList
+
+        (indexedTypeKeys @ currentTypeKeys @ (files |> List.choose scriptedTypeKeyForPath))
         |> List.distinct
 
     let globalLocalisation (game: GameObject) =
@@ -227,6 +240,60 @@ module STLGameFunctions =
         |> (function
         | Invalid(_, es) -> es
         | _ -> [])
+
+    let validateIncrementalLocalisationFiles
+        (game: GameObject)
+        (changedKeys: string array)
+        (initialFiles: seq<string>)
+        =
+        let pathComparer = if OperatingSystem.IsWindows() then StringComparer.OrdinalIgnoreCase else StringComparer.Ordinal
+        let affectedFiles = HashSet<string>(pathComparer)
+        affectedFiles.UnionWith initialFiles
+        if changedKeys.Length > 0 then
+            affectedFiles.UnionWith(game.ValidationManager.LocalisationFilesForKeys changedKeys)
+            affectedFiles.UnionWith(game.ValidationManager.GlobalLocalisationFilesForKeys changedKeys)
+        let affectedFileSet = affectedFiles |> Set.ofSeq
+
+        let localisationFiles =
+            affectedFiles
+            |> Seq.filter (fun filepath ->
+                Path.GetExtension(filepath.AsSpan()).Equals(".yml", StringComparison.OrdinalIgnoreCase))
+            |> Seq.toList
+
+        let locFileValidation = validateLocalisationFiles localisationFiles
+        let locParseErrors =
+            game.LocalisationManager.GetLocalisationAPIsForFiles affectedFileSet
+            <&!&> (fun struct (validate, api) -> if validate then validateLocalisationSyntax api.Results else OK)
+
+        let processedErrors =
+            game.LocalisationManager.ProcessedLocalisationForFiles affectedFileSet
+            |> validateProcessedLocalisation
+                (game.Lookup.scriptedVariables |> List.map fst |> Set.ofList)
+                game.LocalisationManager.taggedLocalisationKeys
+
+        let globalTypeErrors =
+            game.ValidationManager.ValidateGlobalLocalisationForFiles affectedFileSet
+
+        let onlyAffected errors = errors |> List.filter (fun error -> affectedFileSet.Contains error.range.FileName)
+        let localErrors = game.ValidationManager.ValidateLocalisationFiles affectedFileSet |> onlyAffected
+        let cachedRuleErrors =
+            game.ValidationManager.CachedRuleLocalisationErrorsForFiles affectedFileSet
+            |> onlyAffected
+        let globalErrors =
+            processedErrors
+            <&&> locFileValidation
+            <&&> locParseErrors
+            <&&> globalTypeErrors
+            |> function
+                | Invalid(_, errors) -> errors |> onlyAffected
+                | _ -> []
+
+        game.LocalisationManager.ApplyIncrementalErrors(affectedFileSet, localErrors, globalErrors)
+        { affectedFiles = affectedFiles |> Seq.toArray
+          errors = cachedRuleErrors @ localErrors @ globalErrors }
+
+    let validateIncrementalLocalisation (game: GameObject) (delta: LocalisationDelta) =
+        validateIncrementalLocalisationFiles game delta.changedKeys delta.affectedLocalisationFiles
 
     let addModifiersFromCoreAndTypes
         (lookup: Lookup)
@@ -2219,8 +2286,7 @@ type STLGame(setupSettings: StellarisSettings) =
     interface IIncrementalTypeIndex with
         member _.PrepareTypeIndex files =
             let typeKeys = incrementalTypeKeysForFiles game files
-            if typeKeys.IsEmpty then None
-            else game.PrepareTypeIndexForFiles(files, typeKeys)
+            game.PrepareTypeIndexForFiles(files, typeKeys)
 
         member _.CommitTypeIndex staged = game.CommitTypeIndexForFiles staged
 
@@ -2228,6 +2294,23 @@ type STLGame(setupSettings: StellarisSettings) =
             let typeKeys = incrementalTypeKeysForFiles game files
             if typeKeys.IsEmpty then false
             else game.RemoveTypeIndexForFiles(files, typeKeys)
+
+    interface IIncrementalLocalisation with
+        member _.TakeLocalisationDelta() =
+            let delta = game.LocalisationManager.TakeDelta()
+            if game.LocalisationManager.localisationErrors.IsSome
+               && game.LocalisationManager.globalLocalisationErrors.IsSome then
+                delta
+            else
+                None
+        member _.ValidateLocalisationDelta delta = validateIncrementalLocalisation game delta
+        member _.ValidateLocalisationFiles files = validateIncrementalLocalisationFiles game [||] files
+
+    interface ISemanticDeltaProvider with
+        member _.SemanticSignatureForFile filepath =
+            match game.Resources.GetEntityByFilePath filepath, game.InfoService with
+            | Some struct (entity, _), Some infoService -> Some(infoService.GetSemanticSignature entity)
+            | _ -> None
 
     interface ICancellableFileValidation with
         member _.ValidateFileInteractiveCancellable(staged, shouldCancel) =

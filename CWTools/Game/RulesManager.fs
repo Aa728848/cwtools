@@ -1517,7 +1517,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         try
             let ruleValidationService, infoService, completionService = refreshConfig ()
             let staged =
-                { refreshedLookup = box clone
+                { lookupSnapshot = clone.CreateFieldSnapshot()
                   baseTypeDefInfo = box baseTypeDefInfo
                   baseVarDefInfo = box baseVarDefInfo
                   baseConfigRules = box baseConfigRules
@@ -1544,7 +1544,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         if not guardsHold then
             None
         else
-            lookup.AbsorbFieldsFrom(staged.refreshedLookup :?> Lookup)
+            lookup.ApplyFieldSnapshot(staged.lookupSnapshot)
             tempTypeMap <- staged.newTempTypeMap :?> Map<string, PrefixOptimisedStringSet>
 
             tempEnumMap <-

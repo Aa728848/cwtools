@@ -461,7 +461,7 @@ module Helpers =
 
             let genAll () =
                 let les =
-                    (game.ValidationManager.ValidateLocalisation(validatableEntities))
+                    (game.ValidationManager.ValidateAllLocalisation(validatableEntities))
 
                 game.LocalisationManager.localisationErrors <- Some les
                 les

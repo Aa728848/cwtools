@@ -1,5 +1,6 @@
 namespace CWTools.Rules
 
+open System
 open System.Collections.Frozen
 open System.Collections.Generic
 open System.Linq
@@ -1773,13 +1774,11 @@ module internal FieldValidators =
     let checkFieldByKey (p: CheckFieldParams) (severity: Severity) (ctx: RuleContext) (field: NewField) keyIDs =
         checkLeftField p severity ctx field keyIDs
 
-    let inline validateTypeLocalisation
+    let typeLocalisationKeys
         (typedefs: TypeDefinition list)
         (invertedTypeMap: IDictionary<string, ResizeArray<string>>)
-        localisation
         (typeKey: string)
         (key: string)
-        leafornode
         =
         let typeNames = typeKey.Split('.')
         let typename = typeNames[0]
@@ -1794,36 +1793,46 @@ module internal FieldValidators =
             | false, _ -> []
 
         match typedefs |> List.tryFind (fun t -> t.name == typename) with
-        | None -> OK
+        | None -> [||]
         | Some typedef ->
-            let inner =
-                (fun (l: TypeLocalisation) ->
-                    let lockey = l.prefix + key + l.suffix
+            let keys = ResizeArray<string>()
+            let seen = HashSet<string>(StringComparer.Ordinal)
+            let addLocalisation (localisations: TypeLocalisation list) =
+                for localisation in localisations do
+                    if not localisation.optional && localisation.explicitField.IsNone then
+                        let locKey = localisation.prefix + key + localisation.suffix
+                        if seen.Add locKey then keys.Add locKey
 
-                    if l.optional || l.explicitField.IsSome then
-                        OK
-                    else
-                        CWTools.Validation.Stellaris.STLLocalisationValidation.checkLocKeysLeafOrNode
-                            localisation
-                            lockey
-                            leafornode)
+            addLocalisation typedef.localisation
+            let subtypes =
+                seq {
+                    if typeNames.Length > 1 then yield typeNames.[1]
+                    yield! actualSubtypes
+                }
+                |> Seq.distinct
+            for subtypeName in subtypes do
+                match typedef.subtypes |> List.tryFind (fun subtype -> subtype.name == subtypeName) with
+                | Some subtype -> addLocalisation subtype.localisation
+                | None -> ()
+            keys.ToArray()
 
-            let subtype =
-                let subtypes =
-                    (if typeNames.Length > 1 then
-                         typeNames.[1] :: actualSubtypes
-                     else
-                         actualSubtypes)
-                    |> List.distinct
-
-                let inner2 (nextSt: string) =
-                    match typedef.subtypes |> List.tryFind (fun st -> st.name == nextSt) with
-                    | None -> OK
-                    | Some st -> st.localisation <&!&> inner
-
-                subtypes <&!&> inner2
-
-            typedef.localisation <&!&> inner <&&> subtype
+    let inline validateTypeLocalisation
+        (typedefs: TypeDefinition list)
+        (invertedTypeMap: IDictionary<string, ResizeArray<string>>)
+        localisation
+        (typeKey: string)
+        (key: string)
+        leafornode
+        =
+        typeLocalisationKeys typedefs invertedTypeMap typeKey key
+        |> Array.fold
+            (fun errors locKey ->
+                CWTools.Validation.Stellaris.STLLocalisationValidation.checkLocKeysLeafOrNode
+                    localisation
+                    locKey
+                    leafornode
+                <&&> errors)
+            OK
 
     let typekeyfilter (td: TypeDefinition) (n: string) (keyPrefix: string option) =
         match td.typeKeyFilter with

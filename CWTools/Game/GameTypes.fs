@@ -107,11 +107,11 @@ type StagedTypeIndex =
       /// lookup.typeDefInfo reference the fold was seeded from; commit-time ReferenceEquals guard
       baseTypeDefInfo: Map<string, TypeDefInfo array> }
 
-/// Staged full rules refresh: the heavy rebuild runs against a lookup clone without
-/// holding the write lock; commit absorbs the clone's fields under a brief write lock.
-/// Reference-typed fields are boxed to keep this type free of service dependencies.
+/// Staged full rules refresh: the heavy rebuild runs against a temporary lookup clone
+/// without holding the write lock. Prepare then releases the clone and retains only
+/// its structurally-shared field snapshot for the brief write-locked commit.
 type StagedCacheRefresh =
-    { refreshedLookup: obj
+    { lookupSnapshot: LookupFieldSnapshot
       /// Commit-time ReferenceEquals guards: the live state must still match these
       baseTypeDefInfo: obj
       baseVarDefInfo: obj
@@ -123,10 +123,36 @@ type StagedCacheRefresh =
       infoService: obj
       completionService: obj }
 
+/// Incremental localisation dependency delta accumulated since the previous
+/// deep analysis pass. Keys are language-agnostic because script references
+/// and required type localisation apply to every configured language.
+type LocalisationDelta =
+    { changedKeys: string array
+      affectedLocalisationFiles: string array
+      semanticChanged: bool }
+
+type IncrementalLocalisationResult =
+    { affectedFiles: string array
+      errors: CWError list }
+
+/// Optional precise localisation invalidation. Games that do not implement it
+/// keep the existing full localisation refresh behaviour.
+type IIncrementalLocalisation =
+    abstract TakeLocalisationDelta: unit -> LocalisationDelta option
+    abstract ValidateLocalisationDelta: LocalisationDelta -> IncrementalLocalisationResult
+    abstract ValidateLocalisationFiles: string array -> IncrementalLocalisationResult
+
 type IIncrementalTypeIndex =
     abstract PrepareTypeIndex: string list -> StagedTypeIndex option
     abstract CommitTypeIndex: StagedTypeIndex -> bool
     abstract RemoveTypeIndex: string list -> bool
+
+/// Optional semantic contribution fingerprint for a loaded entity. It covers
+/// cross-file definitions that are not represented by TypeDefInfo (for example
+/// value_set variables and saved event targets), allowing body-only edits to
+/// remain local without hiding real global changes.
+type ISemanticDeltaProvider =
+    abstract SemanticSignatureForFile: string -> string array option
 
 /// Optional cooperative cancellation for latency-sensitive editor validation.
 /// Returning None means the caller's snapshot was superseded and no partial
