@@ -3159,7 +3159,7 @@ let inlineScriptCompletionRegressionTests =
                   assertNoGeneratedTypeError "initial validation"
 
                   stl.UpdateFile false inlineFilename (Some inlineText) |> ignore
-                  let staged = stl.PrepareScriptedTypes [ inlineFilename ]
+                  let staged = stl.PrepareScriptedTypes([ inlineFilename ], false)
                   Expect.isNone staged "Inline script templates depend on callers and must fall back to full type refresh"
 
                   let refreshedCallers = stl.RefreshInlineScriptCallers [ "generated/module.txt" ]
@@ -3787,8 +3787,11 @@ let incrementalScriptedRefreshTests =
               let triggerFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
 
               let typesBefore = stl.Types()
-              let staged = stl.PrepareScriptedTypes [ triggerFile ]
+              let staged = stl.PrepareScriptedTypes([ triggerFile ], false)
               Expect.isSome staged "prepare should stage a scripted_triggers file"
+              Expect.isFalse staged.Value.semanticChanged "unchanged scripted definitions should be a semantic no-op"
+              Expect.isNone staged.Value.services "semantic no-op must not allocate replacement global services"
+              Expect.isNone staged.Value.lookupSnapshot "semantic no-op must not retain a cloned lookup snapshot"
               Expect.isTrue
                   (System.Object.ReferenceEquals(stl.Types(), typesBefore))
                   "prepare must not reassign the live type index"
@@ -3807,7 +3810,7 @@ let incrementalScriptedRefreshTests =
               let stl, folder = stlScriptedGame ()
               let triggerFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
 
-              let staged = stl.PrepareScriptedTypes [ triggerFile ]
+              let staged = stl.PrepareScriptedTypes([ triggerFile ], false)
               Expect.isSome staged "prepare should stage a scripted_triggers file"
 
               // Simulate an external writer replacing lookup.typeDefInfo between prepare and commit.
@@ -3841,6 +3844,53 @@ let incrementalScriptedRefreshTests =
               Expect.isTrue
                   renamed.Value.semanticChanged
                   "definition identity changes must conservatively dirty global semantics"
+
+          testWithCapturedLogs "scripted stage updates ranges without replacing services" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let triggerFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
+              let originalText = File.ReadAllText triggerFile
+              let originalDefinition =
+                  stl.Types().["scripted_trigger"]
+                  |> Array.find (fun definition -> definition.id = "test_scripted_trigger_ship")
+
+              stl.UpdateFile true triggerFile (Some("\n" + originalText)) |> ignore
+              let staged = stl.PrepareScriptedTypes([ triggerFile ], false)
+              Expect.isSome staged "range-only scripted edit should produce a stage"
+              Expect.isFalse staged.Value.semanticChanged "range-only edit must retain live semantic services"
+              Expect.isNone staged.Value.services "range-only stage must omit replacement services"
+              Expect.isTrue (stl.CommitScriptedTypes staged.Value) "range-only stage should commit"
+
+              let updatedDefinition =
+                  stl.Types().["scripted_trigger"]
+                  |> Array.find (fun definition -> definition.id = "test_scripted_trigger_ship")
+              Expect.equal
+                  updatedDefinition.range.StartLine
+                  (originalDefinition.range.StartLine + 1)
+                  "range-only commit must update navigation positions"
+
+          testWithCapturedLogs "scripted definition changes alter the semantic signature" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let triggerFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
+              let provider = stl :?> ISemanticDeltaProvider
+              let originalText = File.ReadAllText triggerFile
+              let originalSignature = provider.SemanticSignatureForFile triggerFile
+              Expect.isSome originalSignature "scripted trigger should expose a semantic signature"
+
+              let changedDefinitionText =
+                  originalText.Replace(
+                      "test_scripted_trigger_ship =",
+                      "test_scripted_trigger_ship_changed =",
+                      StringComparison.Ordinal
+                  )
+              stl.UpdateFile true triggerFile (Some changedDefinitionText) |> ignore
+              Expect.notEqual
+                  (provider.SemanticSignatureForFile triggerFile)
+                  originalSignature
+                  "scripted definition changes must not take the semantic no-op path"
+              let staged = stl.PrepareScriptedTypes([ triggerFile ], true)
+              Expect.isSome staged "semantic scripted change should produce a stage"
+              Expect.isTrue staged.Value.semanticChanged "additional semantic delta must force a semantic stage"
+              Expect.isSome staged.Value.services "semantic stage must contain replacement services"
 
           testWithCapturedLogs "semantic signature ignores ranges but tracks cross-file definitions" <| fun () ->
               let folder = "./testfiles/localisationtests/gamefiles"
@@ -3924,8 +3974,10 @@ let incrementalScriptedRefreshTests =
 
               stl.UpdateFile false effectFile (Some updatedEffects) |> ignore
 
-              let staged = stl.PrepareScriptedTypes [ effectFile ]
+              let staged = stl.PrepareScriptedTypes([ effectFile ], false)
               Expect.isSome staged "prepare should stage a scripted effect parameter change"
+              Expect.isTrue staged.Value.semanticChanged "dynamic parameter additions must be semantic changes"
+              Expect.isSome staged.Value.services "semantic changes must stage replacement services"
               let stagedEnums =
                   staged.Value.newEnumDefs
                   :?> Map<string, string * (string * range option) array>
@@ -3940,6 +3992,14 @@ let incrementalScriptedRefreshTests =
               Expect.isTrue
                   (stl.CommitScriptedTypes staged.Value)
                   "commit should install the updated scripted parameter enum"
+              Expect.contains
+                  (stl.Types().["scripted_effect"] |> Array.map (fun definition -> definition.id))
+                  "scripted_effect_incremental_param"
+                  "semantic commit must install the staged type index as well as services"
+              Expect.contains
+                  (stl.ScriptedEffects() |> List.map (fun effect -> effect.Name.GetString()))
+                  "scripted_effect_incremental_param"
+                  "incremental update must publish the refreshed scripted effect links"
 
               let eventText =
                   """
@@ -3966,8 +4026,34 @@ country_event = {
                   parameterErrors
                   $"incremental commit should validate the new scripted parameter without a full refresh: %A{parameterErrors |> List.map _.message}"
 
+              let incrementalDiagnostics =
+                  errors
+                  |> List.map (fun error -> error.code, error.severity, error.message)
+                  |> List.distinct
+                  |> List.sort
+              let effectSemantics effects =
+                  effects
+                  |> List.map (fun (effect: Effect) ->
+                      effect.Name.GetString(), effect.Type, (effect.Scopes |> List.map _.Tag))
+                  |> List.sort
+              let incrementalEffects = effectSemantics (stl.ScriptedEffects())
+              stl.RefreshCaches()
+              let fullDiagnostics =
+                  stl.ValidateFile false eventFile
+                  |> List.map (fun error -> error.code, error.severity, error.message)
+                  |> List.distinct
+                  |> List.sort
+              Expect.equal
+                  incrementalDiagnostics
+                  fullDiagnostics
+                  "incremental scripted diagnostics must match a full refresh"
+              Expect.equal
+                  incrementalEffects
+                  (effectSemantics (stl.ScriptedEffects()))
+                  "incremental scripted effects must match a full refresh"
+
               stl.UpdateFile false effectFile (Some(File.ReadAllText effectFile)) |> ignore
-              let removal = stl.PrepareScriptedTypes [ effectFile ]
+              let removal = stl.PrepareScriptedTypes([ effectFile ], false)
               Expect.isSome removal "prepare should stage scripted parameter removal"
               let removalEnums =
                   removal.Value.newEnumDefs

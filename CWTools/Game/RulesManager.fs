@@ -266,6 +266,21 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         left.Length = right.Length
         && Array.forall2 typeDefInfoSemanticallyEqual left right
 
+    /// Dynamic-enum ranges are navigation metadata. Names, descriptions, and
+    /// order are validation/completion-visible and therefore remain significant.
+    let enumDefsSemanticallyEqual
+        (left: Map<string, string * (string * range option) array>)
+        (right: Map<string, string * (string * range option) array>)
+        =
+        left.Count = right.Count
+        && Map.forall (fun key (leftDescription, leftValues) ->
+            match Map.tryFind key right with
+            | Some(rightDescription, rightValues) ->
+                leftDescription = rightDescription
+                && Array.length leftValues = Array.length rightValues
+                && Array.forall2 (fun (leftValue, _) (rightValue, _) -> leftValue = rightValue) leftValues rightValues
+            | None -> false) left
+
     // The structures below only change on a full refreshConfig (or an explicit rules reload),
     // so rebuilding them on every incremental scripted-type commit is wasted work inside the
     // save path. All caches key on reference identity of their immutable sources: any real
@@ -1431,10 +1446,18 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
               semanticChanged = semanticChanged
               baseTypeDefInfo = baseTypeDefInfo }
 
-    let prepareScriptedTypes (files: string list) (typeKeys: string list) : StagedScriptedTypes option =
+    let prepareScriptedTypes
+        (files: string list)
+        (typeKeys: string list)
+        (additionalSemanticChanged: bool)
+        : StagedScriptedTypes option =
         let timer = System.Diagnostics.Stopwatch.StartNew()
         let original = lookup
         let baseEnumDefs = original.enumDefs
+        let baseConfigRulesRef = original.configRules
+        let baseCoreLinks = original.allCoreLinks
+        let baseOnlyScriptedEffects = original.onlyScriptedEffects
+        let baseOnlyScriptedTriggers = original.onlyScriptedTriggers
         let baseTempEnumMap = tempEnumMap
         let clone = original.ShallowClone() :?> 'L
         lookup <- clone
@@ -1445,49 +1468,81 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             match prepareTypeIndex files typeKeys with
             | None -> None
             | Some stagedIndex ->
-                let rulesWrapper = rulesWrapperFor lookup.configRules
-                let loc = currentLoc ()
-                let allFiles = currentFiles ()
+                let semanticChanged =
+                    additionalSemanticChanged
+                    || stagedIndex.semanticChanged
+                    || not (enumDefsSemanticallyEqual baseEnumDefs lookup.enumDefs)
 
-                let ruleValidationService, infoService, completionService =
-                    buildServices rulesWrapper stagedIndex.tempTypeMap loc allFiles
+                let lookupSnapshot, services =
+                    if semanticChanged then
+                        // Scope inference and core links are refreshed only for a
+                        // real semantic delta; no-op stages retain the live services.
+                        lookup.configRules <- settings.loadConfigRulesHook baseConfigRules lookup embeddedSettings
+                        lookup.typeDefInfo <- stagedIndex.typeDefInfo
+                        lookup.typeDefInfoForValidation <- stagedIndex.typeDefInfoForValidation
+                        let rulesWrapper = rulesWrapperFor lookup.configRules
+                        let loc = currentLoc ()
+                        let allFiles = currentFiles ()
+                        let ruleValidationService, infoService, completionService =
+                            buildServices rulesWrapper stagedIndex.tempTypeMap loc allFiles
+                        Some(clone.CreateFieldSnapshot()),
+                        Some(struct (box ruleValidationService, box infoService, box completionService))
+                    else
+                        None, None
 
-                logInfo $"Prepare scripted types: files=%d{files.Length}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
+                logInfo $"Prepare scripted types: files=%d{files.Length}, semantic=%b{semanticChanged}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
 
                 Some
                     { typeDefInfo = stagedIndex.typeDefInfo
                       tempTypeMap = stagedIndex.tempTypeMap
                       typeDefInfoForValidation = stagedIndex.typeDefInfoForValidation
+                      semanticChanged = semanticChanged
                       baseTypeDefInfo = stagedIndex.baseTypeDefInfo
                       baseEnumDefs = box baseEnumDefs
+                      baseConfigRules = box baseConfigRulesRef
+                      baseCoreLinks = box baseCoreLinks
+                      baseOnlyScriptedEffects = box baseOnlyScriptedEffects
+                      baseOnlyScriptedTriggers = box baseOnlyScriptedTriggers
                       newEnumDefs = box lookup.enumDefs
                       newTempEnumMap = box tempEnumMap
-                      ruleService = box ruleValidationService
-                      infoService = box infoService
-                      completionService = box completionService }
+                      lookupSnapshot = lookupSnapshot
+                      services = services }
         finally
             lookup <- original
             tempEnumMap <- baseTempEnumMap
 
     let commitScriptedTypes (staged: StagedScriptedTypes) =
-        if
+        let baseGuardsFailed =
             not (System.Object.ReferenceEquals(lookup.typeDefInfo, staged.baseTypeDefInfo))
             || not (System.Object.ReferenceEquals(lookup.enumDefs, staged.baseEnumDefs))
-        then
+
+        let semanticGuardsFailed =
+            staged.semanticChanged
+            && (not (System.Object.ReferenceEquals(lookup.configRules, staged.baseConfigRules))
+                || not (System.Object.ReferenceEquals(lookup.allCoreLinks, staged.baseCoreLinks))
+                || not (System.Object.ReferenceEquals(lookup.onlyScriptedEffects, staged.baseOnlyScriptedEffects))
+                || not (System.Object.ReferenceEquals(lookup.onlyScriptedTriggers, staged.baseOnlyScriptedTriggers)))
+
+        if baseGuardsFailed || semanticGuardsFailed then
             None
         else
-            lookup.typeDefInfo <- staged.typeDefInfo
-            tempTypeMap <- staged.tempTypeMap
-            lookup.typeDefInfoForValidation <- staged.typeDefInfoForValidation
-            lookup.enumDefs <- staged.newEnumDefs :?> Map<string, string * (string * range option) array>
+            match staged.lookupSnapshot with
+            | Some snapshot -> lookup.ApplyFieldSnapshot snapshot
+            | None ->
+                lookup.typeDefInfo <- staged.typeDefInfo
+                lookup.typeDefInfoForValidation <- staged.typeDefInfoForValidation
+                lookup.enumDefs <- staged.newEnumDefs :?> Map<string, string * (string * range option) array>
 
+            tempTypeMap <- staged.tempTypeMap
             tempEnumMap <-
                 staged.newTempEnumMap :?> FrozenDictionary<string, string * PrefixOptimisedStringSet>
 
             Some(
-                staged.ruleService :?> RuleValidationService,
-                staged.infoService :?> InfoService,
-                staged.completionService :?> CompletionService
+                staged.services
+                |> Option.map (fun struct (rules, info, completion) ->
+                    rules :?> RuleValidationService,
+                    info :?> InfoService,
+                    completion :?> CompletionService)
             )
 
     let commitTypeIndex (staged: StagedTypeIndex) =
@@ -1565,5 +1620,6 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member _.RefreshScriptedTypes(files, typeKeys) = refreshScriptedTypes files typeKeys
     member _.PrepareTypeIndex(files, typeKeys) = prepareTypeIndex files typeKeys
     member _.CommitTypeIndex(staged) = commitTypeIndex staged
-    member _.PrepareScriptedTypes(files, typeKeys) = prepareScriptedTypes files typeKeys
+    member _.PrepareScriptedTypes(files, typeKeys, additionalSemanticChanged) =
+        prepareScriptedTypes files typeKeys additionalSemanticChanged
     member _.CommitScriptedTypes(staged) = commitScriptedTypes staged

@@ -604,7 +604,7 @@ type CK2Game(setupSettings: CK2Settings) =
 
         member _.RemoveScriptedTypes _ = false
 
-        member _.PrepareScriptedTypes _ = None
+        member _.PrepareScriptedTypes(_, _) = None
 
         member _.CommitScriptedTypes _ = false
 

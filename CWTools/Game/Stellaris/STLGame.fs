@@ -160,14 +160,6 @@ module STLGameFunctions =
 
         game.Lookup.scriptedLoc <- rawLocs
 
-    let afterUpdateFile (game: GameObject<STLComputedData, STLLookup>) (filepath: string) =
-        match filepath with
-        | x when x.Contains("scripted_triggers") -> updateScriptedTriggers (game) |> ignore
-        | x when x.Contains("scripted_effects") -> updateScriptedEffects (game) |> ignore
-        | x when x.Contains("scripted_loc") -> updateScriptedLoc (game)
-        | x when x.Contains("static_modifiers") -> updateStaticodifiers (game)
-        | _ -> ()
-
     let scriptedTypeKeyForPath (filepath: string) =
         let path = filepath.Replace('\\', '/').ToLowerInvariant()
         if path.Contains("common/scripted_triggers/") then Some "scripted_trigger"
@@ -177,6 +169,80 @@ module STLGameFunctions =
 
     let normaliseRefreshPath (filepath: string) =
         filepath.Replace('\\', '/').ToLowerInvariant()
+
+    let private effectSemanticSignature prefix (effect: Effect) =
+        let scopes =
+            effect.Scopes
+            |> List.map (fun scope -> string scope.Tag)
+            |> String.concat ","
+
+        let details =
+            match effect with
+            | :? ScriptedEffect as scripted ->
+                let targets =
+                    [ scripted.GlobalEventTargets
+                      scripted.SavedEventTargets
+                      scripted.UsedEventTargets
+                      scripted.FiredOnActions ]
+                    |> List.map (List.sort >> String.concat ",")
+                    |> String.concat "|"
+                scripted.Comments + "|" + targets
+            | :? DocEffect as doc ->
+                let target =
+                    doc.Target
+                    |> Option.map (fun value -> string value.Tag)
+                    |> Option.defaultValue ""
+                String.concat "|" [ doc.Desc; doc.Usage; target ]
+            | _ -> ""
+
+        $"{prefix}|{effect.Name.GetString()}|{int effect.Type}|{scopes}|{details}"
+
+    /// File contribution used by the LSP to decide whether a scripted edit can
+    /// take the range-only type-index path. It deliberately includes inferred
+    /// scopes/targets and per-file dynamic parameters, but excludes source ranges.
+    let semanticSignatureForFile (game: GameObject) filepath =
+        match game.Resources.GetEntityByFilePath filepath, game.InfoService with
+        | Some struct (entity, computed), Some infoService ->
+            let path = normaliseRefreshPath filepath
+            let localSignature = infoService.GetSemanticSignature entity
+
+            let parameterSignature =
+                if path.Contains("/common/scripted_effects/")
+                   || path.Contains("/common/scripted_triggers/") then
+                    computed.Force().ScriptedEffectParams
+                    |> Option.defaultWith (fun () -> Compute.EU4.getScriptedEffectParamsEntity entity)
+                    |> List.distinct
+                    |> List.sort
+                    |> List.map (fun parameter -> "parameter|effect|" + parameter)
+                    |> List.toArray
+                elif path.Contains("/common/script_values/") then
+                    computed.Force().ScriptValueParams
+                    |> Option.defaultWith (fun () -> Compute.Jomini.getScriptValueParamsEntity entity)
+                    |> List.distinct
+                    |> List.sort
+                    |> List.map (fun parameter -> "parameter|value|" + parameter)
+                    |> List.toArray
+                else
+                    [||]
+
+            let definitionSignature =
+                if path.Contains("/common/scripted_effects/") then
+                    game.Lookup.onlyScriptedEffects
+                    |> List.map (effectSemanticSignature "effect")
+                    |> List.sort
+                    |> List.toArray
+                elif path.Contains("/common/scripted_triggers/") then
+                    game.Lookup.onlyScriptedTriggers
+                    |> List.map (effectSemanticSignature "trigger")
+                    |> List.sort
+                    |> List.toArray
+                else
+                    [||]
+
+            Array.concat [ localSignature; parameterSignature; definitionSignature ]
+            |> Array.sort
+            |> Some
+        | _ -> None
 
     let isInlineScriptRefreshPath (filepath: string) =
         normaliseRefreshPath filepath
@@ -691,6 +757,46 @@ module STLGameFunctions =
         updateScriptedLoc (game)
         // updateModifiers(game)
         updateTechnologies (game)
+
+    let afterUpdateFile (game: GameObject<STLComputedData, STLLookup>) (filepath: string) =
+        match filepath with
+        | x when x.Contains("scripted_triggers") ->
+            let previousTriggerSignature =
+                game.Lookup.onlyScriptedTriggers
+                |> List.map (effectSemanticSignature "trigger")
+                |> List.sort
+            let triggers = updateScriptedTriggers game
+            let currentTriggerSignature =
+                game.Lookup.onlyScriptedTriggers
+                |> List.map (effectSemanticSignature "trigger")
+                |> List.sort
+            if previousTriggerSignature <> currentTriggerSignature then
+                setCarrierAwareCoreLinks
+                    game.Lookup
+                    (triggers @ game.Lookup.effects @ game.Lookup.eventTargetLinks)
+                // Scripted effects may call the changed trigger, so refresh their
+                // inferred scopes before exposing the new global link map.
+                let effects = updateScriptedEffects game
+                setCarrierAwareCoreLinks
+                    game.Lookup
+                    (game.Lookup.triggers @ effects @ game.Lookup.eventTargetLinks)
+        | x when x.Contains("scripted_effects") ->
+            let previousEffectSignature =
+                game.Lookup.onlyScriptedEffects
+                |> List.map (effectSemanticSignature "effect")
+                |> List.sort
+            let effects = updateScriptedEffects game
+            let currentEffectSignature =
+                game.Lookup.onlyScriptedEffects
+                |> List.map (effectSemanticSignature "effect")
+                |> List.sort
+            if previousEffectSignature <> currentEffectSignature then
+                setCarrierAwareCoreLinks
+                    game.Lookup
+                    (game.Lookup.triggers @ effects @ game.Lookup.eventTargetLinks)
+        | x when x.Contains("scripted_loc") -> updateScriptedLoc game
+        | x when x.Contains("static_modifiers") -> updateStaticodifiers game
+        | _ -> ()
 
     [<Literal>]
     let private PlanetHost = 1
@@ -2246,14 +2352,14 @@ type STLGame(setupSettings: StellarisSettings) =
                 carrierScopeResolver.Invalidate()
                 true
 
-        member _.PrepareScriptedTypes files =
+        member _.PrepareScriptedTypes(files, additionalSemanticChanged) =
             let typeKeys = incrementalTypeKeysForFiles game files
             if typeKeys.IsEmpty then None
-            else game.PrepareScriptedTypesForFiles(files, typeKeys)
+            else game.PrepareScriptedTypesForFiles(files, typeKeys, additionalSemanticChanged)
 
         member _.CommitScriptedTypes staged =
             let committed = game.CommitScriptedTypesForFiles staged
-            if committed then carrierScopeResolver.Invalidate()
+            if committed && staged.semanticChanged then carrierScopeResolver.Invalidate()
             committed
 
         member _.RefreshLocalisationCaches() =
@@ -2308,9 +2414,7 @@ type STLGame(setupSettings: StellarisSettings) =
 
     interface ISemanticDeltaProvider with
         member _.SemanticSignatureForFile filepath =
-            match game.Resources.GetEntityByFilePath filepath, game.InfoService with
-            | Some struct (entity, _), Some infoService -> Some(infoService.GetSemanticSignature entity)
-            | _ -> None
+            semanticSignatureForFile game filepath
 
     interface ICancellableFileValidation with
         member _.ValidateFileInteractiveCancellable(staged, shouldCancel) =

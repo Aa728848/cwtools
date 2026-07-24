@@ -86,15 +86,23 @@ type StagedScriptedTypes =
     { typeDefInfo: Map<string, TypeDefInfo array>
       tempTypeMap: Map<string, CWTools.Utilities.Utils2.PrefixOptimisedStringSet>
       typeDefInfoForValidation: Map<string, struct (string * range) array>
+      /// True only when caller-visible validation/completion semantics changed.
+      /// Range-only changes still commit the staged indexes but keep live services.
+      semanticChanged: bool
       /// lookup.typeDefInfo reference the fold was seeded from; commit-time ReferenceEquals guard
       baseTypeDefInfo: Map<string, TypeDefInfo array>
       /// Dynamic enum state used by scripted parameters is staged with the type index.
       baseEnumDefs: obj
+      baseConfigRules: obj
+      baseCoreLinks: obj
+      baseOnlyScriptedEffects: obj
+      baseOnlyScriptedTriggers: obj
       newEnumDefs: obj
       newTempEnumMap: obj
-      ruleService: obj
-      infoService: obj
-      completionService: obj }
+      /// Present only for a semantic change. The lookup snapshot and services are
+      /// omitted for a no-op so body/range edits avoid rebuilding global services.
+      lookupSnapshot: LookupFieldSnapshot option
+      services: struct (obj * obj * obj) option }
 
 type StagedTypeIndex =
     { typeDefInfo: Map<string, TypeDefInfo array>
@@ -206,7 +214,7 @@ type IGame =
     abstract RefreshScriptedTypes: string list -> bool
     abstract RemoveScriptedTypes: string list -> bool
     /// Lockless build phase of an incremental scripted-type refresh; None when not applicable.
-    abstract PrepareScriptedTypes: string list -> StagedScriptedTypes option
+    abstract PrepareScriptedTypes: string list * additionalSemanticChanged: bool -> StagedScriptedTypes option
     /// Write-locked swap phase; false when a guard fails and a full refresh is needed.
     abstract CommitScriptedTypes: StagedScriptedTypes -> bool
     abstract RefreshLocalisationCaches: unit -> unit

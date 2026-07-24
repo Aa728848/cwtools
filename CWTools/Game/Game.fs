@@ -647,12 +647,12 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
     member _.RefreshScriptedTypesForFiles(files, typeKeys) = updateScriptedTypesCache files typeKeys
 
-    member _.PrepareScriptedTypesForFiles(files, typeKeys) =
-        rulesManager.PrepareScriptedTypes(files, typeKeys)
+    member _.PrepareScriptedTypesForFiles(files, typeKeys, additionalSemanticChanged) =
+        rulesManager.PrepareScriptedTypes(files, typeKeys, additionalSemanticChanged)
 
     member this.CommitScriptedTypesForFiles(staged) =
         match rulesManager.CommitScriptedTypes(staged) with
-        | Some(rules, info, completion) ->
+        | Some(Some(rules, info, completion)) ->
             this.RuleValidationService <- Some rules
             this.InfoService <- Some info
             this.completionService <- Some completion
@@ -660,6 +660,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             LanguageFeatures.clearCompletionEntityCache ()
             LanguageFeatures.clearTypeReferenceIndexCache ()
             true
+        | Some None -> true
         | None -> false
 
     member _.PrepareTypeIndexForFiles(files, typeKeys) =
