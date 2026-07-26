@@ -3490,6 +3490,119 @@ test_scripted_effect_none = {
 
               Expect.contains labels "set_ship_flag" (sprintf "A scripted effect definition body tail should complete normal effects, got %A" (labels |> List.truncate 50))
 
+          testWithCapturedLogs "scripted effect definition body completion survives preceding effects" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
+              let completionRule =
+                  "scripted_effect = {\n    optimize_memory\n    alias_name[effect] = alias_match_left[effect]\n}"
+              let configtext =
+                  configFilesFromDir folder
+                  @ [ "scripted_effect_completion.cwt", completionRule ]
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let filename = Path.GetFullPath(Path.Combine(folder, "common", "scripted_effects", "test.txt"))
+              let afterBatch =
+                  cursorAtMarker
+                      """
+test_scripted_effect_none = {
+    set_spawn_system_batch = begin
+    s|
+}
+"""
+
+              let afterOrdinaryEffect =
+                  cursorAtMarker
+                      """
+test_scripted_effect_none = {
+    set_country_flag = yes
+    |
+}
+"""
+
+              let afterUnknownScalarEffect =
+                  cursorAtMarker
+                      """
+test_scripted_effect_none = {
+    unknown_effect = yes
+    s|
+}
+"""
+
+              let afterOrdinaryPartial =
+                  cursorAtMarker
+                      """
+test_scripted_effect_none = {
+    set_country_flag = yes
+    s|
+}
+"""
+
+              let afterBeginValue =
+                  cursorAtMarker
+                      """
+test_scripted_effect_none = {
+    set_country_flag = begin
+    s|
+}
+"""
+
+              let results =
+                  [ "ordinary-partial", afterOrdinaryPartial
+                    "batch", afterBatch
+                    "ordinary", afterOrdinaryEffect
+                    "unknown-scalar", afterUnknownScalarEffect
+                    "begin-value", afterBeginValue ]
+                  |> List.map (fun (caseName, (filetext, pos)) ->
+                      caseName, (stl.Complete pos filename filetext |> List.map label))
+              let failures =
+                  results
+                  |> List.filter (fun (_, labels) -> not (labels |> List.contains "set_ship_flag"))
+
+              Expect.isEmpty failures (sprintf "Every scripted effect definition-body slot should retain effect completion, got %A" (failures |> List.map (fun (name, labels) -> name, labels |> List.truncate 50)))
+              let ordinaryLabels = results |> List.find (fst >> (=) "ordinary") |> snd
+              Expect.contains ordinaryLabels "optimize_memory" "Mixed definition bodies should complete permitted bare values as well as keyed effects"
+
+          testWithCapturedLogs "scripted effect definition body completes effects from full rules" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
+              let docsPath = "./testfiles/stellarisconfig/config/logs/trigger_docs.log"
+              let configtext =
+                  (docsPath, File.ReadAllText docsPath)
+                  :: configFilesFromDir "./testfiles/stellarisconfig"
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let filename = Path.GetFullPath(Path.Combine(folder, "common", "scripted_effects", "test.txt"))
+              let cases =
+                  [ "empty", "test_scripted_effect_none = {\n    |\n}"
+                    "partial", "test_scripted_effect_none = {\n    no|\n}"
+                    "after-effect", "test_scripted_effect_none = {\n    set_country_flag = yes\n    no|\n}"
+                    "after-batch", "test_scripted_effect_none = {\n    set_spawn_system_batch = begin\n    no|\n}" ]
+
+              let failures =
+                  cases
+                  |> List.map (fun (caseName, markedText) ->
+                      let filetext, pos = cursorAtMarker markedText
+                      caseName, (stl.Complete pos filename filetext |> List.map label))
+                  |> List.filter (fun (_, labels) -> not (labels |> List.contains "set_country_flag"))
+
+              Expect.isEmpty failures (sprintf "Every scripted effect definition body should complete effects from the full rules, got %A" (failures |> List.map (fun (name, labels) -> name, labels |> List.truncate 50)))
+
           testWithCapturedLogs "scripted effect file root completion stays at definition level" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
               let configtext = configFilesFromDir folder

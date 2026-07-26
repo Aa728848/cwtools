@@ -1030,6 +1030,8 @@ type CompletionService
                             |> List.map CompletionResponse.CreateSimple
                         )
                         .ToArray()
+                | NewField.SpecificField(SpecificValue specificValue) ->
+                    [| CompletionResponse.CreateSimple(StringResource.stringManager.GetStringForID specificValue.normal) |]
                 | _ -> [||]
 
         let p =
@@ -1127,13 +1129,17 @@ type CompletionService
                     //log "res %A" res
                     res
             | [ (_, _, Some value, LeafValueRHS) ] ->
-                match
+                let valueRules =
                     expandedRules
                     |> Array.choose (function
                         | LeafValueRule f, o -> Some(f, o)
                         | _ -> None)
-                with
-                | [||] -> expandedRules |> Array.collect (convRuleToCompletion value 0 scopeContext)
+
+                let siblingCompletions () =
+                    expandedRules |> Array.collect (convRuleToCompletion value 0 scopeContext)
+
+                match valueRules with
+                | [||] -> siblingCompletions ()
                 | fs ->
                     let hasPrefix =
                         let value = value.Trim().Trim('"')
@@ -1152,7 +1158,16 @@ type CompletionService
                         else
                             fs
 
-                    fs |> Array.collect (fun (f, o) -> fieldToRules f value scopeContext o)
+                    let valueCompletions =
+                        fs |> Array.collect (fun (f, o) -> fieldToRules f value scopeContext o)
+
+                    // A token containing the completion marker is ambiguous until the
+                    // user types '=': it may be either a permitted bare value or the LHS
+                    // of a keyed rule. Keep both sets available in mixed blocks.
+                    if value.Contains magicCharString then
+                        Array.append valueCompletions (siblingCompletions ())
+                    else
+                        valueCompletions
             | (key, count, _, NodeRHS) :: rest ->
                 match
                     expandedRules
