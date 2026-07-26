@@ -2,31 +2,17 @@ namespace CWTools.Games
 
 open System
 open System.IO
-open System.Text.RegularExpressions
 open CWTools.Common
 open CWTools.Utilities.Position
 
-/// Lightweight language features for the Paradox FX shader DSL.
-///
-/// FX files are not Clausewitz script files, but they still need to participate in
-/// the same resource cache and LSP entry points as the rest of CWTools. This module
-/// deliberately extracts only the DSL surface needed for validation and completion;
-/// HLSL bodies inside [[ ... ]] are treated as opaque text.
+/// Language-service façade for the Paradox FX shader DSL and embedded/raw HLSL.
+/// Every V2 feature below consumes PdxShaderProject.semanticSnapshot so diagnostics,
+/// navigation, tokens, formatting and signature help share one lossless frontend.
 module PdxShaderFeatures =
     type ShaderSource =
         { filepath: string
           logicalpath: string
           filetext: string }
-
-    type ShaderSymbols =
-        { vertexMainCodes: Set<string>
-          pixelMainCodes: Set<string>
-          constantBuffers: Set<string>
-          blendStates: Set<string>
-          depthStencilStates: Set<string>
-          rasterizerStates: Set<string>
-          defines: Set<string>
-          includeFiles: Set<string> }
 
     type ShaderDocumentSymbolKind =
         | IncludesSymbol
@@ -55,136 +41,7 @@ module PdxShaderFeatures =
         { range: range
           targetFilepath: string }
 
-    type private ShaderBlock =
-        { name: string option
-          headerStart: int
-          blockStart: int
-          blockEnd: int
-          nameStart: int option
-          nameLength: int
-          contentStart: int
-          contentEnd: int }
-
-    type private ReferenceKind =
-        | VertexMainCode
-        | PixelMainCode
-        | ConstantBuffer
-        | BlendState
-        | DepthStencilState
-        | RasterizerState
-        | IncludeFile
-
-    type private ShaderReference =
-        { owner: string
-          target: string
-          targetStart: int
-          targetLength: int
-          kind: ReferenceKind }
-
-    type private ShaderDefinition =
-        { name: string
-          kind: ReferenceKind
-          source: ShaderSource
-          nameStart: int
-          nameLength: int
-          detail: string }
-
-    type private ScopeContext =
-        { headers: string list
-          insideHlsl: bool }
-
-    let private regex options pattern = Regex(pattern, options ||| RegexOptions.Compiled)
-    let private keywordOptions = RegexOptions.IgnoreCase ||| RegexOptions.Singleline
-    let private singlelineOptions = RegexOptions.Singleline
-
-    let private vertexShaderBlockPattern =
-        regex keywordOptions @"\bVertexShader\s*=\s*\{"
-
-    let private pixelShaderBlockPattern =
-        regex keywordOptions @"\bPixelShader\s*=\s*\{"
-
-    let private vertexStructBlockPattern =
-        regex keywordOptions @"\bVertexStruct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{"
-
-    let private constantBufferBlockPattern =
-        regex keywordOptions @"\bConstantBuffer\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)[^)]*\)\s*\{"
-
-    let private effectBlockPattern =
-        regex keywordOptions @"\bEffect\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{"
-
-    let private blendStateBlockPattern =
-        regex keywordOptions @"\bBlendState\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{"
-
-    let private depthStencilStateBlockPattern =
-        regex keywordOptions @"\bDepthStencilState\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{"
-
-    let private rasterizerStateBlockPattern =
-        regex keywordOptions @"\bRasterizerState\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{"
-
-    let private samplersBlockPattern =
-        regex keywordOptions @"\bSamplers\s*=\s*\{"
-
-    let private samplerBlockPattern =
-        regex keywordOptions @"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\{"
-
-    let private codeBlockPattern =
-        regex keywordOptions @"\bCode\s*\[\["
-
-    let private mainCodePattern =
-        regex keywordOptions @"\bMainCode\s+([A-Za-z_][A-Za-z0-9_]*)\b"
-
-    let private constantBufferPattern =
-        regex keywordOptions @"\bConstantBuffer\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)"
-
-    let private blendStatePattern =
-        regex keywordOptions @"\bBlendState\s+([A-Za-z_][A-Za-z0-9_]*)\b"
-
-    let private depthStencilStatePattern =
-        regex keywordOptions @"\bDepthStencilState\s+([A-Za-z_][A-Za-z0-9_]*)\b"
-
-    let private rasterizerStatePattern =
-        regex keywordOptions @"\bRasterizerState\s+([A-Za-z_][A-Za-z0-9_]*)\b"
-
-    let private effectPropertyPattern =
-        regex keywordOptions @"\b(VertexShader|PixelShader|BlendState|DepthStencilState|RasterizerState)\s*=\s*""([^""]+)"""
-
-    let private constantBufferReferencePattern =
-        regex keywordOptions @"\bConstantBuffers\s*=\s*\{([^}]*)\}"
-
-    let private includesPattern =
-        regex keywordOptions @"\bIncludes\s*=\s*\{([^}]*)\}"
-
-    let private definesPattern =
-        regex keywordOptions @"\bDefines\s*=\s*\{([^}]*)\}"
-
-    let private identifierPattern =
-        regex RegexOptions.None @"[A-Za-z_][A-Za-z0-9_]*"
-
-    let private quotedValuePattern =
-        regex RegexOptions.None @"""([^""]+)"""
-
-    let private conditionalDefinePattern =
-        regex (RegexOptions.IgnoreCase ||| RegexOptions.Multiline) @"(?:@|#)\s*ifn?def\s+([A-Za-z_][A-Za-z0-9_]*)\b"
-
-    let private definedCallPattern =
-        regex (RegexOptions.IgnoreCase ||| RegexOptions.Multiline) @"\bdefined\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)"
-
-    let private recentWindowSize = 16 * 1024
-
-    let private emptySymbols =
-        { vertexMainCodes = Set.empty
-          pixelMainCodes = Set.empty
-          constantBuffers = Set.empty
-          blendStates = Set.empty
-          depthStencilStates = Set.empty
-          rasterizerStates = Set.empty
-          defines = Set.empty
-          includeFiles = Set.empty }
-
-    let isShaderFile (filepath: string) =
-        let extension = Path.GetExtension(filepath)
-        extension.Equals(".shader", StringComparison.OrdinalIgnoreCase)
-        || extension.Equals(".fxh", StringComparison.OrdinalIgnoreCase)
+    let isShaderFile = PdxShaderProject.isShaderFile
 
     /// Lazily-loaded FX sources from the vanilla game installation.
     /// Populated once via `loadVanillaFxSources` when the game starts up.
@@ -207,6 +64,7 @@ module PdxShaderFeatures =
                 candidates
                 |> Array.collect scanDir
                 |> Array.distinct
+            let mutable failures = 0
             vanillaFxSources <-
                 allFiles
                 |> Array.choose (fun fp ->
@@ -215,253 +73,120 @@ module PdxShaderFeatures =
                             { filepath = fp
                               logicalpath = fp
                               filetext = File.ReadAllText fp }
-                    with _ -> None)
+                    with _ ->
+                        failures <- failures + 1
+                        None)
                 |> Array.toList
-        with _ -> ()
+            vanillaFxSources
+            |> List.map (fun (source: ShaderSource) ->
+                PdxShaderRuntime.createScriptSource source.filepath source.logicalpath "vanilla" source.filetext)
+            |> PdxShaderRuntime.setVanillaShaderSources
+            if failures > 0 then
+                CWTools.Utilities.Utils.logWarning (
+                    sprintf "PdxShaderFeatures: failed to read %d of %d vanilla FX files under %s" failures allFiles.Length vanillaPath
+                )
+        with ex ->
+            CWTools.Utilities.Utils.logWarning (
+                sprintf "PdxShaderFeatures: failed to scan vanilla FX files under %s: %s" vanillaPath ex.Message
+            )
+
+    /// Read-only view of the cached vanilla FX sources, used by PdxShaderRuntime
+    /// so the reachability model sees the same vanilla shaders as validation.
+    let vanillaShaderSources () = vanillaFxSources
 
     let private fileName (path: string) =
         let normalized = path.Replace('\\', '/')
         let lastSlash = normalized.LastIndexOf('/')
         if lastSlash >= 0 then normalized.Substring(lastSlash + 1) else normalized
 
-    let private blankNonNewline (chars: char array) i =
-        if chars[i] <> '\r' && chars[i] <> '\n' then chars[i] <- ' '
+    /// Unified snapshot collection for every language-service feature. A content-bearing
+    /// resource always wins over a FileResource
+    /// disk read of the same file; a failed read is logged and skipped. Returns all
+    /// snapshots (resources in enumeration order, then the current document, then
+    /// vanilla) plus the current-document snapshot.
+    let private collectSnapshots (resources: Resource seq) filepath filetext =
+        let materialized = Seq.toList resources
+        let currentCanonical = PdxShaderProject.canonicalizePath filepath
 
-    /// Keep string offsets stable while removing comments, preprocessors and embedded HLSL.
-    let private cleanDslText (text: string) =
-        let chars = text.ToCharArray()
-        let mutable i = 0
-        let mutable inString = false
-
-        let blankUntilLineEnd start =
-            let mutable j = start
-            while j < chars.Length && chars[j] <> '\r' && chars[j] <> '\n' do
-                blankNonNewline chars j
-                j <- j + 1
-            j
-
-        while i < chars.Length do
-            if not inString && i + 1 < chars.Length && chars[i] = '[' && chars[i + 1] = '[' then
-                blankNonNewline chars i
-                blankNonNewline chars (i + 1)
-                i <- i + 2
-                let mutable doneHlsl = false
-
-                while i < chars.Length && not doneHlsl do
-                    if i + 1 < chars.Length && chars[i] = ']' && chars[i + 1] = ']' then
-                        blankNonNewline chars i
-                        blankNonNewline chars (i + 1)
-                        i <- i + 2
-                        doneHlsl <- true
-                    else
-                        blankNonNewline chars i
-                        i <- i + 1
-            elif not inString && i + 1 < chars.Length && chars[i] = '/' && chars[i + 1] = '*' then
-                blankNonNewline chars i
-                blankNonNewline chars (i + 1)
-                i <- i + 2
-                let mutable doneComment = false
-
-                while i < chars.Length && not doneComment do
-                    if i + 1 < chars.Length && chars[i] = '*' && chars[i + 1] = '/' then
-                        blankNonNewline chars i
-                        blankNonNewline chars (i + 1)
-                        i <- i + 2
-                        doneComment <- true
-                    else
-                        blankNonNewline chars i
-                        i <- i + 1
-            elif not inString && i + 1 < chars.Length && chars[i] = '/' && chars[i + 1] = '/' then
-                i <- blankUntilLineEnd i
-            elif not inString && chars[i] = '#' then
-                i <- blankUntilLineEnd i
-            else
-                if chars[i] = '"' then inString <- not inString
-                i <- i + 1
-
-        String(chars)
-
-    let private findOpenBrace (m: Match) =
-        m.Index + m.Value.LastIndexOf('{')
-
-    let private findClosingBrace (cleaned: string) openBrace =
-        let mutable depth = 0
-        let mutable i = openBrace
-        let mutable closing = cleaned.Length
-
-        while i < cleaned.Length && closing = cleaned.Length do
-            match cleaned[i] with
-            | '{' -> depth <- depth + 1
-            | '}' ->
-                depth <- depth - 1
-                if depth = 0 then closing <- i
-            | _ -> ()
-
-            i <- i + 1
-
-        closing
-
-    let private findBlocks (pattern: Regex) includeName (cleaned: string) =
-        pattern.Matches(cleaned)
-        |> Seq.cast<Match>
-        |> Seq.choose (fun m ->
-            let openBrace = findOpenBrace m
-            if openBrace < m.Index then
-                None
-            else
-                let closeBrace = findClosingBrace cleaned openBrace
-                let nameGroup =
-                    if includeName && m.Groups.Count > 1 && m.Groups[1].Success then
-                        Some m.Groups[1]
-                    else
-                        None
-
-                Some
-                    { name =
-                        nameGroup |> Option.map _.Value
-                      headerStart = m.Index
-                      blockStart = m.Index
-                      blockEnd = if closeBrace < cleaned.Length then closeBrace + 1 else closeBrace
-                      nameStart = nameGroup |> Option.map _.Index
-                      nameLength = nameGroup |> Option.map _.Length |> Option.defaultValue 0
-                      contentStart = openBrace + 1
-                      contentEnd = closeBrace })
-        |> Seq.toList
-
-    let private matchNames (pattern: Regex) (text: string) =
-        pattern.Matches(text)
-        |> Seq.cast<Match>
-        |> Seq.choose (fun m ->
-            if m.Groups.Count > 1 && m.Groups[1].Success then Some m.Groups[1].Value else None)
-        |> Set.ofSeq
-
-    let private shaderBlockMainCodes (pattern: Regex) (cleaned: string) =
-        findBlocks pattern false cleaned
-        |> Seq.collect (fun block ->
-            let length = max 0 (block.contentEnd - block.contentStart)
-            mainCodePattern.Matches(cleaned.Substring(block.contentStart, length))
-            |> Seq.cast<Match>
-            |> Seq.choose (fun m ->
-                if m.Groups.Count > 1 && m.Groups[1].Success then Some m.Groups[1].Value else None))
-        |> Set.ofSeq
-
-    let private shaderDefineNames (rawText: string) (cleaned: string) =
-        seq {
-            yield! matchNames conditionalDefinePattern rawText
-            yield! matchNames definedCallPattern rawText
-
-            for m in definesPattern.Matches(cleaned) |> Seq.cast<Match> do
-                let values = m.Groups[1]
-
-                for value in quotedValuePattern.Matches(values.Value) |> Seq.cast<Match> do
-                    let define = value.Groups[1]
-                    if define.Success then yield define.Value
-        }
-        |> Set.ofSeq
-
-    let private extractSymbolsFromText (source: ShaderSource) =
-        let cleaned = cleanDslText source.filetext
-
-        { vertexMainCodes = shaderBlockMainCodes vertexShaderBlockPattern cleaned
-          pixelMainCodes = shaderBlockMainCodes pixelShaderBlockPattern cleaned
-          constantBuffers = matchNames constantBufferPattern cleaned
-          blendStates = matchNames blendStatePattern cleaned
-          depthStencilStates = matchNames depthStencilStatePattern cleaned
-          rasterizerStates = matchNames rasterizerStatePattern cleaned
-          defines = shaderDefineNames source.filetext cleaned
-          includeFiles =
-            if String.IsNullOrWhiteSpace source.filepath then
-                Set.empty
-            else
-                Set.singleton (fileName source.filepath) }
-
-    let private mergeSymbols a b =
-        { vertexMainCodes = Set.union a.vertexMainCodes b.vertexMainCodes
-          pixelMainCodes = Set.union a.pixelMainCodes b.pixelMainCodes
-          constantBuffers = Set.union a.constantBuffers b.constantBuffers
-          blendStates = Set.union a.blendStates b.blendStates
-          depthStencilStates = Set.union a.depthStencilStates b.depthStencilStates
-          rasterizerStates = Set.union a.rasterizerStates b.rasterizerStates
-          defines = Set.union a.defines b.defines
-          includeFiles = Set.union a.includeFiles b.includeFiles }
-
-    let symbolsFromSources sources =
-        sources |> Seq.map extractSymbolsFromText |> Seq.fold mergeSymbols emptySymbols
-
-    let private sourceForCurrentFile filepath filetext =
-        { filepath = filepath
-          logicalpath = filepath
-          filetext = filetext }
-
-    let private resourceSources (resources: IResourceAPI<_>) filepath filetext =
-        let currentPath =
-            try Path.GetFullPath filepath
-            with _ -> filepath
-
-        resources.GetResources()
-        |> Seq.choose (function
-            | FileWithContentResource(_, resource) when
-                resource.overwrite <> Overwrite.Overwritten
-                && isShaderFile resource.filepath
-                ->
-                let candidatePath =
-                    try Path.GetFullPath resource.filepath
-                    with _ -> resource.filepath
-
-                if candidatePath.Equals(currentPath, StringComparison.OrdinalIgnoreCase) then
-                    None
-                else
-                    Some
-                        { filepath = resource.filepath
-                          logicalpath = resource.logicalpath
-                          filetext = resource.filetext }
-            | FileResource(_, resource) when isShaderFile resource.filepath ->
-                let candidatePath =
-                    try Path.GetFullPath resource.filepath
-                    with _ -> resource.filepath
-
-                if candidatePath.Equals(currentPath, StringComparison.OrdinalIgnoreCase) then
-                    None
-                else
-                    try
-                        if File.Exists resource.filepath then
-                            Some
-                                { filepath = resource.filepath
-                                  logicalpath = resource.logicalpath
-                                  filetext = File.ReadAllText resource.filepath }
-                        else
-                            None
-                    with _ -> None
-            | _ -> None)
-        |> Seq.append [ sourceForCurrentFile filepath filetext ]
-        |> Seq.append (
-            vanillaFxSources
-            |> List.filter (fun s ->
-                let sp =
-                    try Path.GetFullPath s.filepath
-                    with _ -> s.filepath
-                not (sp.Equals(currentPath, StringComparison.OrdinalIgnoreCase))))
-        |> Seq.toList
-
-    let private resourceIncludeNames (resources: IResourceAPI<_>) =
-        let fromResources =
-            resources.GetResources()
-            |> Seq.choose (function
-                | FileResource(_, resource) when isShaderFile resource.filepath -> Some(fileName resource.filepath)
+        let contentSnapshots, currentLogicalPath =
+            (([], None), materialized)
+            ||> List.fold (fun (snapshots, currentLogical) resource ->
+                match resource with
                 | FileWithContentResource(_, resource) when
                     resource.overwrite <> Overwrite.Overwritten
                     && isShaderFile resource.filepath
                     ->
-                    Some(fileName resource.filepath)
-                | _ -> None)
-            |> Set.ofSeq
-        let fromVanilla =
-            vanillaFxSources |> List.map (fun s -> fileName s.filepath) |> Set.ofList
-        Set.union fromResources fromVanilla
+                    let canonical = PdxShaderProject.canonicalizePath resource.filepath
 
-    let private symbolsWithIncludeNames sources includeNames =
-        let symbols = symbolsFromSources sources
-        { symbols with includeFiles = Set.union symbols.includeFiles includeNames }
+                    if canonical = currentCanonical then
+                        // The unsaved document replaces the on-disk copy.
+                        snapshots, Some resource.logicalpath
+                    else
+                        PdxShaderProject.createSnapshot
+                            (PdxShaderProject.originForResource resource.scope resource.filepath)
+                            resource.filepath
+                            resource.logicalpath
+                            resource.filetext
+                        :: snapshots,
+                        currentLogical
+                | _ -> snapshots, currentLogical)
+
+        let contentPaths =
+            System.Collections.Generic.HashSet<string>(
+                seq {
+                    yield currentCanonical
+
+                    for snapshot in contentSnapshots do
+                        yield snapshot.canonicalPath
+                },
+                StringComparer.Ordinal)
+
+        let fileSnapshots =
+            materialized
+            |> List.choose (function
+                | FileResource(_, resource) when isShaderFile resource.filepath ->
+                    let canonical = PdxShaderProject.canonicalizePath resource.filepath
+
+                    if contentPaths.Contains canonical then
+                        None
+                    elif File.Exists resource.filepath then
+                        try
+                            Some(
+                                PdxShaderProject.createSnapshot
+                                    (PdxShaderProject.originForResource resource.scope resource.filepath)
+                                    resource.filepath
+                                    resource.logicalpath
+                                    (File.ReadAllText resource.filepath)
+                            )
+                        with ex ->
+                            CWTools.Utilities.Utils.logWarning (
+                                sprintf "PdxShaderFeatures: failed to read shader file %s: %s" resource.filepath ex.Message
+                            )
+
+                            None
+                    else
+                        None
+                | _ -> None)
+
+        let vanillaSnapshots =
+            vanillaFxSources
+            |> List.choose (fun source ->
+                if PdxShaderProject.canonicalizePath source.filepath = currentCanonical then
+                    None
+                else
+                    Some(PdxShaderProject.createSnapshot PdxShaderProject.Vanilla source.filepath source.logicalpath source.filetext))
+
+        let current =
+            PdxShaderProject.createSnapshot
+                PdxShaderProject.CurrentDocument
+                filepath
+                (defaultArg currentLogicalPath filepath)
+                filetext
+
+        (List.rev contentSnapshots) @ fileSnapshots @ [ current ] @ vanillaSnapshots, current
+
+    let private snapshotIncludeNames (snapshots: PdxShaderProject.ShaderSnapshot list) =
+        snapshots |> List.map (fun snapshot -> fileName snapshot.displayPath) |> Set.ofList
 
     let private posFromOffset (text: string) offset =
         let targetOffset = max 0 (min text.Length offset)
@@ -486,485 +211,227 @@ module PdxShaderFeatures =
     let private rangeFromOffset filepath (text: string) offset length =
         rangeBetweenOffsets filepath text offset (offset + max 1 length)
 
-    let private definitionRange definition =
-        if definition.kind = IncludeFile then
-            mkRange definition.source.filepath pos0 pos0
-        else
-            rangeFromOffset definition.source.filepath definition.source.filetext definition.nameStart definition.nameLength
-
-    let private addMainCodeDefinitions kind detail source cleaned (definitions: ResizeArray<ShaderDefinition>) pattern =
-        for block in findBlocks pattern false cleaned do
-            let blockLength = max 0 (block.contentEnd - block.contentStart)
-            let content = cleaned.Substring(block.contentStart, blockLength)
-
-            for m in mainCodePattern.Matches(content) |> Seq.cast<Match> do
-                let name = m.Groups[1]
-
-                if name.Success then
-                    definitions.Add
-                        { name = name.Value
-                          kind = kind
-                          source = source
-                          nameStart = block.contentStart + name.Index
-                          nameLength = name.Length
-                          detail = detail }
-
-    let private addNamedDefinitions kind detail source (definitions: ResizeArray<ShaderDefinition>) (pattern: Regex) cleaned =
-        for m in pattern.Matches(cleaned) |> Seq.cast<Match> do
-            let name = m.Groups[1]
-
-            if name.Success then
-                definitions.Add
-                    { name = name.Value
-                      kind = kind
-                      source = source
-                      nameStart = name.Index
-                      nameLength = name.Length
-                      detail = detail }
-
-    let private definitionsFromSource source =
-        let cleaned = cleanDslText source.filetext
-        let definitions = ResizeArray<ShaderDefinition>()
-
-        addMainCodeDefinitions VertexMainCode "Vertex MainCode" source cleaned definitions vertexShaderBlockPattern
-        addMainCodeDefinitions PixelMainCode "Pixel MainCode" source cleaned definitions pixelShaderBlockPattern
-        addNamedDefinitions ConstantBuffer "ConstantBuffer" source definitions constantBufferPattern cleaned
-        addNamedDefinitions BlendState "BlendState" source definitions blendStatePattern cleaned
-        addNamedDefinitions DepthStencilState "DepthStencilState" source definitions depthStencilStatePattern cleaned
-        addNamedDefinitions RasterizerState "RasterizerState" source definitions rasterizerStatePattern cleaned
-
-        if not (String.IsNullOrWhiteSpace source.filepath) then
-            definitions.Add
-                { name = fileName source.filepath
-                  kind = IncludeFile
-                  source = source
-                  nameStart = 0
-                  nameLength = 0
-                  detail = "FX include file" }
-
-        definitions |> Seq.toList
-
-    let private definitionsFromSources (sources: ShaderSource list) =
-        sources |> List.collect definitionsFromSource
-
-    let private symbol
-        (filepath: string)
-        (filetext: string)
-        kind
-        name
-        detail
-        startOffset
-        endOffset
-        selectionStart
-        selectionLength
-        children
-        : ShaderDocumentSymbol =
-        { name = name
-          detail = detail
-          kind = kind
-          range = rangeBetweenOffsets filepath filetext startOffset endOffset
-          selectionRange = rangeFromOffset filepath filetext selectionStart selectionLength
-          children = children }
-
-    let private blockSymbol filepath filetext kind (fallbackName: string) detail children (block: ShaderBlock) =
-        let selectionStart = block.nameStart |> Option.defaultValue block.headerStart
-        let selectionLength =
-            if block.nameLength > 0 then
-                block.nameLength
-            else
-                fallbackName.Length
-
-        symbol
-            filepath
-            filetext
-            kind
-            (block.name |> Option.defaultValue fallbackName)
-            detail
-            block.blockStart
-            block.blockEnd
-            selectionStart
-            selectionLength
-            children
-
-    let private mainCodeSymbols filepath filetext (cleaned: string) (block: ShaderBlock) =
-        let blockLength = max 0 (block.contentEnd - block.contentStart)
-        let content = cleaned.Substring(block.contentStart, blockLength)
-
-        mainCodePattern.Matches(content)
-        |> Seq.cast<Match>
-        |> Seq.choose (fun m ->
-            let name = m.Groups[1]
-
-            if name.Success then
-                let nameStart = block.contentStart + name.Index
-                let startOffset = block.contentStart + m.Index
-
-                Some(
-                    symbol
-                        filepath
-                        filetext
-                        MainCodeSymbol
-                        name.Value
-                        "MainCode"
-                        startOffset
-                        (nameStart + name.Length)
-                        nameStart
-                        name.Length
-                        []
-                )
-            else
-                None)
-        |> Seq.toList
-
-    let private includeSymbols filepath filetext (cleaned: string) =
-        includesPattern.Matches(cleaned)
-        |> Seq.cast<Match>
-        |> Seq.map (fun m ->
-            let values = m.Groups[1]
-
-            let children =
-                quotedValuePattern.Matches(values.Value)
-                |> Seq.cast<Match>
-                |> Seq.choose (fun quoted ->
-                    let name = quoted.Groups[1]
-
-                    if name.Success then
-                        let nameStart = values.Index + name.Index
-
-                        Some(
-                            symbol
-                                filepath
-                                filetext
-                                IncludeFileSymbol
-                                name.Value
-                                "FX include"
-                                nameStart
-                                (nameStart + name.Length)
-                                nameStart
-                                name.Length
-                                []
-                        )
-                    else
-                        None)
-                |> Seq.toList
-
-            symbol
-                filepath
-                filetext
-                IncludesSymbol
-                "Includes"
-                "FX include list"
-                m.Index
-                (m.Index + m.Length)
-                m.Index
-                "Includes".Length
-                children)
-        |> Seq.toList
-
-    let private codeSymbols filepath (filetext: string) (cleaned: string) =
-        codeBlockPattern.Matches(cleaned)
-        |> Seq.cast<Match>
-        |> Seq.map (fun m ->
-            let codeEnd = filetext.IndexOf("]]", m.Index + m.Length, StringComparison.Ordinal)
-            let endOffset = if codeEnd < 0 then filetext.Length else codeEnd + 2
-
-            symbol
-                filepath
-                filetext
-                CodeBlockSymbol
-                "Code"
-                "Shared HLSL"
-                m.Index
-                endOffset
-                m.Index
-                "Code".Length
-                [])
-        |> Seq.toList
-
-    let private samplerSymbols filepath filetext (cleaned: string) =
-        findBlocks samplersBlockPattern false cleaned
-        |> List.map (fun (samplers: ShaderBlock) ->
-            let blockLength = max 0 (samplers.contentEnd - samplers.contentStart)
-            let content = cleaned.Substring(samplers.contentStart, blockLength)
-
-            let children =
-                samplerBlockPattern.Matches(content)
-                |> Seq.cast<Match>
-                |> Seq.choose (fun m ->
-                    let name = m.Groups[1]
-
-                    if name.Success then
-                        let blockStart = samplers.contentStart + m.Index
-                        let openBrace = blockStart + m.Value.LastIndexOf('{')
-                        let closeBrace = findClosingBrace cleaned openBrace
-                        let nameStart = samplers.contentStart + name.Index
-
-                        Some(
-                            symbol
-                                filepath
-                                filetext
-                                SamplerSymbol
-                                name.Value
-                                "Sampler"
-                                blockStart
-                                (if closeBrace < cleaned.Length then closeBrace + 1 else closeBrace)
-                                nameStart
-                                name.Length
-                                []
-                        )
-                    else
-                        None)
-                |> Seq.toList
-
-            blockSymbol filepath filetext SamplersSymbol "Samplers" "Sampler list" children samplers)
 
     let documentSymbols (filepath: string) (filetext: string) =
-        let cleaned = cleanDslText filetext
+        let tree = PdxShaderSyntax.parse filepath filetext
 
-        [ yield! includeSymbols filepath filetext cleaned
-          yield!
-              findBlocks vertexStructBlockPattern true cleaned
-              |> List.map (fun block ->
-                  blockSymbol filepath filetext VertexStructSymbol "VertexStruct" "Vertex struct" [] block)
-          yield!
-              findBlocks constantBufferBlockPattern true cleaned
-              |> List.map (fun block ->
-                  blockSymbol filepath filetext ConstantBufferSymbol "ConstantBuffer" "ConstantBuffer" [] block)
-          yield!
-              findBlocks vertexShaderBlockPattern false cleaned
-              |> List.map (fun block ->
-                  blockSymbol
-                      filepath
-                      filetext
-                      ShaderBlockSymbol
-                      "VertexShader"
-                      "Vertex shader block"
-                      (mainCodeSymbols filepath filetext cleaned block)
-                      block)
-          yield!
-              findBlocks pixelShaderBlockPattern false cleaned
-              |> List.map (fun block ->
-                  blockSymbol
-                      filepath
-                      filetext
-                      ShaderBlockSymbol
-                      "PixelShader"
-                      "Pixel shader block"
-                      (mainCodeSymbols filepath filetext cleaned block)
-                      block)
-          yield!
-              findBlocks effectBlockPattern true cleaned
-              |> List.map (fun block ->
-                  blockSymbol filepath filetext EffectSymbol "Effect" "Effect" [] block)
-          yield!
-              findBlocks blendStateBlockPattern true cleaned
-              |> List.map (fun block ->
-                  blockSymbol filepath filetext BlendStateSymbol "BlendState" "BlendState" [] block)
-          yield!
-              findBlocks depthStencilStateBlockPattern true cleaned
-              |> List.map (fun block ->
-                  blockSymbol
-                      filepath
-                      filetext
-                      DepthStencilStateSymbol
-                      "DepthStencilState"
-                      "DepthStencilState"
-                      []
-                      block)
-          yield!
-              findBlocks rasterizerStateBlockPattern true cleaned
-              |> List.map (fun block ->
-                  blockSymbol
-                      filepath
-                      filetext
-                      RasterizerStateSymbol
-                      "RasterizerState"
-                      "RasterizerState"
-                      []
-                      block)
-          yield! samplerSymbols filepath filetext cleaned
-          yield! codeSymbols filepath filetext cleaned ]
+        let rec convert (node: PdxShaderSyntax.ShaderSyntaxNode) =
+            let mapped =
+                match node.kind with
+                | PdxShaderSyntax.ShaderNodeKind.Includes -> Some(IncludesSymbol, "Includes", "Include files")
+                | PdxShaderSyntax.ShaderNodeKind.IncludeFile -> Some(IncludeFileSymbol, defaultArg node.name "include", "FX include")
+                | PdxShaderSyntax.ShaderNodeKind.VertexStruct -> Some(VertexStructSymbol, defaultArg node.name "VertexStruct", "Vertex struct")
+                | PdxShaderSyntax.ShaderNodeKind.ConstantBuffer -> Some(ConstantBufferSymbol, defaultArg node.name "ConstantBuffer", "ConstantBuffer")
+                | PdxShaderSyntax.ShaderNodeKind.VertexShader -> Some(ShaderBlockSymbol, "VertexShader", "Vertex shader block")
+                | PdxShaderSyntax.ShaderNodeKind.PixelShader -> Some(ShaderBlockSymbol, "PixelShader", "Pixel shader block")
+                | PdxShaderSyntax.ShaderNodeKind.GeometryShader -> Some(ShaderBlockSymbol, "GeometryShader", "Geometry shader block")
+                | PdxShaderSyntax.ShaderNodeKind.MainCode -> Some(MainCodeSymbol, defaultArg node.name "MainCode", "Shader entry point")
+                | PdxShaderSyntax.ShaderNodeKind.HlslRegion -> Some(CodeBlockSymbol, "Code", "Embedded HLSL/Cg")
+                | PdxShaderSyntax.ShaderNodeKind.Effect -> Some(EffectSymbol, defaultArg node.name "Effect", "Effect")
+                | PdxShaderSyntax.ShaderNodeKind.BlendState -> Some(BlendStateSymbol, defaultArg node.name "BlendState", "BlendState")
+                | PdxShaderSyntax.ShaderNodeKind.DepthStencilState -> Some(DepthStencilStateSymbol, defaultArg node.name "DepthStencilState", "DepthStencilState")
+                | PdxShaderSyntax.ShaderNodeKind.RasterizerState -> Some(RasterizerStateSymbol, defaultArg node.name "RasterizerState", "RasterizerState")
+                | PdxShaderSyntax.ShaderNodeKind.Samplers -> Some(SamplersSymbol, "Samplers", "Sampler list")
+                | PdxShaderSyntax.ShaderNodeKind.Sampler -> Some(SamplerSymbol, defaultArg node.name "Sampler", "Sampler")
+                | _ -> None
+
+            match mapped with
+            | None -> None
+            | Some(kind, name, detail) ->
+                let selection = node.nameSpan |> Option.defaultValue node.span
+                let children = node.children |> List.choose convert
+
+                Some
+                    { name = name
+                      detail = detail
+                      kind = kind
+                      range = rangeBetweenOffsets filepath filetext node.span.startOffset node.span.endOffset
+                      selectionRange = rangeBetweenOffsets filepath filetext selection.startOffset selection.endOffset
+                      children = children }
+
+        tree.root.children
+        |> List.choose convert
         |> List.sortBy (fun item -> item.range.StartLine, item.range.StartColumn)
 
-    let private referencesFromText (text: string) =
-        let cleaned = cleanDslText text
-        let references = ResizeArray<ShaderReference>()
-
-        for block in findBlocks effectBlockPattern true cleaned do
-            let blockLength = max 0 (block.contentEnd - block.contentStart)
-            let content = cleaned.Substring(block.contentStart, blockLength)
-            let owner = block.name |> Option.defaultValue "Effect"
-
-            for m in effectPropertyPattern.Matches(content) |> Seq.cast<Match> do
-                let property = m.Groups[1].Value
-                let target = m.Groups[2]
-
-                let kind =
-                    match property.ToLowerInvariant() with
-                    | "vertexshader" -> VertexMainCode
-                    | "pixelshader" -> PixelMainCode
-                    | "blendstate" -> BlendState
-                    | "depthstencilstate" -> DepthStencilState
-                    | _ -> RasterizerState
-
-                references.Add
-                    { owner = owner
-                      target = target.Value
-                      targetStart = block.contentStart + target.Index
-                      targetLength = target.Length
-                      kind = kind }
-
-        for m in constantBufferReferencePattern.Matches(cleaned) |> Seq.cast<Match> do
-            let values = m.Groups[1]
-
-            for value in identifierPattern.Matches(values.Value) |> Seq.cast<Match> do
-                references.Add
-                    { owner = "MainCode"
-                      target = value.Value
-                      targetStart = values.Index + value.Index
-                      targetLength = value.Length
-                      kind = ConstantBuffer }
-
-        for m in includesPattern.Matches(cleaned) |> Seq.cast<Match> do
-            let values = m.Groups[1]
-
-            for value in quotedValuePattern.Matches(values.Value) |> Seq.cast<Match> do
-                let target = value.Groups[1]
-
-                references.Add
-                    { owner = "Includes"
-                      target = target.Value
-                      targetStart = values.Index + target.Index
-                      targetLength = target.Length
-                      kind = IncludeFile }
-
-        references |> Seq.toList
-
-    let private resourcePathCandidates (resources: Resource seq) =
-        resources
-        |> Seq.choose (function
-            | FileResource(_, resource) when isShaderFile resource.filepath ->
-                Some(resource.filepath, resource.logicalpath)
-            | FileWithContentResource(_, resource) when
-                resource.overwrite <> Overwrite.Overwritten
-                && isShaderFile resource.filepath
-                ->
-                Some(resource.filepath, resource.logicalpath)
-            | _ -> None)
-        |> Seq.toList
-
-    let private normalizedPath (path: string) =
-        path.Replace('\\', '/').TrimStart('/').ToLowerInvariant()
-
-    let private resolveIncludeTarget (resources: Resource seq) (filepath: string) (includePath: string) =
-        let currentDirectory =
-            Path.GetDirectoryName(filepath) |> Option.ofObj |> Option.defaultValue ""
-
-        let physicalCandidate =
-            if Path.IsPathRooted includePath then
-                includePath
-            else
-                Path.Combine(currentDirectory, includePath)
-
-        if File.Exists physicalCandidate then
-            Some(Path.GetFullPath physicalCandidate)
-        else
-            let includeName = fileName includePath
-            let includeLogicalPath = normalizedPath includePath
-
-            resourcePathCandidates resources
-            |> List.tryPick (fun (candidatePath, candidateLogicalPath) ->
-                let logicalPath = normalizedPath candidateLogicalPath
-
-                if
-                    File.Exists candidatePath
-                    && (fileName candidatePath).Equals(includeName, StringComparison.OrdinalIgnoreCase)
-                    && (logicalPath.EndsWith(includeLogicalPath, StringComparison.OrdinalIgnoreCase)
-                        || includeLogicalPath = normalizedPath includeName)
-                then
-                    Some candidatePath
-                else
-                    None)
-
+    /// Resolve only unambiguous Includes from the current compile-unit snapshot.
+    /// Missing or ambiguous includes intentionally produce no fabricated link.
     let documentLinks (resources: Resource seq) (filepath: string) (filetext: string) =
-        referencesFromText filetext
-        |> List.choose (fun (reference: ShaderReference) ->
-            match reference.kind with
-            | IncludeFile ->
-                resolveIncludeTarget resources filepath reference.target
-                |> Option.map (fun target ->
-                    { range = rangeFromOffset filepath filetext reference.targetStart reference.targetLength
-                      targetFilepath = target })
+        let snapshots, current = collectSnapshots resources filepath filetext
+
+        PdxShaderProject.extractIncludes current
+        |> List.choose (fun includeEntry ->
+            match PdxShaderProject.resolveInclude snapshots current includeEntry.target with
+            | PdxShaderProject.Resolved(best :: _) ->
+                Some
+                    { range = rangeFromOffset filepath filetext includeEntry.start includeEntry.length
+                      targetFilepath = best.displayPath }
             | _ -> None)
 
-    let private containsIgnoreCase (values: Set<string>) target =
-        values |> Set.exists (fun value -> value.Equals(target, StringComparison.OrdinalIgnoreCase))
 
-    let private symbolExists symbols (reference: ShaderReference) =
-        match reference.kind with
-        | VertexMainCode -> containsIgnoreCase symbols.vertexMainCodes reference.target
-        | PixelMainCode -> containsIgnoreCase symbols.pixelMainCodes reference.target
-        | ConstantBuffer -> containsIgnoreCase symbols.constantBuffers reference.target
-        | BlendState -> containsIgnoreCase symbols.blendStates reference.target
-        | DepthStencilState -> containsIgnoreCase symbols.depthStencilStates reference.target
-        | RasterizerState -> containsIgnoreCase symbols.rasterizerStates reference.target
-        | IncludeFile ->
-            containsIgnoreCase symbols.includeFiles reference.target
-            || symbols.includeFiles
-               |> Set.exists (fun includeFile ->
-                   (fileName includeFile).Equals(fileName reference.target, StringComparison.OrdinalIgnoreCase))
-
-    let private missingReferenceError filepath text (reference: ShaderReference) =
-        let code, message =
-            match reference.kind with
-            | VertexMainCode ->
-                "CWFX001",
-                sprintf "Effect \"%s\" references undefined VertexShader \"%s\"" reference.owner reference.target
-            | PixelMainCode ->
-                "CWFX001",
-                sprintf "Effect \"%s\" references undefined PixelShader \"%s\"" reference.owner reference.target
-            | ConstantBuffer ->
-                "CWFX002", sprintf "MainCode references undefined ConstantBuffer \"%s\"" reference.target
-            | BlendState ->
-                "CWFX003", sprintf "Effect \"%s\" references undefined BlendState \"%s\"" reference.owner reference.target
-            | DepthStencilState ->
-                "CWFX003",
-                sprintf "Effect \"%s\" references undefined DepthStencilState \"%s\"" reference.owner reference.target
-            | RasterizerState ->
-                "CWFX003",
-                sprintf "Effect \"%s\" references undefined RasterizerState \"%s\"" reference.owner reference.target
-            | IncludeFile -> "CWFX004", sprintf "Include file \"%s\" is not loaded" reference.target
-
-        { code = code
+    let private includeProblemError filepath filetext message start length =
+        { code = "CWFX004"
           severity = Severity.Warning
-          range = rangeFromOffset filepath text reference.targetStart reference.targetLength
-          keyLength = max 1 reference.targetLength
+          range = rangeFromOffset filepath filetext start length
+          keyLength = max 1 length
           message = message
           data = None
           relatedErrors = None }
 
-    let validateFromSources sources includeNames filepath filetext =
-        let symbols =
-            symbolsWithIncludeNames
-                (Seq.append sources [ sourceForCurrentFile filepath filetext ])
-                (Set.add (fileName filepath) includeNames)
+    let private frontendErrors (snapshot: PdxShaderProject.ShaderSnapshot) =
+        let parsed = PdxShaderProject.semanticSnapshot snapshot
 
-        referencesFromText filetext
-        |> List.filter (symbolExists symbols >> not)
-        |> List.map (missingReferenceError filepath filetext)
+        let syntaxErrors =
+            parsed.syntax.diagnostics
+            |> List.map (fun diagnostic ->
+                { code =
+                    match diagnostic.kind with
+                    | PdxShaderSyntax.UnterminatedString -> "CWFX101"
+                    | PdxShaderSyntax.UnterminatedComment -> "CWFX102"
+                    | PdxShaderSyntax.UnterminatedBlock
+                    | PdxShaderSyntax.UnterminatedHlslRegion -> "CWFX103"
+                    | PdxShaderSyntax.UnexpectedClosingDelimiter
+                    | PdxShaderSyntax.MissingName -> "CWFX104"
+                  severity = Severity.Error
+                  range = rangeFromOffset snapshot.displayPath snapshot.text diagnostic.span.startOffset (max 1 diagnostic.span.Length)
+                  keyLength = max 1 diagnostic.span.Length
+                  message = diagnostic.message
+                  data = None
+                  relatedErrors = None })
+
+        let preprocessorErrors =
+            parsed.preprocessor.diagnostics
+            |> List.map (fun diagnostic ->
+                { code = diagnostic.code
+                  severity = Severity.Error
+                  range = rangeFromOffset snapshot.displayPath snapshot.text diagnostic.span.startOffset (max 1 diagnostic.span.Length)
+                  keyLength = max 1 diagnostic.span.Length
+                  message = diagnostic.message
+                  data = None
+                  relatedErrors = None })
+
+        let hlslErrors =
+            parsed.hlsl.diagnostics
+            |> List.map (fun diagnostic ->
+                { code = diagnostic.code
+                  severity = Severity.Warning
+                  range = rangeFromOffset snapshot.displayPath snapshot.text diagnostic.span.startOffset (max 1 diagnostic.span.Length)
+                  keyLength = max 1 diagnostic.span.Length
+                  message = diagnostic.message
+                  data = None
+                  relatedErrors = None })
+
+        syntaxErrors @ preprocessorErrors @ hlslErrors
+
+    /// V2 validation: symbols come only from the current document's compile unit
+    /// (current document plus transitive Includes, effective origin per logical path).
+    /// Include references are checked against the include graph: missing and ambiguous
+    /// includes and cycles report CWFX004.
+    let private validateFromResourcesV2 (resources: Resource seq) filepath filetext =
+        let snapshots, current = collectSnapshots resources filepath filetext
+        let unit = PdxShaderProject.buildCompileUnit snapshots current
+
+        let referenceErrors =
+            let declarations = unit.effective |> List.collect PdxShaderRuntime.declarationsFromSnapshot
+            let references = unit.effective |> List.collect PdxShaderRuntime.semanticReferencesFromSnapshot
+            PdxShaderRuntime.resolveSemanticReferences unit.effective declarations references
+            |> List.filter (fun reference -> PdxShaderProject.sameFilePath reference.file filepath)
+            |> List.filter (fun reference -> reference.targetIds.IsEmpty)
+            |> List.choose (fun reference ->
+                let diagnostic =
+                    match reference.kind with
+                    | PdxShaderRuntime.EffectUsesVertexMainCode ->
+                        Some("CWFX001", sprintf "Effect references undefined Vertex MainCode \"%s\"" reference.targetName)
+                    | PdxShaderRuntime.EffectUsesPixelMainCode ->
+                        Some("CWFX001", sprintf "Effect references undefined Pixel MainCode \"%s\"" reference.targetName)
+                    | PdxShaderRuntime.EffectUsesGeometryMainCode ->
+                        Some("CWFX001", sprintf "Effect references undefined Geometry MainCode \"%s\"" reference.targetName)
+                    | PdxShaderRuntime.EffectUsesRenderState ->
+                        Some("CWFX003", sprintf "Effect references undefined render state \"%s\"" reference.targetName)
+                    | PdxShaderRuntime.MainCodeUsesConstantBuffer ->
+                        Some("CWFX002", sprintf "MainCode references undefined ConstantBuffer \"%s\"" reference.targetName)
+                    | _ -> None
+                diagnostic
+                |> Option.map (fun (code, message) ->
+                    { code = code
+                      severity = Severity.Warning
+                      range = reference.span
+                      keyLength = max 1 (int reference.span.EndColumn - int reference.span.StartColumn)
+                      message = message
+                      data = None
+                      relatedErrors = None }))
+
+        let isCurrentFile path = PdxShaderProject.sameFilePath path filepath
+
+        let directIncludeErrors =
+            unit.problems
+            |> List.choose (fun problem ->
+                match problem with
+                | PdxShaderProject.MissingInclude(includingPath, target, start, length) when isCurrentFile includingPath ->
+                    Some(includeProblemError filepath filetext (sprintf "Include file \"%s\" is not loaded" target) start length)
+                | PdxShaderProject.AmbiguousInclude(includingPath, target, start, length, candidates) when isCurrentFile includingPath ->
+                    Some(
+                        includeProblemError
+                            filepath
+                            filetext
+                            (sprintf "Include file \"%s\" is ambiguous (%d candidates: %s)" target candidates.Length (String.concat ", " candidates))
+                            start
+                            length
+                    )
+                | PdxShaderProject.CyclicInclude(includingPath, _, start, length, cyclePath) when isCurrentFile includingPath ->
+                    Some(
+                        includeProblemError
+                            filepath
+                            filetext
+                            (sprintf "Include cycle detected: %s" (String.concat " -> " cyclePath))
+                            start
+                            length
+                    )
+                | PdxShaderProject.IncludeBudgetExceeded(includingPath, target, start, length, budget, limit) when isCurrentFile includingPath ->
+                    Some(
+                        includeProblemError
+                            filepath
+                            filetext
+                            (sprintf "Include %s budget exceeded while resolving \"%s\" (limit %d)" budget target limit)
+                            start
+                            length
+                    )
+                | _ -> None)
+
+        // A cycle whose edge starts in another file still involves the current document;
+        // report it once on the current file's first include reference.
+        let participatingCycleErrors =
+            let cycles =
+                unit.problems
+                |> List.choose (function
+                    | PdxShaderProject.CyclicInclude(includingPath, _, _, _, cyclePath) when
+                        not (isCurrentFile includingPath)
+                        && (cyclePath |> List.exists isCurrentFile)
+                        ->
+                        Some cyclePath
+                    | _ -> None)
+                |> List.distinct
+
+            match cycles, PdxShaderProject.extractIncludes current |> List.tryHead with
+            | [], _ | _, None -> []
+            | _, Some anchor ->
+                cycles
+                |> List.map (fun cyclePath ->
+                    includeProblemError
+                        filepath
+                        filetext
+                        (sprintf "Include cycle detected: %s" (String.concat " -> " cyclePath))
+                        anchor.start
+                        anchor.length)
+
+        frontendErrors current @ referenceErrors @ directIncludeErrors @ participatingCycleErrors
+
+    /// Compile-unit validation exposed for tests with fabricated resources.
+    /// The retired global symbol-pool path is intentionally no longer available.
+    let validateFromResources (resources: Resource seq) filepath filetext =
+        validateFromResourcesV2 resources filepath filetext
 
     let validate (resources: IResourceAPI<_>) filepath filetext =
-        validateFromSources (resourceSources resources filepath filetext) (resourceIncludeNames resources) filepath filetext
-
-    let private linePrefixAt (text: string) (pos: pos) =
-        let lines = text.Split('\n')
-        let lineIndex = int pos.Line - 1
-
-        if lineIndex < 0 || lineIndex >= lines.Length then
-            ""
-        else
-            let line = lines[lineIndex].TrimEnd('\r')
-            line.Substring(0, min (int pos.Column) line.Length)
+        validateFromResourcesV2 (resources.GetResources()) filepath filetext
 
     let private offsetAt (text: string) (pos: pos) =
         let mutable line = 1
@@ -976,151 +443,82 @@ module PdxShaderFeatures =
 
         min text.Length (offset + max 0 (int pos.Column))
 
-    let private sameFilePath left right =
-        let normalize path =
-            try Path.GetFullPath path
-            with _ -> path
-
-        (normalize left).Equals(normalize right, StringComparison.OrdinalIgnoreCase)
-
     let private containsOffset startOffset length offset =
         offset >= startOffset && offset <= startOffset + max 1 length
 
-    let private referenceAtOffset filetext offset =
-        referencesFromText filetext
-        |> List.tryFind (fun (reference: ShaderReference) ->
-            containsOffset reference.targetStart reference.targetLength offset)
 
-    let private definitionsForCurrentFile sources filepath =
-        definitionsFromSources sources
-        |> List.filter (fun definition -> sameFilePath definition.source.filepath filepath)
-
-    let private definitionAtOffset sources filepath offset =
-        definitionsForCurrentFile sources filepath
-        |> List.tryFind (fun definition ->
-            definition.kind <> IncludeFile
-            && containsOffset definition.nameStart definition.nameLength offset)
-
-    let private definitionMatches (reference: ShaderReference) (definition: ShaderDefinition) =
-        reference.kind = definition.kind
-        && (definition.name.Equals(reference.target, StringComparison.OrdinalIgnoreCase)
-            || (reference.kind = IncludeFile
-                && (fileName definition.name).Equals(fileName reference.target, StringComparison.OrdinalIgnoreCase)))
-
-    let private definitionForReference (definitions: ShaderDefinition list) (reference: ShaderReference) =
-        definitions |> List.tryFind (definitionMatches reference)
-
-    let private goToDefinitionWithSources sources pos filepath filetext =
+    let private semanticDefinitionFromResources (resources: Resource seq) pos filepath filetext =
+        let snapshots, current = collectSnapshots resources filepath filetext
+        let unit = PdxShaderProject.buildCompileUnit snapshots current
+        let effective = unit.effective
+        let currentSemantic = PdxShaderProject.semanticSnapshot current
         let offset = offsetAt filetext pos
-        let definitions = definitionsFromSources sources
+        let declarations = effective |> List.collect PdxShaderRuntime.declarationsFromSnapshot
+        let references =
+            effective
+            |> List.collect PdxShaderRuntime.semanticReferencesFromSnapshot
+            |> PdxShaderRuntime.resolveSemanticReferences effective declarations
+        let positionInRange (target: range) =
+            let afterStart = int pos.Line > int target.StartLine || (pos.Line = target.StartLine && pos.Column >= target.StartColumn)
+            let beforeEnd = int pos.Line < int target.EndLine || (pos.Line = target.EndLine && pos.Column <= target.EndColumn)
+            afterStart && beforeEnd
+        let hlslTarget =
+            currentSemantic.hlsl.references
+            |> List.tryFind (fun reference -> containsOffset reference.span.startOffset reference.span.Length offset)
+            |> Option.map (fun reference -> reference.name, Set.ofList reference.candidateIds)
+        let runtimeTarget =
+            references
+            |> List.tryFind (fun reference -> PdxShaderProject.sameFilePath reference.file filepath && positionInRange reference.span)
+            |> Option.map (fun reference -> reference.targetName, Set.ofList reference.targetIds)
+        match hlslTarget |> Option.orElse runtimeTarget with
+        | Some(name, ids) ->
+            declarations
+            |> List.filter (fun declaration -> ids.Contains declaration.stableId || (ids.IsEmpty && declaration.name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            |> List.sortBy (fun declaration -> PdxShaderProject.originRank declaration.origin, declaration.file, declaration.selectionRange.StartLine, declaration.selectionRange.StartColumn)
+            |> List.tryHead
+            |> Option.map _.selectionRange
+        | None ->
+            declarations
+            |> List.tryFind (fun declaration -> PdxShaderProject.sameFilePath declaration.file filepath && positionInRange declaration.selectionRange)
+            |> Option.map _.selectionRange
 
-        referenceAtOffset filetext offset
-        |> Option.bind (definitionForReference definitions)
-        |> Option.map definitionRange
-
-    let goToDefinitionFromSources sources pos filepath filetext =
-        goToDefinitionWithSources
-            (Seq.append sources [ sourceForCurrentFile filepath filetext ] |> Seq.toList)
-            pos
-            filepath
-            filetext
+    let goToDefinitionFromResources (resources: Resource seq) pos filepath filetext =
+        semanticDefinitionFromResources resources pos filepath filetext
 
     let goToDefinition (resources: IResourceAPI<_>) pos filepath filetext =
-        goToDefinitionWithSources (resourceSources resources filepath filetext) pos filepath filetext
+        semanticDefinitionFromResources (resources.GetResources()) pos filepath filetext
 
-    let private definitionKindLabel (definition: ShaderDefinition) =
-        match definition.kind with
-        | VertexMainCode -> "Vertex MainCode"
-        | PixelMainCode -> "Pixel MainCode"
-        | ConstantBuffer -> "ConstantBuffer"
-        | BlendState -> "BlendState"
-        | DepthStencilState -> "DepthStencilState"
-        | RasterizerState -> "RasterizerState"
-        | IncludeFile -> "FX include"
-
-    let private definitionMarkdown prefix (definition: ShaderDefinition) =
-        let logicalpath =
-            if String.IsNullOrWhiteSpace definition.source.logicalpath then
-                definition.source.filepath
-            else
-                definition.source.logicalpath
-
-        let location =
-            if String.IsNullOrWhiteSpace logicalpath then
-                ""
-            else
-                sprintf "\n\n%s `%s`." prefix logicalpath
-
-        sprintf "**%s** `%s`%s" (definitionKindLabel definition) definition.name location
-
-    let private definitionInfo prefix (definition: ShaderDefinition) =
-        { typename = "pdx_shader"
-          name = definition.name
-          localisation = []
-          ruleDescription = Some(definitionMarkdown prefix definition)
-          ruleRequiredScopes = [] }
 
     let infoAtPos (resources: IResourceAPI<_>) pos filepath filetext =
-        let sources = resourceSources resources filepath filetext
-        let offset = offsetAt filetext pos
-        let definitions = definitionsFromSources sources
+        let allResources = resources.GetResources()
+        let snapshots, current = collectSnapshots allResources filepath filetext
+        let unit = PdxShaderProject.buildCompileUnit snapshots current
+        let declarations = unit.effective |> List.collect PdxShaderRuntime.declarationsFromSnapshot
+        semanticDefinitionFromResources allResources pos filepath filetext
+        |> Option.bind (fun target ->
+            declarations
+            |> List.tryFind (fun declaration ->
+                PdxShaderProject.sameFilePath declaration.file target.FileName
+                && declaration.selectionRange.StartLine = target.StartLine
+                && declaration.selectionRange.StartColumn = target.StartColumn))
+        |> Option.map (fun declaration ->
+            let origin =
+                match declaration.origin with
+                | PdxShaderProject.CurrentDocument -> "current document"
+                | PdxShaderProject.Workspace -> "workspace"
+                | PdxShaderProject.Dependency order -> sprintf "dependency %d" order
+                | PdxShaderProject.Vanilla -> "vanilla"
+            let risk =
+                if declaration.kind = PdxShaderRuntime.EffectDeclaration then
+                    " Effect names are runtime entry points; absent data references do not prove they are unused or safe to rename."
+                else ""
+            { typename = "pdx_shader"
+              name = declaration.name
+              localisation = []
+              ruleDescription =
+                Some(sprintf "**%A** `%s`\n\nDefined in `%s` (%s), condition `%s`.%s" declaration.kind declaration.name declaration.logicalPath origin declaration.presenceCondition risk)
+              ruleRequiredScopes = [] })
 
-        match referenceAtOffset filetext offset with
-        | Some reference ->
-            definitionForReference definitions reference
-            |> Option.map (definitionInfo "Defined in")
-        | None ->
-            definitionAtOffset sources filepath offset
-            |> Option.map (definitionInfo "Declared in")
-
-    let private recentTextBefore (text: string) (pos: pos) =
-        let offset = offsetAt text pos
-        let startOffset = max 0 (offset - recentWindowSize)
-        text.Substring(startOffset, offset - startOffset)
-
-    let private tailMatches (pattern: string) (text: string) =
-        Regex.IsMatch(text, pattern, RegexOptions.IgnoreCase ||| RegexOptions.Singleline)
-
-    let private propertyReferenceCompletions property names detail recentText =
-        let valuePattern = sprintf @"\b%s\s*=\s*""[^""]*$" property
-        let emptyOrPartialPattern = sprintf @"\b%s\s*=\s*[A-Za-z0-9_]*$" property
-
-        if tailMatches valuePattern recentText then
-            Some(names, detail, false)
-        elif tailMatches emptyOrPartialPattern recentText then
-            Some(names, detail, true)
-        else
-            None
-
-    let private referenceCompletions symbols recentText =
-        propertyReferenceCompletions "VertexShader" symbols.vertexMainCodes "Vertex MainCode" recentText
-        |> Option.orElseWith (fun () ->
-            propertyReferenceCompletions "PixelShader" symbols.pixelMainCodes "Pixel MainCode" recentText)
-        |> Option.orElseWith (fun () ->
-            if tailMatches @"\bConstantBuffers\s*=\s*\{[^}]*[A-Za-z0-9_]*$" recentText then
-                Some(symbols.constantBuffers, "ConstantBuffer", false)
-            else
-                None)
-        |> Option.orElseWith (fun () ->
-            propertyReferenceCompletions "BlendState" symbols.blendStates "BlendState" recentText)
-        |> Option.orElseWith (fun () ->
-            propertyReferenceCompletions "DepthStencilState" symbols.depthStencilStates "DepthStencilState" recentText)
-        |> Option.orElseWith (fun () ->
-            propertyReferenceCompletions "RasterizerState" symbols.rasterizerStates "RasterizerState" recentText)
-        |> Option.orElseWith (fun () ->
-            if tailMatches @"\bIncludes\s*=\s*\{[^}]*""[^""}]*$" recentText then
-                Some(symbols.includeFiles, "FX include file", false)
-            elif tailMatches @"\bIncludes\s*=\s*\{[^}]*$" recentText then
-                Some(symbols.includeFiles, "FX include file", true)
-            else
-                None)
-        |> Option.orElseWith (fun () ->
-            if tailMatches @"\bDefines\s*=\s*\{[^}]*""[^""}]*$" recentText then
-                Some(symbols.defines, "FX preprocessor define", false)
-            elif tailMatches @"\bDefines\s*=\s*\{[^}]*$" recentText then
-                Some(symbols.defines, "FX preprocessor define", true)
-            else
-                None)
 
     let private completionItem label detail category =
         CompletionResponse.Detailed(label, Some detail, None, category)
@@ -1581,406 +979,610 @@ module PdxShaderFeatures =
               "FrontStencilDepthFailOp",
               [ "KEEP"; "ZERO"; "REPLACE"; "INCR"; "DECR"; "INVERT"; "INCR_SAT"; "DECR_SAT" ] ]
 
-    let private headerMatches (pattern: string) (header: string) =
-        Regex.IsMatch(header, pattern, RegexOptions.IgnoreCase ||| RegexOptions.Singleline)
-
-    let private scopeContextBefore (text: string) offset =
-        let endOffset = max 0 (min text.Length offset)
-        let headers = ResizeArray<string>()
-        let mutable lastBoundary = 0
-        let mutable i = 0
-        let mutable inString = false
-        let mutable insideHlsl = false
-
-        while i < endOffset && not insideHlsl do
-            if not inString && i + 1 < endOffset && text[i] = '[' && text[i + 1] = '[' then
-                let close = text.IndexOf("]]", i + 2, StringComparison.Ordinal)
-                if close < 0 || close >= endOffset then
-                    insideHlsl <- true
-                else
-                    i <- close + 2
-            elif not inString && i + 1 < endOffset && text[i] = '/' && text[i + 1] = '/' then
-                let next = text.IndexOf('\n', i + 2)
-                i <- if next < 0 || next >= endOffset then endOffset else next + 1
-            elif not inString && text[i] = '#' then
-                let next = text.IndexOf('\n', i + 1)
-                i <- if next < 0 || next >= endOffset then endOffset else next + 1
+    let completeFromResources (resources: Resource seq) pos filepath filetext =
+        let snapshots, current = collectSnapshots resources filepath filetext
+        let includeNames = snapshotIncludeNames snapshots
+        let unit = PdxShaderProject.buildCompileUnit snapshots current
+        let views = unit.effective |> List.map (fun snapshot -> snapshot, PdxShaderProject.semanticSnapshot snapshot)
+        let currentSemantic = PdxShaderProject.semanticSnapshot current
+        let offset = offsetAt filetext pos
+        let spanContains (span: PdxShaderSyntax.TextSpan) = offset >= span.startOffset && offset <= span.endOffset
+        let rec nodePath (node: PdxShaderSyntax.ShaderSyntaxNode) =
+            if not (spanContains node.span) then []
             else
-                match text[i] with
-                | '"' ->
-                    inString <- not inString
-                    i <- i + 1
-                | '{' when not inString ->
-                    let headerStart = max lastBoundary (max 0 (i - 240))
-                    headers.Add(text.Substring(headerStart, i - headerStart).Trim())
-                    lastBoundary <- i + 1
-                    i <- i + 1
-                | '}' when not inString ->
-                    if headers.Count > 0 then headers.RemoveAt(headers.Count - 1)
-                    lastBoundary <- i + 1
-                    i <- i + 1
-                | _ -> i <- i + 1
-
-        { headers = headers |> Seq.toList
-          insideHlsl = insideHlsl }
-
-    let private inBlock pattern scope =
-        scope.headers |> List.exists (headerMatches pattern)
-
-    let private blankOrPartialIdentifier (linePrefix: string) =
-        Regex.IsMatch(linePrefix, @"^\s*[A-Za-z_]*$")
-
-    let private valuesForLine linePrefix =
-        propertyValues
-        |> Map.tryPick (fun property values ->
-            let pattern = sprintf @"\b%s\s*=\s*""?[A-Za-z0-9_-]*$" (Regex.Escape property)
-            if headerMatches pattern linePrefix then Some(property, values) else None)
-
-    let private inferLocalVariables (filetext: string) =
-        let mutable varMap = Map.empty
-        // 1. Match function parameters (e.g. VS_INPUT v)
-        let paramRegex = Regex(@"\b(VS_INPUT|PS_INPUT|VS_OUTPUT|PS_OUTPUT|VS_OUPUT|VS_OUT|PS_OUT|v2f)\s+(\w+)\b", RegexOptions.Compiled)
-        for m in paramRegex.Matches(filetext) do
-            if m.Groups.Count >= 3 then
-                let typeName = m.Groups.[1].Value
-                let varName = m.Groups.[2].Value
-                varMap <- Map.add varName typeName varMap
-        // 2. Match local declarations (e.g. VS_OUTPUT Out;)
-        let declRegex = Regex(@"\b(VS_INPUT|PS_INPUT|VS_OUTPUT|PS_OUTPUT|VS_OUPUT|VS_OUT|PS_OUT|v2f)\s+(\w+)\s*;", RegexOptions.Compiled)
-        for m in declRegex.Matches(filetext) do
-            if m.Groups.Count >= 3 then
-                let typeName = m.Groups.[1].Value
-                let varName = m.Groups.[2].Value
-                varMap <- Map.add varName typeName varMap
-        varMap
-
-    let private parseVertexStructs (sources: seq<ShaderSource>) =
-        let mutable structMap = Map.empty
-        let structStartRegex = Regex(@"\bVertexStruct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{", RegexOptions.Compiled)
-        let fieldRegex = Regex(@"\b(?:float|int|uint|half|bool)(?:2|3|4|2x2|3x3|4x4)?\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::|;)", RegexOptions.Compiled)
-        for source in sources do
-            let matches = structStartRegex.Matches(source.filetext)
-            for m in matches do
-                if m.Groups.Count >= 2 then
-                    let structName = m.Groups.[1].Value
-                    let startIndex = m.Index + m.Length
-                    let mutable depth = 1
-                    let mutable curr = startIndex
-                    let text = source.filetext
-                    while curr < text.Length && depth > 0 do
-                        if text.[curr] = '{' then depth <- depth + 1
-                        elif text.[curr] = '}' then depth <- depth - 1
-                        curr <- curr + 1
-                    if depth = 0 then
-                        let structContent = text.Substring(startIndex, curr - startIndex - 1)
-                        let mutable fields = []
-                        for fm in fieldRegex.Matches(structContent) do
-                            if fm.Groups.Count >= 2 then
-                                fields <- fm.Groups.[1].Value :: fields
-                        structMap <- Map.add structName (List.rev fields) structMap
-        structMap
-
-    let builtinVariablesSet = 
-        lazy (
-            let hs = System.Collections.Generic.HashSet<string>()
-            for g in hlslPdxGlobals do
-                match g with
-                | CompletionResponse.Snippet(label, _, _, _, _) -> hs.Add(label) |> ignore
-                | CompletionResponse.Simple(label, _, _) -> hs.Add(label) |> ignore
-                | CompletionResponse.Detailed(label, _, _, _) -> hs.Add(label) |> ignore
-            hs
-        )
-
-    let builtinFunctionsSet = 
-        lazy (
-            let hs = System.Collections.Generic.HashSet<string>()
-            for f in hlslBuiltinSnippets do
-                match f with
-                | CompletionResponse.Snippet(label, _, _, _, _) -> hs.Add(label) |> ignore
-                | CompletionResponse.Simple(label, _, _) -> hs.Add(label) |> ignore
-                | CompletionResponse.Detailed(label, _, _, _) -> hs.Add(label) |> ignore
-            hs
-        )
-
-    type private ParsedCacheEntry =
-        { fileHash: int
-          variables: Set<string>
-          functions: CompletionResponse list }
-
-    let private shaderParseCache = System.Collections.Concurrent.ConcurrentDictionary<string, ParsedCacheEntry>()
-
-    let private parseSingleSource (source: ShaderSource) =
-        let hash = if isNull source.filetext then 0 else source.filetext.GetHashCode()
-        match shaderParseCache.TryGetValue(source.filepath) with
-        | true, entry when entry.fileHash = hash ->
-            entry.variables, entry.functions
-        | _ ->
-            let mutable vars = Set.empty
-            let cbufferBlockRegex = Regex(@"\bConstantBuffer\s*\([^)]+\)\s*\{([^}]+)\}", RegexOptions.Compiled ||| RegexOptions.Singleline)
-            let varDeclRegex = Regex(@"\b(?:float|int|uint|half|bool)(?:2|3|4|2x2|3x3|4x4)?\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::|;)", RegexOptions.Compiled)
-            
-            for m in cbufferBlockRegex.Matches(source.filetext) do
-                if m.Groups.Count >= 2 then
-                    let cbContent = m.Groups.[1].Value
-                    for fm in varDeclRegex.Matches(cbContent) do
-                        if fm.Groups.Count >= 2 then
-                            vars <- Set.add fm.Groups.[1].Value vars
-                            
-            let globalVarRegex = Regex(@"^\s*(?:float|int|uint|half|bool)(?:2|3|4|2x2|3x3|4x4)?\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::|;)\s*$", RegexOptions.Compiled ||| RegexOptions.Multiline)
-            for m in globalVarRegex.Matches(source.filetext) do
-                if m.Groups.Count >= 2 then
-                    vars <- Set.add m.Groups.[1].Value vars
-                    
-            let samplerStartRegex = Regex(@"\bSamplers\s*=\s*\{", RegexOptions.Compiled)
-            let sMatches = samplerStartRegex.Matches(source.filetext)
-            for m in sMatches do
-                let startIndex = m.Index + m.Length
-                let mutable depth = 1
-                let mutable curr = startIndex
-                let text = source.filetext
-                while curr < text.Length && depth > 0 do
-                    if text.[curr] = '{' then depth <- depth + 1
-                    elif text.[curr] = '}' then depth <- depth - 1
-                    curr <- curr + 1
-                if depth = 0 then
-                    let sContent = text.Substring(startIndex, curr - startIndex - 1)
-                    let mutable subDepth = 0
-                    let mutable j = 0
-                    let mutable nameStart = 0
-                    let sLen = sContent.Length
-                    while j < sLen do
-                        let c = sContent.[j]
-                        if c = '{' then
-                            if subDepth = 0 then
-                                let candidate = sContent.Substring(nameStart, j - nameStart)
-                                let nm = Regex.Match(candidate, @"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*$", RegexOptions.Multiline)
-                                if nm.Success && nm.Groups.Count >= 2 then
-                                    vars <- Set.add nm.Groups.[1].Value vars
-                            subDepth <- subDepth + 1
-                        elif c = '}' then
-                            subDepth <- subDepth - 1
-                            if subDepth = 0 then
-                                nameStart <- j + 1
-                        j <- j + 1
-
-            let mutable funcs = Map.empty
-            let hlslBlockRegex = Regex(@"\[\[([\s\S]*?)\]\]", RegexOptions.Compiled)
-            let funcDeclRegex = Regex(@"\b(void|float[234]?|int[234]?|uint[234]?|half[234]?|bool[234]?|PointLight|LightingProperties|float[234]x[234]|double[234]?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)", RegexOptions.Compiled)
-            let paramWordRegex = Regex(@"\b([A-Za-z_][A-Za-z0-9_]*)\s*$", RegexOptions.Compiled)
-            
-            for hlslMatch in hlslBlockRegex.Matches(source.filetext) do
-                let hlslContent = hlslMatch.Groups.[1].Value
-                for m in funcDeclRegex.Matches(hlslContent) do
-                    if m.Groups.Count >= 4 then
-                        let retType = m.Groups.[1].Value
-                        let funcName = m.Groups.[2].Value
-                        let paramsStr = m.Groups.[3].Value
-                        
-                        let paramsList = 
-                            paramsStr.Split([|','|], StringSplitOptions.RemoveEmptyEntries)
-                            |> Array.map (fun p -> p.Trim())
-                            |> Array.choose (fun p ->
-                                let pm = paramWordRegex.Match(p)
-                                if pm.Success then Some pm.Groups.[1].Value else None
-                            )
-                            |> Array.toList
-                        
-                        let snippetText =
-                            if List.isEmpty paramsList then
-                                sprintf "%s()" funcName
-                            else
-                                let placeholders = 
-                                    paramsList 
-                                    |> List.mapi (fun idx p -> sprintf "${%d:%s}" (idx + 1) p)
-                                    |> String.concat ", "
-                                sprintf "%s(%s)" funcName placeholders
-                                
-                        let desc = sprintf "%s: Dynamic helper function parsed from includes" retType
-                        let item = CompletionResponse.CreateSnippet(funcName, snippetText, Some desc)
-                        funcs <- Map.add funcName item funcs
-            
-            let funcList = funcs |> Map.toList |> List.map snd
-            let newEntry = { fileHash = hash; variables = vars; functions = funcList }
-            shaderParseCache.[source.filepath] <- newEntry
-            vars, funcList
-
-    let parseGlobalVariables (sources: seq<ShaderSource>) =
-        sources
-        |> Seq.map parseSingleSource
-        |> Seq.map fst
-        |> Set.unionMany
-
-    let parseGlobalFunctions (sources: seq<ShaderSource>) =
-        sources
-        |> Seq.map parseSingleSource
-        |> Seq.map snd
-        |> Seq.toList
-        |> List.concat
-
-
-    let getShaderSources (resources: seq<Resource>) filepath filetext =
-        let currentPath =
-            try Path.GetFullPath filepath
-            with _ -> filepath
-
-        let modSources =
-            resources
-            |> Seq.choose (function
-                | FileResource(_, resource) when isShaderFile resource.filepath ->
-                    let candidatePath =
-                        try Path.GetFullPath resource.filepath
-                        with _ -> resource.filepath
-
-                    if candidatePath.Equals(currentPath, StringComparison.OrdinalIgnoreCase) then
-                        None
-                    else
-                        try
-                            if File.Exists resource.filepath then
-                                Some
-                                    { filepath = resource.filepath
-                                      logicalpath = resource.logicalpath
-                                      filetext = File.ReadAllText resource.filepath }
-                            else
-                                None
-                        with _ -> None
-                | FileWithContentResource(_, resource) when resource.overwrite <> Overwrite.Overwritten && isShaderFile resource.filepath ->
-                    let candidatePath =
-                        try Path.GetFullPath resource.filepath
-                        with _ -> resource.filepath
-
-                    if candidatePath.Equals(currentPath, StringComparison.OrdinalIgnoreCase) then
-                        None
-                    else
-                        try
-                            if File.Exists resource.filepath then
-                                Some
-                                    { filepath = resource.filepath
-                                      logicalpath = resource.logicalpath
-                                      filetext = File.ReadAllText resource.filepath }
-                            else
-                                None
-                        with _ -> None
+                node
+                :: (node.children
+                    |> List.tryPick (fun child ->
+                        let nested = nodePath child
+                        if nested.IsEmpty then None else Some nested)
+                    |> Option.defaultValue [])
+        let path = nodePath currentSemantic.syntax.root
+        let enclosingKind =
+            path
+            |> List.rev
+            |> List.tryPick (fun node ->
+                match node.kind with
+                | PdxShaderSyntax.ShaderNodeKind.VertexStruct
+                | PdxShaderSyntax.ShaderNodeKind.ConstantBuffer
+                | PdxShaderSyntax.ShaderNodeKind.Effect
+                | PdxShaderSyntax.ShaderNodeKind.Sampler
+                | PdxShaderSyntax.ShaderNodeKind.Samplers
+                | PdxShaderSyntax.ShaderNodeKind.BlendState
+                | PdxShaderSyntax.ShaderNodeKind.DepthStencilState
+                | PdxShaderSyntax.ShaderNodeKind.RasterizerState
+                | PdxShaderSyntax.ShaderNodeKind.Includes as kind -> Some kind
                 | _ -> None)
-
-        modSources
-        |> Seq.append [ sourceForCurrentFile filepath filetext ]
-        |> Seq.append (
-            vanillaFxSources
-            |> List.filter (fun s ->
-                let sp =
-                    try Path.GetFullPath s.filepath
-                    with _ -> s.filepath
-                not (sp.Equals(currentPath, StringComparison.OrdinalIgnoreCase))))
-        |> Seq.toList
-
-
-
-
-    let completeFromSources sources includeNames pos filepath filetext =
-        let symbols =
-            symbolsWithIncludeNames
-                (Seq.append sources [ sourceForCurrentFile filepath filetext ])
-                (Set.add (fileName filepath) includeNames)
-
-        let recentText = recentTextBefore filetext pos
-        let linePrefix = linePrefixAt filetext pos
-
-        match referenceCompletions symbols recentText with
-        | Some(names, detail, requiresQuotes) ->
-            names
-            |> Set.toList
-            |> List.map (fun name -> referenceCompletion requiresQuotes name detail)
-        | None ->
-            let scope = scopeContextBefore filetext (offsetAt filetext pos)
-
-            if scope.insideHlsl then
-                let dotMatch = Regex.Match(linePrefix, @"\b([A-Za-z_][A-Za-z0-9_]*)\.$")
-                if dotMatch.Success then
-                    let varName = dotMatch.Groups.[1].Value
-                    let localVars = inferLocalVariables filetext
-                    match localVars.TryFind(varName) with
-                    | Some(typeName) ->
-                        let structs = parseVertexStructs (Seq.append sources [ sourceForCurrentFile filepath filetext ])
-                        match structs.TryFind(typeName) with
-                        | Some(fields) ->
-                            fields |> List.map (fun field -> valueCompletion field "Vertex field")
-                        | None -> []
-                    | None -> []
-                else
-                    let typeCompletions =
-                        hlslTypes |> List.map (fun t -> valueCompletion t "HLSL type")
-                    
-                    let mutable parenDepth = 0
-                    for c in linePrefix do
-                        if c = '(' then parenDepth <- parenDepth + 1
-                        elif c = ')' then parenDepth <- max 0 (parenDepth - 1)
-                    
-                    let pdxGlobalCompletions = hlslPdxGlobals
-                    let pdxGlobalNames =
-                        hlslPdxGlobals
-                        |> List.choose (function
-                            | CompletionResponse.Snippet(label, _, _, _, _) -> Some label
-                            | CompletionResponse.Simple(label, _, _) -> Some label
-                            | CompletionResponse.Detailed(label, _, _, _) -> Some label)
-                        |> Set.ofList
-
-                    let allSources = Seq.append sources [ sourceForCurrentFile filepath filetext ]
-                    let parsedGlobals = parseGlobalVariables allSources
-                    let parsedGlobalCompletions =
-                        parsedGlobals
-                        |> Set.filter (fun v -> not (Set.contains v pdxGlobalNames))
-                        |> Set.toList
-                        |> List.map (fun v -> completionItem v "HLSL variable" CompletionCategory.Value)
-
-                    let parsedFunctions = parseGlobalFunctions allSources
-
-                    if parenDepth > 0 then
-                        typeCompletions @ hlslPdxGlobals @ parsedGlobalCompletions @ parsedFunctions @ hlslBuiltinSnippets
+        let isFxh = filepath.EndsWith(".fxh", StringComparison.OrdinalIgnoreCase)
+        let insideHlsl = isFxh || path |> List.exists (fun node -> node.kind = PdxShaderSyntax.ShaderNodeKind.HlslRegion)
+        let significantTokens =
+            currentSemantic.syntax.tokens
+            |> Array.filter (fun token ->
+                token.span.endOffset <= offset
+                && token.kind <> PdxShaderSyntax.ShaderTokenKind.Whitespace
+                && token.kind <> PdxShaderSyntax.ShaderTokenKind.NewLine
+                && token.kind <> PdxShaderSyntax.ShaderTokenKind.LineComment
+                && token.kind <> PdxShaderSyntax.ShaderTokenKind.BlockComment)
+        let previousToken = significantTokens |> Array.tryLast
+        let insideString =
+            currentSemantic.syntax.tokens
+            |> Array.exists (fun token ->
+                token.kind = PdxShaderSyntax.ShaderTokenKind.StringLiteral
+                && offset >= token.span.startOffset
+                && offset <= token.span.endOffset)
+        let declarations = unit.effective |> List.collect PdxShaderRuntime.declarationsFromSnapshot
+        let declarationNames kind =
+            declarations
+            |> List.filter (fun declaration -> declaration.kind = kind)
+            |> List.map _.name
+            |> List.distinctBy _.ToLowerInvariant()
+            |> List.sort
+        let conditionNames =
+            views
+            |> List.collect (fun (_, semantic) ->
+                semantic.preprocessor.regions
+                |> List.collect (fun region -> PdxShaderPreprocessor.symbols region.condition |> Set.toList))
+            |> List.distinctBy _.ToLowerInvariant()
+            |> List.sort
+        let responseForSymbol (symbol: PdxShaderHlsl.HlslSymbol) =
+            match symbol.kind with
+            | PdxShaderHlsl.FunctionSymbol ->
+                let placeholders =
+                    symbol.parameters
+                    |> List.mapi (fun index parameter -> sprintf "${%d:%s}" (index + 1) parameter.name)
+                    |> String.concat ", "
+                CompletionResponse.CreateSnippet(symbol.name, sprintf "%s(%s)" symbol.name placeholders, Some(sprintf "%A" symbol.symbolType))
+            | PdxShaderHlsl.TypeSymbol
+            | PdxShaderHlsl.StructSymbol -> valueCompletion symbol.name "HLSL type"
+            | PdxShaderHlsl.MacroSymbol -> completionItem symbol.name "HLSL macro" CompletionCategory.Global
+            | _ -> completionItem symbol.name (sprintf "HLSL %A" symbol.symbolType) CompletionCategory.Value
+        let deduplicate responses =
+            responses
+            |> List.distinctBy (function
+                | CompletionResponse.Snippet(label, _, _, _, _)
+                | CompletionResponse.Simple(label, _, _)
+                | CompletionResponse.Detailed(label, _, _, _) -> label.ToLowerInvariant())
+        if insideHlsl then
+            let currentScopeIds =
+                let containing =
+                    currentSemantic.hlsl.scopes
+                    |> List.filter (fun scope -> spanContains scope.span)
+                    |> List.sortBy (fun scope -> scope.span.Length)
+                    |> List.tryHead
+                let rec ancestors acc scopeId =
+                    if Set.contains scopeId acc then acc
                     else
-                        let controlFlowCompletions =
-                            hlslControlFlow |> List.map (fun kw -> completionItem kw "HLSL keyword" CompletionCategory.Value)
-                        let pdxDirectiveCompletions =
-                            hlslPdxDirectives |> List.map (fun d -> completionItem d "Paradox directive" CompletionCategory.Global)
-                        typeCompletions @ controlFlowCompletions @ pdxDirectiveCompletions @ pdxGlobalCompletions @ parsedGlobalCompletions @ parsedFunctions @ hlslBuiltinSnippets
-            elif Regex.IsMatch(linePrefix, @":\s*[A-Za-z0-9_]*$") && inBlock @"\bVertexStruct\s+\w+\s*$" scope then
-                vertexSemantics |> List.map (fun semantic -> valueCompletion semantic "Vertex semantic")
-            else
-                match valuesForLine linePrefix with
-                | Some(property, values) ->
-                    values |> List.map (fun value -> valueCompletion value (sprintf "%s value" property))
-                | None when
-                    blankOrPartialIdentifier linePrefix
-                    && (inBlock @"\bVertexStruct\s+\w+\s*$" scope
-                        || inBlock @"\bConstantBuffer\s*\(" scope)
-                    ->
-                    shaderFieldTypes |> List.map (fun fieldType -> valueCompletion fieldType "FX field type")
-                | None when blankOrPartialIdentifier linePrefix && inBlock @"\bEffect\s+\w+\s*$" scope ->
-                    effectProperties
-                    |> List.map (fun property -> completionItem property "Effect property" CompletionCategory.Value)
-                | None when
-                    blankOrPartialIdentifier linePrefix
-                    && scope.headers.Length > 0
-                    && headerMatches @"\b[A-Za-z_][A-Za-z0-9_]*\s*=\s*$" scope.headers[scope.headers.Length - 1]
-                    && inBlock @"\bSamplers\s*=\s*$" scope
-                    ->
-                    samplerProperties
-                    |> List.map (fun property -> completionItem property "Sampler property" CompletionCategory.Value)
-                | None when blankOrPartialIdentifier linePrefix && inBlock @"\bBlendState\s+\w+\s*$" scope ->
-                    blendProperties
-                    |> List.map (fun property -> completionItem property "BlendState property" CompletionCategory.Value)
-                | None when blankOrPartialIdentifier linePrefix && inBlock @"\bDepthStencilState\s+\w+\s*$" scope ->
-                    depthStencilProperties
-                    |> List.map (fun property -> completionItem property "DepthStencilState property" CompletionCategory.Value)
-                | None when blankOrPartialIdentifier linePrefix && inBlock @"\bRasterizerState\s+\w+\s*$" scope ->
-                    rasterizerProperties
-                    |> List.map (fun property -> completionItem property "RasterizerState property" CompletionCategory.Value)
-                | None when blankOrPartialIdentifier linePrefix -> snippets
-                | None -> []
+                        let next = Set.add scopeId acc
+                        currentSemantic.hlsl.scopes
+                        |> List.tryFind (fun scope -> scope.id = scopeId)
+                        |> Option.bind _.parentId
+                        |> Option.map (ancestors next)
+                        |> Option.defaultValue next
+                containing |> Option.map (fun scope -> ancestors Set.empty scope.id) |> Option.defaultValue Set.empty
+            let semanticSymbols =
+                views
+                |> List.collect (fun (snapshot, semantic) ->
+                    semantic.hlsl.symbols
+                    |> List.filter (fun symbol ->
+                        not (PdxShaderProject.sameFilePath snapshot.displayPath filepath)
+                        || Set.contains symbol.scopeId currentScopeIds
+                        || symbol.kind = PdxShaderHlsl.FunctionSymbol
+                        || symbol.kind = PdxShaderHlsl.TypeSymbol
+                        || symbol.kind = PdxShaderHlsl.StructSymbol
+                        || symbol.kind = PdxShaderHlsl.GlobalVariableSymbol
+                        || symbol.kind = PdxShaderHlsl.ResourceSymbol
+                        || symbol.kind = PdxShaderHlsl.SamplerSymbol
+                        || symbol.kind = PdxShaderHlsl.MacroSymbol)
+                    |> List.map responseForSymbol)
+            (semanticSymbols
+             @ (hlslTypes |> List.map (fun name -> valueCompletion name "HLSL type"))
+             @ (hlslControlFlow |> List.map (fun name -> completionItem name "HLSL keyword" CompletionCategory.Value))
+             @ hlslBuiltinSnippets
+             @ hlslPdxGlobals)
+            |> deduplicate
+        else
+            let referenceValues detail values =
+                values |> List.map (fun value -> referenceCompletion (not insideString) value detail)
+            let contextualCompletions () =
+                match enclosingKind, previousToken |> Option.map _.kind with
+                | Some PdxShaderSyntax.ShaderNodeKind.VertexStruct, Some PdxShaderSyntax.ShaderTokenKind.Colon ->
+                    vertexSemantics |> List.map (fun value -> valueCompletion value "Vertex semantic")
+                | Some PdxShaderSyntax.ShaderNodeKind.VertexStruct, _
+                | Some PdxShaderSyntax.ShaderNodeKind.ConstantBuffer, _ ->
+                    shaderFieldTypes |> List.map (fun value -> valueCompletion value "FX field type")
+                | Some PdxShaderSyntax.ShaderNodeKind.Effect, _ ->
+                    effectProperties |> List.map (fun value -> completionItem value "Effect property" CompletionCategory.Value)
+                | Some PdxShaderSyntax.ShaderNodeKind.Sampler, _
+                | Some PdxShaderSyntax.ShaderNodeKind.Samplers, _ ->
+                    samplerProperties |> List.map (fun value -> completionItem value "Sampler property" CompletionCategory.Value)
+                | Some PdxShaderSyntax.ShaderNodeKind.BlendState, _ ->
+                    blendProperties |> List.map (fun value -> completionItem value "BlendState property" CompletionCategory.Value)
+                | Some PdxShaderSyntax.ShaderNodeKind.DepthStencilState, _ ->
+                    depthStencilProperties |> List.map (fun value -> completionItem value "DepthStencilState property" CompletionCategory.Value)
+                | Some PdxShaderSyntax.ShaderNodeKind.RasterizerState, _ ->
+                    rasterizerProperties |> List.map (fun value -> completionItem value "RasterizerState property" CompletionCategory.Value)
+                | Some PdxShaderSyntax.ShaderNodeKind.Includes, _ ->
+                    includeNames |> Set.toList |> List.sort |> referenceValues "FX include"
+                | _ -> snippets
+            let propertyName =
+                path
+                |> List.rev
+                |> List.tryPick (fun node -> if node.kind = PdxShaderSyntax.ShaderNodeKind.Property then node.name else None)
+            match propertyName with
+            | Some name when name.Equals("VertexShader", StringComparison.OrdinalIgnoreCase) ->
+                declarationNames PdxShaderRuntime.VertexMainCodeDeclaration |> referenceValues "Vertex MainCode"
+            | Some name when name.Equals("PixelShader", StringComparison.OrdinalIgnoreCase) ->
+                declarationNames PdxShaderRuntime.PixelMainCodeDeclaration |> referenceValues "Pixel MainCode"
+            | Some name when name.Equals("GeometryShader", StringComparison.OrdinalIgnoreCase) ->
+                declarationNames PdxShaderRuntime.GeometryMainCodeDeclaration |> referenceValues "Geometry MainCode"
+            | Some name when name.Equals("BlendState", StringComparison.OrdinalIgnoreCase) ->
+                declarationNames PdxShaderRuntime.BlendStateDeclaration |> referenceValues "BlendState"
+            | Some name when name.Equals("DepthStencilState", StringComparison.OrdinalIgnoreCase) ->
+                declarationNames PdxShaderRuntime.DepthStencilStateDeclaration |> referenceValues "DepthStencilState"
+            | Some name when name.Equals("RasterizerState", StringComparison.OrdinalIgnoreCase) ->
+                declarationNames PdxShaderRuntime.RasterizerStateDeclaration |> referenceValues "RasterizerState"
+            | Some name when name.Equals("ConstantBuffers", StringComparison.OrdinalIgnoreCase) ->
+                declarationNames PdxShaderRuntime.ConstantBufferDeclaration |> referenceValues "ConstantBuffer"
+            | Some name when name.Equals("Includes", StringComparison.OrdinalIgnoreCase) ->
+                includeNames |> Set.toList |> List.sort |> referenceValues "FX include"
+            | Some name when name.Equals("Defines", StringComparison.OrdinalIgnoreCase) ->
+                conditionNames |> referenceValues "FX preprocessor define"
+            | Some name ->
+                propertyValues
+                |> Map.tryPick (fun property values ->
+                    if property.Equals(name, StringComparison.OrdinalIgnoreCase) then Some values else None)
+                |> Option.map (List.map (fun value -> valueCompletion value (sprintf "%s value" name)))
+                |> Option.defaultWith contextualCompletions
+            | None -> contextualCompletions ()
 
     let completion (resourceManager: ResourceManager<_>) pos filepath filetext =
-        completeFromSources
-            (resourceSources resourceManager.Api filepath filetext)
-            (resourceIncludeNames resourceManager.Api)
-            pos
-            filepath
-            filetext
+        completeFromResources (resourceManager.Api.GetResources()) pos filepath filetext
+
+    // ------------------------------------------------------------------
+    // Unified V2 LSP feature façade
+    // ------------------------------------------------------------------
+
+    type ShaderSignatureParameter =
+        { label: string
+          documentation: string option }
+
+    type ShaderSignature =
+        { label: string
+          documentation: string option
+          parameters: ShaderSignatureParameter list }
+
+    type ShaderSignatureHelp =
+        { signatures: ShaderSignature list
+          activeSignature: int
+          activeParameter: int }
+
+    type ShaderSemanticToken =
+        { span: PdxShaderSyntax.TextSpan
+          tokenType: string
+          declaration: bool
+          readonly: bool
+          inactive: bool }
+
+    type ShaderInlayHint =
+        { offset: int
+          label: string }
+
+    type ShaderRenameTarget =
+        { name: string
+          kind: string
+          range: range
+          edits: range list }
+
+    let private snapshotView (resources: Resource seq) filepath filetext =
+        let snapshots, current = collectSnapshots resources filepath filetext
+        let unit = PdxShaderProject.buildCompileUnit snapshots current
+        current, unit.effective |> List.map (fun snapshot -> snapshot, PdxShaderProject.semanticSnapshot snapshot)
+
+    let rec private hlslTypeName =
+        function
+        | PdxShaderHlsl.VoidType -> "void"
+        | PdxShaderHlsl.ScalarType kind -> sprintf "%A" kind |> fun value -> value.ToLowerInvariant()
+        | PdxShaderHlsl.VectorType(kind, width) -> sprintf "%A%d" kind width |> fun value -> value.ToLowerInvariant()
+        | PdxShaderHlsl.MatrixType(kind, rows, columns) -> sprintf "%A%dx%d" kind rows columns |> fun value -> value.ToLowerInvariant()
+        | PdxShaderHlsl.ArrayType(item, length) -> sprintf "%s[%s]" (hlslTypeName item) (length |> Option.map string |> Option.defaultValue "")
+        | PdxShaderHlsl.StructType name
+        | PdxShaderHlsl.TextureType name
+        | PdxShaderHlsl.SamplerType name
+        | PdxShaderHlsl.UnknownType name -> name
+        | PdxShaderHlsl.BufferType(name, item) ->
+            item |> Option.map (fun value -> sprintf "%s<%s>" name (hlslTypeName value)) |> Option.defaultValue name
+        | PdxShaderHlsl.ErrorType -> "<error>"
+
+    let private spanContainsOffset (span: PdxShaderSyntax.TextSpan) offset =
+        offset >= span.startOffset && offset <= span.endOffset
+
+    let private hlslSymbolKindName =
+        function
+        | PdxShaderHlsl.TypeSymbol
+        | PdxShaderHlsl.StructSymbol -> "type"
+        | PdxShaderHlsl.FunctionSymbol -> "function"
+        | PdxShaderHlsl.ParameterSymbol -> "parameter"
+        | PdxShaderHlsl.FieldSymbol -> "property"
+        | PdxShaderHlsl.MacroSymbol -> "macro"
+        | _ -> "variable"
+
+    let private hlslLocationsForTarget
+        (views: (PdxShaderProject.ShaderSnapshot * PdxShaderProject.ShaderSemanticSnapshot) list)
+        (targetName: string)
+        (targetIds: Set<string>)
+        =
+        [ for snapshot, semantic in views do
+              for symbol in semantic.hlsl.symbols do
+                  if targetIds.Contains symbol.id || (targetIds.IsEmpty && symbol.name.Equals(targetName, StringComparison.OrdinalIgnoreCase)) then
+                      yield rangeBetweenOffsets snapshot.displayPath snapshot.text symbol.selectionSpan.startOffset symbol.selectionSpan.endOffset
+
+              for reference in semantic.hlsl.references do
+                  if
+                      (reference.candidateIds |> List.exists targetIds.Contains)
+                      || (targetIds.IsEmpty && reference.name.Equals(targetName, StringComparison.OrdinalIgnoreCase))
+                  then
+                      yield rangeBetweenOffsets snapshot.displayPath snapshot.text reference.span.startOffset reference.span.endOffset ]
+
+    let private outerDefinitions (snapshot: PdxShaderProject.ShaderSnapshot) =
+        let semantic = PdxShaderProject.semanticSnapshot snapshot
+
+        let kindName stage (node: PdxShaderSyntax.ShaderSyntaxNode) =
+            match node.kind with
+            | PdxShaderSyntax.ShaderNodeKind.Effect -> Some "effect"
+            | PdxShaderSyntax.ShaderNodeKind.MainCode -> stage
+            | PdxShaderSyntax.ShaderNodeKind.VertexStruct -> Some "struct"
+            | PdxShaderSyntax.ShaderNodeKind.ConstantBuffer -> Some "constant_buffer"
+            | PdxShaderSyntax.ShaderNodeKind.BlendState -> Some "blend_state"
+            | PdxShaderSyntax.ShaderNodeKind.DepthStencilState -> Some "depth_stencil_state"
+            | PdxShaderSyntax.ShaderNodeKind.RasterizerState -> Some "rasterizer_state"
+            | PdxShaderSyntax.ShaderNodeKind.Sampler -> Some "sampler"
+            | _ -> None
+
+        let rec collect
+            (stage: string option)
+            (node: PdxShaderSyntax.ShaderSyntaxNode)
+            : (string * string * PdxShaderSyntax.TextSpan) list =
+            let nextStage =
+                match node.kind with
+                | PdxShaderSyntax.ShaderNodeKind.VertexShader -> Some "vertex_maincode"
+                | PdxShaderSyntax.ShaderNodeKind.PixelShader -> Some "pixel_maincode"
+                | PdxShaderSyntax.ShaderNodeKind.GeometryShader -> Some "geometry_maincode"
+                | _ -> stage
+
+            [ match node.name, node.nameSpan, kindName nextStage node with
+              | Some name, Some nameSpan, Some kind -> yield kind, name, nameSpan
+              | _ -> ()
+              for child in node.children do
+                  yield! collect nextStage child ]
+
+        collect None semantic.syntax.root
+
+    let referencesAt (resources: Resource seq) (pos: pos) filepath filetext : range list =
+        let current, views = snapshotView resources filepath filetext
+        let offset = offsetAt filetext pos
+        let currentSemantic = PdxShaderProject.semanticSnapshot current
+        let declarations = views |> List.collect (fun (snapshot, _) -> PdxShaderRuntime.declarationsFromSnapshot snapshot)
+        let effectiveSnapshots = views |> List.map fst
+        let semanticReferences =
+            views
+            |> List.collect (fun (snapshot, _) -> PdxShaderRuntime.semanticReferencesFromSnapshot snapshot)
+            |> PdxShaderRuntime.resolveSemanticReferences effectiveSnapshots declarations
+        let positionInRange (target: range) =
+            let afterStart = int pos.Line > int target.StartLine || (pos.Line = target.StartLine && pos.Column >= target.StartColumn)
+            let beforeEnd = int pos.Line < int target.EndLine || (pos.Line = target.EndLine && pos.Column <= target.EndColumn)
+            afterStart && beforeEnd
+        let hlslTarget =
+            currentSemantic.hlsl.symbols
+            |> List.tryFind (fun symbol -> spanContainsOffset symbol.selectionSpan offset)
+            |> Option.map (fun symbol -> symbol.name, Set.singleton symbol.id)
+            |> Option.orElseWith (fun () ->
+                currentSemantic.hlsl.references
+                |> List.tryFind (fun reference -> spanContainsOffset reference.span offset)
+                |> Option.map (fun reference -> reference.name, Set.ofList reference.candidateIds))
+        let declarationTarget =
+            declarations
+            |> List.tryFind (fun declaration -> PdxShaderProject.sameFilePath declaration.file filepath && positionInRange declaration.selectionRange)
+            |> Option.map (fun declaration -> declaration.name, Set.singleton declaration.stableId)
+        let semanticTarget =
+            semanticReferences
+            |> List.tryFind (fun reference -> PdxShaderProject.sameFilePath reference.file filepath && positionInRange reference.span)
+            |> Option.map (fun reference -> reference.targetName, Set.ofList reference.targetIds)
+        let target = hlslTarget |> Option.orElse declarationTarget |> Option.orElse semanticTarget
+        let results =
+            match target with
+            | None -> []
+            | Some(name, ids) ->
+                let declarationRanges =
+                    declarations
+                    |> List.filter (fun declaration -> ids.Contains declaration.stableId || (ids.IsEmpty && declaration.name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                    |> List.map _.selectionRange
+                let referenceRanges =
+                    semanticReferences
+                    |> List.filter (fun reference ->
+                        (reference.targetIds |> List.exists ids.Contains)
+                        || (ids.IsEmpty && reference.targetName.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                    |> List.map _.span
+                let runtimeRanges =
+                    let effectIds =
+                        declarations
+                        |> List.filter (fun declaration -> declaration.kind = PdxShaderRuntime.EffectDeclaration && ids.Contains declaration.stableId)
+                    if effectIds.IsEmpty then []
+                    else
+                        let model = PdxShaderRuntime.buildModel None resources [ filepath, filetext ]
+                        PdxShaderRuntime.callersOf model name |> List.map _.span
+                declarationRanges @ referenceRanges @ runtimeRanges
+
+        results
+        |> List.distinctBy (fun item -> PdxShaderProject.canonicalizePath item.FileName, item.StartLine, item.StartColumn, item.EndLine, item.EndColumn)
+        |> List.sortBy (fun item -> PdxShaderProject.canonicalizePath item.FileName, item.StartLine, item.StartColumn)
+
+    let private builtInSignatures (name: string) =
+        let signature (result: string) (parameters: string list) (documentation: string) : ShaderSignature =
+            { label = sprintf "%s %s(%s)" result name (String.concat ", " parameters)
+              documentation = Some documentation
+              parameters = parameters |> List.map (fun label -> { label = label; documentation = None }) }
+        let scalar = "float"
+        let vector (result: string) =
+            let width =
+                if result.EndsWith("4", StringComparison.Ordinal) then 4
+                elif result.EndsWith("3", StringComparison.Ordinal) then 3
+                elif result.EndsWith("2", StringComparison.Ordinal) then 2
+                else 1
+            let components = [ "x"; "y"; "z"; "w" ] |> List.take width |> List.map (sprintf "%s %s" scalar)
+            [ signature result components "HLSL vector constructor"
+              signature result [ sprintf "%s scalar" scalar ] "HLSL scalar-splat constructor" ]
+        if hlslTypes |> List.exists (fun candidate -> candidate.Equals(name, StringComparison.OrdinalIgnoreCase)) then
+            vector name
+        else
+            match name.ToLowerInvariant() with
+            | "mul" ->
+                [ signature "T" [ "T left"; "T right" ] "HLSL matrix/vector multiply"
+                  signature "vector" [ "matrix left"; "vector right" ] "HLSL matrix-vector multiply" ]
+            | "lerp" -> [ signature "T" [ "T x"; "T y"; "T amount" ] "Linear interpolation" ]
+            | "saturate" -> [ signature "T" [ "T value" ] "Clamp to the inclusive 0..1 range" ]
+            | "dot" -> [ signature scalar [ "vector left"; "vector right" ] "Vector dot product" ]
+            | "cross" -> [ signature "float3" [ "float3 left"; "float3 right" ] "Vector cross product" ]
+            | "normalize" -> [ signature "T" [ "T value" ] "Return a normalized vector" ]
+            | "length" -> [ signature scalar [ "T value" ] "Return vector length" ]
+            | "clamp" -> [ signature "T" [ "T value"; "T minimum"; "T maximum" ] "Clamp a value" ]
+            | "min"
+            | "max"
+            | "pow" -> [ signature "T" [ "T left"; "T right" ] "HLSL intrinsic" ]
+            | "tex2d" -> [ signature "float4" [ "sampler2D sampler"; "float2 uv" ] "Sample a 2D texture" ]
+            | "tex2dlod" -> [ signature "float4" [ "sampler2D sampler"; "float4 uvLod" ] "Sample a 2D texture at an explicit LOD" ]
+            | _ -> []
+
+    let signatureHelpAt (resources: Resource seq) (pos: pos) filepath filetext : ShaderSignatureHelp option =
+        let _, views = snapshotView resources filepath filetext
+        let offset = offsetAt filetext pos
+        let current = views |> List.tryFind (fun (snapshot, _) -> PdxShaderProject.sameFilePath snapshot.displayPath filepath)
+
+        current
+        |> Option.bind (fun (_, semantic) ->
+            let calls =
+                semantic.hlsl.references
+                |> List.filter (fun reference ->
+                    reference.kind = PdxShaderHlsl.CallReference
+                    && reference.span.endOffset <= offset
+                    && offset - reference.span.endOffset <= 512)
+                |> List.sortByDescending (fun reference -> reference.span.endOffset)
+
+            calls
+            |> List.tryPick (fun call ->
+                let tokens = semantic.syntax.tokens
+                let openParen =
+                    tokens
+                    |> Array.tryFindIndex (fun token ->
+                        token.span.startOffset >= call.span.endOffset
+                        && token.span.startOffset <= offset
+                        && token.kind = PdxShaderSyntax.ShaderTokenKind.OpenParen)
+
+                openParen
+                |> Option.bind (fun openIndex ->
+                    let mutable depth = 0
+                    let mutable activeParameter = 0
+                    let mutable closed = false
+                    let mutable index = openIndex
+
+                    while index < tokens.Length && tokens[index].span.startOffset <= offset && not closed do
+                        match tokens[index].kind with
+                        | PdxShaderSyntax.ShaderTokenKind.OpenParen -> depth <- depth + 1
+                        | PdxShaderSyntax.ShaderTokenKind.CloseParen ->
+                            depth <- depth - 1
+                            if depth <= 0 && tokens[index].span.startOffset < offset then closed <- true
+                        | PdxShaderSyntax.ShaderTokenKind.Comma when depth = 1 -> activeParameter <- activeParameter + 1
+                        | _ -> ()
+                        index <- index + 1
+
+                    if closed then None
+                    else
+                        let functions =
+                            views
+                            |> List.collect (fun (_, view) -> view.hlsl.symbols)
+                            |> List.filter (fun symbol ->
+                                symbol.kind = PdxShaderHlsl.FunctionSymbol
+                                && ((call.candidateIds |> List.contains symbol.id)
+                                    || (call.candidateIds.IsEmpty && symbol.name.Equals(call.name, StringComparison.OrdinalIgnoreCase))))
+                            |> List.distinctBy _.id
+
+                        let signatures =
+                            if functions.IsEmpty then
+                                builtInSignatures call.name
+                            else
+                                functions
+                                |> List.map (fun symbol ->
+                                    let parameters =
+                                        symbol.parameters
+                                        |> List.map (fun parameter ->
+                                            { label = sprintf "%s %s" (hlslTypeName parameter.parameterType) parameter.name
+                                              documentation = parameter.semantic |> Option.map (sprintf "Semantic: %s") })
+                                    { label = sprintf "%s %s(%s)" (hlslTypeName symbol.symbolType) symbol.name (parameters |> List.map _.label |> String.concat ", ")
+                                      documentation = Some(sprintf "Stage: %A; condition: %A" symbol.stage symbol.condition)
+                                      parameters = parameters })
+
+                        if signatures.IsEmpty then None
+                        else
+                            Some
+                                { signatures = signatures
+                                  activeSignature = 0
+                                  activeParameter = min activeParameter (max 0 (signatures.Head.parameters.Length - 1)) })))
+
+    let semanticTokens filepath filetext : ShaderSemanticToken list =
+        let snapshot = PdxShaderProject.createSnapshot PdxShaderProject.CurrentDocument filepath filepath filetext
+        let semantic = PdxShaderProject.semanticSnapshot snapshot
+        let symbolSpans = semantic.hlsl.symbols |> List.map (fun symbol -> symbol.selectionSpan, symbol) |> List.toArray
+        let directX = PdxShaderPreprocessor.defaultPlatformVariants |> List.find (fun variant -> variant.name = "directx11")
+
+        semantic.syntax.tokens
+        |> Array.choose (fun token ->
+            if token.span.Length <= 0 then None
+            else
+                let symbol = symbolSpans |> Array.tryFind (fun (span, _) -> span.startOffset = token.span.startOffset && span.Length = token.span.Length) |> Option.map snd
+                let tokenType, declaration, readonly =
+                    match symbol with
+                    | Some value -> hlslSymbolKindName value.kind, true, value.kind = PdxShaderHlsl.MacroSymbol
+                    | None ->
+                        match token.kind with
+                        | PdxShaderSyntax.ShaderTokenKind.LineComment
+                        | PdxShaderSyntax.ShaderTokenKind.BlockComment -> "comment", false, false
+                        | PdxShaderSyntax.ShaderTokenKind.StringLiteral -> "string", false, false
+                        | PdxShaderSyntax.ShaderTokenKind.NumberLiteral -> "number", false, false
+                        | PdxShaderSyntax.ShaderTokenKind.DirectiveLine -> "macro", false, true
+                        | PdxShaderSyntax.ShaderTokenKind.Identifier ->
+                            if token.text.Equals("Effect", StringComparison.OrdinalIgnoreCase)
+                               || token.text.EndsWith("Shader", StringComparison.OrdinalIgnoreCase)
+                               || token.text.Equals("MainCode", StringComparison.OrdinalIgnoreCase)
+                            then "keyword", false, false
+                            else "variable", false, false
+                        | PdxShaderSyntax.ShaderTokenKind.Equals
+                        | PdxShaderSyntax.ShaderTokenKind.Colon
+                        | PdxShaderSyntax.ShaderTokenKind.Comma
+                        | PdxShaderSyntax.ShaderTokenKind.Semicolon -> "operator", false, false
+                        | _ -> "", false, false
+
+                if String.IsNullOrEmpty tokenType then None
+                else
+                    let condition = PdxShaderPreprocessor.conditionAt token.span.startOffset semantic.preprocessor
+                    let inactive = (PdxShaderPreprocessor.evaluate directX.environment condition) = PdxShaderPreprocessor.ConditionFalse
+                    Some
+                        { span = token.span
+                          tokenType = tokenType
+                          declaration = declaration
+                          readonly = readonly
+                          inactive = inactive })
+        |> Array.toList
+
+    let inlayHints filepath filetext : ShaderInlayHint list =
+        let snapshot = PdxShaderProject.createSnapshot PdxShaderProject.CurrentDocument filepath filepath filetext
+        let semantic = PdxShaderProject.semanticSnapshot snapshot
+
+        semantic.hlsl.symbols
+        |> List.choose (fun symbol ->
+            match symbol.kind, symbol.symbolType with
+            | (PdxShaderHlsl.LocalVariableSymbol | PdxShaderHlsl.GlobalVariableSymbol | PdxShaderHlsl.ParameterSymbol), PdxShaderHlsl.UnknownType _ -> None
+            | (PdxShaderHlsl.LocalVariableSymbol | PdxShaderHlsl.GlobalVariableSymbol | PdxShaderHlsl.ParameterSymbol), symbolType ->
+                Some { offset = symbol.selectionSpan.endOffset; label = sprintf ": %s" (hlslTypeName symbolType) }
+            | _ -> None)
+
+    let foldingRanges filepath filetext : range list =
+        let snapshot = PdxShaderProject.createSnapshot PdxShaderProject.CurrentDocument filepath filepath filetext
+        let semantic = PdxShaderProject.semanticSnapshot snapshot
+        let rec collect (node: PdxShaderSyntax.ShaderSyntaxNode) : range list =
+            [ let nodeRange = rangeBetweenOffsets filepath filetext node.span.startOffset node.span.endOffset
+              if nodeRange.EndLine > nodeRange.StartLine then yield nodeRange
+              for child in node.children do yield! collect child ]
+        collect semantic.syntax.root
+
+    let selectionRangesAt (pos: pos) filepath filetext : range list =
+        let snapshot = PdxShaderProject.createSnapshot PdxShaderProject.CurrentDocument filepath filepath filetext
+        let semantic = PdxShaderProject.semanticSnapshot snapshot
+        let offset = offsetAt filetext pos
+        let rec containing (node: PdxShaderSyntax.ShaderSyntaxNode) : range list =
+            if not (spanContainsOffset node.span offset) then []
+            else
+                let child = node.children |> List.tryPick (fun item -> let nested = containing item in if nested.IsEmpty then None else Some nested)
+                (child |> Option.defaultValue []) @ [ rangeBetweenOffsets filepath filetext node.span.startOffset node.span.endOffset ]
+        containing semantic.syntax.root
+
+    let formatDocument insertSpaces tabSize filepath filetext =
+        let snapshot = PdxShaderProject.createSnapshot PdxShaderProject.CurrentDocument filepath filepath filetext
+        let semantic = PdxShaderProject.semanticSnapshot snapshot
+        let hlslSpans =
+            let rec collect (node: PdxShaderSyntax.ShaderSyntaxNode) : PdxShaderSyntax.TextSpan list =
+                [ if node.kind = PdxShaderSyntax.ShaderNodeKind.HlslRegion then yield node.span
+                  for child in node.children do yield! collect child ]
+            collect semantic.syntax.root
+        let insideHlsl offset = hlslSpans |> List.exists (fun span -> spanContainsOffset span offset)
+        let indent depth = if insertSpaces then String(' ', max 1 tabSize * depth) else String('\t', depth)
+        let lines = filetext.Replace("\r\n", "\n").Split('\n')
+        let lineStarts = ResizeArray<int>()
+        let mutable running = 0
+        for line in lines do
+            lineStarts.Add running
+            running <- running + line.Length + 1
+        let mutable depth = 0
+        let formatted =
+            lines
+            |> Array.mapi (fun lineIndex line ->
+                let start = lineStarts[lineIndex]
+                let trimmed = line.TrimStart(' ', '\t')
+                let firstOffset = start + (line.Length - trimmed.Length)
+                if String.IsNullOrWhiteSpace line || insideHlsl firstOffset || trimmed.StartsWith("#") || trimmed.StartsWith("@") then line
+                else
+                    let lineTokens =
+                        semantic.syntax.tokens
+                        |> Array.filter (fun token -> token.span.startOffset >= start && token.span.startOffset < start + line.Length)
+                    let closesFirst = lineTokens |> Array.tryFind (fun token -> token.kind <> PdxShaderSyntax.ShaderTokenKind.Whitespace) |> Option.exists (fun token -> token.kind = PdxShaderSyntax.ShaderTokenKind.CloseBrace)
+                    let lineDepth = if closesFirst then max 0 (depth - 1) else depth
+                    let result = indent lineDepth + trimmed
+                    for token in lineTokens do
+                        if not (insideHlsl token.span.startOffset) then
+                            match token.kind with
+                            | PdxShaderSyntax.ShaderTokenKind.OpenBrace -> depth <- depth + 1
+                            | PdxShaderSyntax.ShaderTokenKind.CloseBrace -> depth <- max 0 (depth - 1)
+                            | _ -> ()
+                    result)
+        let newline = if filetext.Contains("\r\n") then "\r\n" else "\n"
+        String.Join(newline, formatted)
+
+    let renameTargetAt (resources: Resource seq) (pos: pos) filepath filetext : ShaderRenameTarget option =
+        let current, _ = snapshotView resources filepath filetext
+        let semantic = PdxShaderProject.semanticSnapshot current
+        let offset = offsetAt filetext pos
+        let hlsl =
+            semantic.hlsl.symbols
+            |> List.tryFind (fun symbol -> spanContainsOffset symbol.selectionSpan offset)
+            |> Option.map (fun symbol -> symbol.name, hlslSymbolKindName symbol.kind, symbol.selectionSpan)
+            |> Option.orElseWith (fun () ->
+                semantic.hlsl.references
+                |> List.tryFind (fun reference -> spanContainsOffset reference.span offset)
+                |> Option.map (fun reference -> reference.name, "hlsl_reference", reference.span))
+        let outer =
+            outerDefinitions current
+            |> List.tryFind (fun (_, _, span) -> spanContainsOffset span offset)
+            |> Option.map (fun (kind, name, span) -> name, kind, span)
+        (hlsl |> Option.orElse outer)
+        |> Option.map (fun (name, kind, span) ->
+            { name = name
+              kind = kind
+              range = rangeBetweenOffsets filepath filetext span.startOffset span.endOffset
+              edits = referencesAt resources pos filepath filetext })

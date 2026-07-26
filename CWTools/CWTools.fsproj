@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <OutputType>Library</OutputType>
         <Tailcalls>true</Tailcalls>
@@ -77,6 +77,11 @@
         <Compile Include="Rules/RulesHelpers.fs"/>
         <Compile Include="Game/Compute.fs"/>
         <Compile Include="Game/RulesManager.fs"/>
+        <Compile Include="Game/PdxShaderSyntax.fs"/>
+        <Compile Include="Game/PdxShaderPreprocessor.fs"/>
+        <Compile Include="Game/PdxShaderHlsl.fs"/>
+        <Compile Include="Game/PdxShaderProject.fs"/>
+        <Compile Include="Game/PdxShaderRuntime.fs"/>
         <Compile Include="Game/PdxShaderFeatures.fs"/>
         <Compile Include="Game/LanguageFeatures.fs"/>
         <Compile Include="Game/ValidationManager.fs"/>

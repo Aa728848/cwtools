@@ -18,6 +18,9 @@
     <ItemGroup>
         <Compile Include="LoggingTestHelper.fs"/>
         <Compile Include="Tests.fs"/>
+        <Compile Include="ShaderFrontendTests.fs"/>
+        <Compile Include="ShaderRuntimeTests.fs"/>
+        <Compile Include="ShaderBaselineTests.fs"/>
         <Compile Include="ProcessTests.fs"/>
         <Compile Include="ParserTests.fs"/>
     </ItemGroup>

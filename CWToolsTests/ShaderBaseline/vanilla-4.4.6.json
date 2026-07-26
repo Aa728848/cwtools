@@ -1,0 +1,553 @@
+﻿{
+  "schemaVersion": 1,
+  "game": "stellaris",
+  "gameVersion": "4.4.6",
+  "sourceDirectory": "gfx/FX",
+  "summary": {
+    "fileCount": 72,
+    "shaderFiles": 49,
+    "fxhFiles": 23,
+    "totalBytes": 357710,
+    "effectDeclarations": 473,
+    "uniqueEffectNames": 438,
+    "vertexMainCodeDeclarations": 69,
+    "uniqueVertexMainCodeNames": 30,
+    "pixelMainCodeDeclarations": 104,
+    "uniquePixelMainCodeNames": 63,
+    "constantBufferDeclarations": 78,
+    "uniqueConstantBufferNames": 50,
+    "blendStateDeclarations": 62,
+    "depthStencilStateDeclarations": 30,
+    "rasterizerStateDeclarations": 28,
+    "uniqueBlendStateNames": 12,
+    "uniqueDepthStencilStateNames": 3,
+    "uniqueRasterizerStateNames": 3,
+    "uniqueDefines": 42,
+    "includeEntries": 122,
+    "uniqueIncludeFiles": 18,
+    "compileUnitRoots": 49,
+    "missingIncludes": 0,
+    "ambiguousIncludes": 0,
+    "includeCycles": 0,
+    "diagnosticCount": 26
+  },
+  "files": [
+    {
+      "path": "gfx/FX/3dtext.shader",
+      "size": 2835,
+      "sha256": "0cd6f430b01a90caca3d7e6bc7154b5132bfdb656aad4b0cad2c12893e53a7b4"
+    },
+    {
+      "path": "gfx/FX/DebugLines.shader",
+      "size": 1345,
+      "sha256": "d9e0a76719cee870aba00f14538fc199b51e8ce769de20bef1c30d8c4840bbcf"
+    },
+    {
+      "path": "gfx/FX/DebugTexture.shader",
+      "size": 1546,
+      "sha256": "6392dc2015281f0b563df78327b89811ca75cba3a4ccf8580045c164b0df54d0"
+    },
+    {
+      "path": "gfx/FX/arrow.shader",
+      "size": 3298,
+      "sha256": "37a653a25243bf51214a6c71074a9ab2497d8da7cc9db8478cbeab0d0a7c1ab8"
+    },
+    {
+      "path": "gfx/FX/asteroid.shader",
+      "size": 5919,
+      "sha256": "865e268777097ba9065e9bc5df533049bbb11b159b7947f8ddbd15e498894e50"
+    },
+    {
+      "path": "gfx/FX/blit.shader",
+      "size": 1287,
+      "sha256": "4e0d4c2e521bed6f144d7cf71bcb23f09e3db184806173844b7d0b3430038db0"
+    },
+    {
+      "path": "gfx/FX/bloom.shader",
+      "size": 3619,
+      "sha256": "7f37806d803e083052f2e05215b41515bce1805ca965725c14eef0a9788db159"
+    },
+    {
+      "path": "gfx/FX/border.shader",
+      "size": 7380,
+      "sha256": "f36b7115beb2172f133851a2cb27249bdd9a8a105349b66d1fc131445335e230"
+    },
+    {
+      "path": "gfx/FX/borders.fxh",
+      "size": 7757,
+      "sha256": "f9f3e565aa9f3cc96aeb5c3d63facd0d3a6494a364583db761ead958be15f35c"
+    },
+    {
+      "path": "gfx/FX/build_block.shader",
+      "size": 1872,
+      "sha256": "7d8dbcf7de70ee512b240351f9efe90cabaa89b71a8aff4d52292c910de58105"
+    },
+    {
+      "path": "gfx/FX/buttonstate.fxh",
+      "size": 251,
+      "sha256": "0b3510105a29a8bdb9b5e0f96da87502f75eb6410a4d2a921e6741790921bf67"
+    },
+    {
+      "path": "gfx/FX/buttonstate.shader",
+      "size": 5827,
+      "sha256": "8c94dcd284ff011080abadb91b5e9b378f2f64a0147074bd1b1eff4012dd944e"
+    },
+    {
+      "path": "gfx/FX/buttonstate_onlyanim.shader",
+      "size": 3094,
+      "sha256": "316b8bad1c266ea37f24d69de68a5adf561fe3296acea70b2f89200a8369a965"
+    },
+    {
+      "path": "gfx/FX/buttonstate_onlydisable.shader",
+      "size": 3558,
+      "sha256": "2015a313949b0c75cd7767d21a06b90e1feef5d3ebebefdd299d17af028f08a5"
+    },
+    {
+      "path": "gfx/FX/buttonstate_rendertarget.shader",
+      "size": 2425,
+      "sha256": "55ed3b43bec4269bc881c183381b0334d1fcdbbf8ca8a50fca0cf20ea9b5fbfc"
+    },
+    {
+      "path": "gfx/FX/buttonstate_rendertarget_hologram.shader",
+      "size": 4069,
+      "sha256": "35ba7893664ea1f55ce929a16a88f8441a765fb90f306682b0fa125d4abe213a"
+    },
+    {
+      "path": "gfx/FX/color.shader",
+      "size": 710,
+      "sha256": "7028539982c18a453e0e1267e1bde19384275cf4b8879f78de624638fa33cf69"
+    },
+    {
+      "path": "gfx/FX/color_lut.fxh",
+      "size": 783,
+      "sha256": "f954ba7bf9af5f271fa7904ffb5cd09881451984432f3be27c380fe8ef22ec21"
+    },
+    {
+      "path": "gfx/FX/constants.fxh",
+      "size": 4371,
+      "sha256": "b7f25640af92f2a43c266a5d3b17ac9cc21141d29a6f30800bfb0624cbe62e8f"
+    },
+    {
+      "path": "gfx/FX/defines_glsl.fxh",
+      "size": 2798,
+      "sha256": "86af3e955864cc6a6b238fd21504312584aee5ec88c07e13a0f1560d1cf4659e"
+    },
+    {
+      "path": "gfx/FX/defines_hlsl.fxh",
+      "size": 642,
+      "sha256": "aaecff82d1da84c28973f4ede2940087e55d35edde7bfa0eea639018b06e08f4"
+    },
+    {
+      "path": "gfx/FX/defines_hlsl_dx11.fxh",
+      "size": 1953,
+      "sha256": "897547438d7f7dfa7e10ded8a8aaab2f6287cecdc398809171714f36ead7409c"
+    },
+    {
+      "path": "gfx/FX/defines_pssl.fxh",
+      "size": 1835,
+      "sha256": "e98cab4c36d4b607e2d79b86931e7118b60e7f1f2502b1f98bc547665ec4f21a"
+    },
+    {
+      "path": "gfx/FX/downsample.shader",
+      "size": 4625,
+      "sha256": "d364bcbd10198cb7ee7c6f165f3cfff8e0c37356ea5f37ea576473706c3fad1a"
+    },
+    {
+      "path": "gfx/FX/downsample_luminance.shader",
+      "size": 3046,
+      "sha256": "98a8052fb296d936b4ce1f12e69c14cb6faed102185e906cfe69dbc0d7b6b116"
+    },
+    {
+      "path": "gfx/FX/flag_sprite.shader",
+      "size": 4855,
+      "sha256": "62f3173fc76a67db8b8b8e724a5d9cfabf01f66a32f505bbeb1d7b88e4fa1092"
+    },
+    {
+      "path": "gfx/FX/galaxy_center.shader",
+      "size": 1659,
+      "sha256": "e361dd70dba3a5e67d2f085958f794c09e9bd3b9c9602ddeda0df13d1648bf1d"
+    },
+    {
+      "path": "gfx/FX/galaxy_cosmic_storm.shader",
+      "size": 4536,
+      "sha256": "7b4a42f62906c17a5f0e8de6fad6980b371303864004366ae69a821116985915"
+    },
+    {
+      "path": "gfx/FX/galaxy_dust.shader",
+      "size": 3669,
+      "sha256": "8cdd26ff239058c3a727e6800b4ac2c4584ea22ccfc70ee1c7cfe372aaa0fbfc"
+    },
+    {
+      "path": "gfx/FX/galaxy_dust_cloud.shader",
+      "size": 4954,
+      "sha256": "bdf806b609eaa87ed106e3855b6df2a85c5d95bd296ac0391a39e41e846f9a20"
+    },
+    {
+      "path": "gfx/FX/galaxy_lowgraphics.shader",
+      "size": 1430,
+      "sha256": "3f148fec598d1d7efbcb9c784c5c48ae49a4b1c4f6251c4374a38a2cc8b07d3a"
+    },
+    {
+      "path": "gfx/FX/galaxy_nebula.shader",
+      "size": 3397,
+      "sha256": "6c6bef5a8478a52c3e9af07a1467f434863b50eccc9edc7bd74390e2f2229d0f"
+    },
+    {
+      "path": "gfx/FX/galaxy_psionic_aura.shader",
+      "size": 2019,
+      "sha256": "6fb92a758190bc156625f23d468697c95e943fc37402addf395d8bb2f385e9e2"
+    },
+    {
+      "path": "gfx/FX/galaxy_stars.shader",
+      "size": 1844,
+      "sha256": "abb91945eb98e2128ac9215b8ef2c75b8ea1b9106ae88fc0b8e3215e40e53c54"
+    },
+    {
+      "path": "gfx/FX/galaxy_storm_influence.shader",
+      "size": 3098,
+      "sha256": "ebdb68a8ad37b0181ba8b7162582dbfd96a851aaefb9d52930e661bcb35b8d33"
+    },
+    {
+      "path": "gfx/FX/heatmap.shader",
+      "size": 1330,
+      "sha256": "c89e9c46328caedaca717e972a125513e33b40b3179b6a8aa4fd7e82bb5fd218"
+    },
+    {
+      "path": "gfx/FX/hyperlane.shader",
+      "size": 8065,
+      "sha256": "5d99120e78875e3938f25ae11daab092649b3b968afb9da6b06a9a60507813e3"
+    },
+    {
+      "path": "gfx/FX/lines.shader",
+      "size": 1154,
+      "sha256": "8be1ced908341af42f6965b2ea1314881c727360d3ba35475c3fc64ce5ebab23"
+    },
+    {
+      "path": "gfx/FX/mapname.shader",
+      "size": 2419,
+      "sha256": "0e5b93ca969b20b3e2fb7e3046271179cdc252f73871840a7399c82c525ac207"
+    },
+    {
+      "path": "gfx/FX/particle.shader",
+      "size": 8411,
+      "sha256": "ec6b6d3b811c87b5dcdaf3fc0eac21e57a94403678c67a79444b875d1d8a6147"
+    },
+    {
+      "path": "gfx/FX/pdxmesh.shader",
+      "size": 121636,
+      "sha256": "42a8b6e7fdde43b2b1658ed29dfee635bee20e7ad9907e6fe572d78edc1f1be9"
+    },
+    {
+      "path": "gfx/FX/pdxmesh_astral_rift.fxh",
+      "size": 3158,
+      "sha256": "f98fc5c59ca731d99d739d2344d7b7ec5b17005c1018aa82932069eb695f9ca6"
+    },
+    {
+      "path": "gfx/FX/pdxmesh_gravity_snare.fxh",
+      "size": 2748,
+      "sha256": "7ff311811232bfc82b1cf4bd05f6fd4fdceffa120b3ba3d143d648ddf41e9805"
+    },
+    {
+      "path": "gfx/FX/pdxmesh_reanimated.fxh",
+      "size": 4370,
+      "sha256": "3dd940d53568eeb898be088147f5865147e44f6c22788ca4613919854c3c14b9"
+    },
+    {
+      "path": "gfx/FX/pdxmesh_samplers.fxh",
+      "size": 2629,
+      "sha256": "ee6c83b4439afbecd05e9f07e7bcef6c7dc49c017074bc4401f081ba41a8550c"
+    },
+    {
+      "path": "gfx/FX/pdxmesh_ship.fxh",
+      "size": 14697,
+      "sha256": "a3492316da012f61536d10bc2bd651234efca48be29fcfba7d723912a0baf65d"
+    },
+    {
+      "path": "gfx/FX/planet_destruction.shader",
+      "size": 2414,
+      "sha256": "67ddd3ab099c74309023ba6284f4ebb661aa70e8d52ea012058d568e3bca44c9"
+    },
+    {
+      "path": "gfx/FX/portrait.shader",
+      "size": 2764,
+      "sha256": "24033dd64d610a80e836664f7665970a740e84368909471017d5311d00ceda38"
+    },
+    {
+      "path": "gfx/FX/posteffect_base.fxh",
+      "size": 271,
+      "sha256": "efe58600edda5bdc719a75cee826f65861efb414dfcecf13eb4d60bbaaa63aee"
+    },
+    {
+      "path": "gfx/FX/progress.shader",
+      "size": 1733,
+      "sha256": "036685717ca6b3492cc8be8fa8bd24cc5f1b51ba821ec5586435056b53be9ca6"
+    },
+    {
+      "path": "gfx/FX/progress_radial.shader",
+      "size": 1865,
+      "sha256": "b96f8c22f3d4c315ef75cde3d3e5ef490079be56f23f16b88343c3b291ea94d4"
+    },
+    {
+      "path": "gfx/FX/progress_startend.shader",
+      "size": 2509,
+      "sha256": "74393d501525fc2b8db1470382261e5b5d9a24987027cdc6ea1d97ae4bc49ee7"
+    },
+    {
+      "path": "gfx/FX/projectile.shader",
+      "size": 2386,
+      "sha256": "6d2c23165924358359125a2b3ef5e634f623f8b668946c2522ebddc36632fb14"
+    },
+    {
+      "path": "gfx/FX/psionic_aura_hyperlane.shader",
+      "size": 3138,
+      "sha256": "8ad7f6fe0a91088b7de64390d9e98ce3fd12258d944f0e4a3b11043f3aca39bd"
+    },
+    {
+      "path": "gfx/FX/restorescene.shader",
+      "size": 6152,
+      "sha256": "b8a1929345e9f1838791cdd9565f228d8562961786f8dee069d69dfc724c0683"
+    },
+    {
+      "path": "gfx/FX/sensor_range.shader",
+      "size": 1193,
+      "sha256": "b8a7d1bb73f8a5a69a3ca88159cf46d5b68d0895a2bc064458d537db19002af6"
+    },
+    {
+      "path": "gfx/FX/shadow.fxh",
+      "size": 6861,
+      "sha256": "9e8db7ad242dccc3eec4a4cec9de04359268175ce4cb48993158ae5a06d5e99e"
+    },
+    {
+      "path": "gfx/FX/ship_trail.shader",
+      "size": 2605,
+      "sha256": "3fed4cc475395674452b08fe22a25d22bc26ab63ec3e72c7474e20a3ac430f2f"
+    },
+    {
+      "path": "gfx/FX/simple.shader",
+      "size": 1594,
+      "sha256": "5fdbbc0c7f9f4619539f2921f89aa0b81e4fb68af7e9e7a29bd142c4094a574b"
+    },
+    {
+      "path": "gfx/FX/simpledebug.shader",
+      "size": 933,
+      "sha256": "b55662512c8dca4922adc60a66ec785a98bdf245e693130a4a16f2d03f42efce"
+    },
+    {
+      "path": "gfx/FX/sky.shader",
+      "size": 3530,
+      "sha256": "f85aab3d6d304a80c0006d43cd6d3d800c29a6b447e181400392a36a9d9fc1ef"
+    },
+    {
+      "path": "gfx/FX/sprite_animation.fxh",
+      "size": 3903,
+      "sha256": "50dafabfba05ffb8e70030ea884e898760af6fdd273b570190b8a1e3c38c9623"
+    },
+    {
+      "path": "gfx/FX/standard_vertex.fxh",
+      "size": 4291,
+      "sha256": "14fc0b6fd9b151984bc4d17b946f002b20039064e604061cace12cc29d19d812"
+    },
+    {
+      "path": "gfx/FX/standardfuncsgfx.fxh",
+      "size": 17543,
+      "sha256": "f3362f0fa00ef851dc4bb5729a196ad36de83ec9cbd2a752b0bd704e9908b90b"
+    },
+    {
+      "path": "gfx/FX/storm_forecast_mesh.shader",
+      "size": 2192,
+      "sha256": "6ba9cd2f7a45cb4d99f0cae1cadf93f76c969c1946c5d59ee4d38cae11e99901"
+    },
+    {
+      "path": "gfx/FX/terra_incognita.fxh",
+      "size": 1570,
+      "sha256": "1e816896bea0a47071010c381c4d23301ce0958dd3ff1af6691c9d57090e27af"
+    },
+    {
+      "path": "gfx/FX/text.fxh",
+      "size": 1245,
+      "sha256": "adb410d9da4d3a3fd9b290c08fea3cce8f6c14c158e1abf3c1feb43c54e61717"
+    },
+    {
+      "path": "gfx/FX/text.shader",
+      "size": 1100,
+      "sha256": "6cd09a02e34d5e34036b8959534f0d98ffb86f925a3a42e96f0c915f088dc72f"
+    },
+    {
+      "path": "gfx/FX/tiled_pointlights.fxh",
+      "size": 1624,
+      "sha256": "26d5737c3573d1664e12960c6d0e0bc609da160d5d0da13ba865e742a7bb987b"
+    },
+    {
+      "path": "gfx/FX/utils.fxh",
+      "size": 1021,
+      "sha256": "d2c523248d7d07e79c321d9e8874833f811237307357560843a18ea3395c4ff9"
+    },
+    {
+      "path": "gfx/FX/vertex_structs.fxh",
+      "size": 1998,
+      "sha256": "3629fbfbce486c95718497312135754b8bfe2c741dd98aa1590ecbe339a3c83c"
+    },
+    {
+      "path": "gfx/FX/waystation_network.shader",
+      "size": 2352,
+      "sha256": "ecbebee941b2108015726106e32c8eff20b8419efc15a6e9c5ebe0dcdd7648db"
+    }
+  ],
+  "diagnosticsByCode": {
+    "CWFX001": 3,
+    "CWFX104": 2,
+    "CWFX403": 21
+  },
+  "diagnostics": [
+    {
+      "code": "CWFX001",
+      "file": "gfx/FX/hyperlane.shader",
+      "message": "Effect references undefined Pixel MainCode \"PixelLineLegacy\""
+    },
+    {
+      "code": "CWFX001",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Effect references undefined Vertex MainCode \"VertexPdxMeshShieldHitEffectSkinned\""
+    },
+    {
+      "code": "CWFX001",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Effect references undefined Vertex MainCode \"VertexPdxMeshShieldHitEffectSkinned\""
+    },
+    {
+      "code": "CWFX104",
+      "file": "gfx/FX/3dtext.shader",
+      "message": "Unexpected closing delimiter."
+    },
+    {
+      "code": "CWFX104",
+      "file": "gfx/FX/3dtext.shader",
+      "message": "Unexpected closing delimiter."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/border.shader",
+      "message": "Resource binding b0 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/border.shader",
+      "message": "Resource binding b0 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/border.shader",
+      "message": "Resource binding b0 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/border.shader",
+      "message": "Resource binding b0 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/downsample_luminance.shader",
+      "message": "Resource binding b2 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/downsample_luminance.shader",
+      "message": "Resource binding b2 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/particle.shader",
+      "message": "Resource binding b2 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/particle.shader",
+      "message": "Resource binding b2 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Resource binding b1 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Resource binding b1 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Resource binding b1 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Resource binding b1 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Resource binding b1 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Resource binding b1 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Resource binding b1 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Resource binding b1 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Resource binding b1 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Resource binding b1 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Resource binding b1 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Resource binding b1 may be declared more than once."
+    },
+    {
+      "code": "CWFX403",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Resource binding b1 may be declared more than once."
+    }
+  ],
+  "knownCompatibilitySamples": [
+    {
+      "code": "CWFX001",
+      "file": "gfx/FX/hyperlane.shader",
+      "message": "Effect references undefined Pixel MainCode \"PixelLineLegacy\"",
+      "status": "pending_classification"
+    },
+    {
+      "code": "CWFX001",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Effect references undefined Vertex MainCode \"VertexPdxMeshShieldHitEffectSkinned\"",
+      "status": "pending_classification"
+    },
+    {
+      "code": "CWFX001",
+      "file": "gfx/FX/pdxmesh.shader",
+      "message": "Effect references undefined Vertex MainCode \"VertexPdxMeshShieldHitEffectSkinned\"",
+      "status": "pending_classification"
+    }
+  ]
+}

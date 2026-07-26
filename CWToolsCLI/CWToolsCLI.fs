@@ -178,6 +178,16 @@ module CWToolsCLI =
                 match s with
                 | File _ -> "file to format"
 
+    type ShaderAbiInventoryArgs =
+        | [<MainCommand; ExactlyOnce; Last>] Output of path: string
+        | GameVersion of string
+
+        interface IArgParserTemplate with
+            member s.Usage =
+                match s with
+                | Output _ -> "JSON inventory output path"
+                | GameVersion _ -> "Stellaris version; launcher-settings.json rawVersion is used when omitted"
+
     type CacheTypes =
         | Full = 1
         | Metadata = 2
@@ -206,6 +216,7 @@ module CWToolsCLI =
         | [<CustomCommandLine("list")>] List of ParseResults<ListArgs>
         | [<CustomCommandLine("parse")>] Parse of ParseResults<ParseArgs>
         | [<CustomCommandLine("format")>] Format of ParseResults<FormatArgs>
+        | [<CustomCommandLine("shader-abi-inventory")>] ShaderAbiInventory of ParseResults<ShaderAbiInventoryArgs>
         | [<CliPrefix(CliPrefix.None)>] Serialize of ParseResults<SerializeArgs>
 
         interface IArgParserTemplate with
@@ -220,6 +231,7 @@ module CWToolsCLI =
                 | DocsPath _ -> "path to a custom trigger_docs game.log file"
                 | Parse _ -> "parse a file"
                 | Format _ -> "format a file"
+                | ShaderAbiInventory _ -> "scan Stellaris gfx/FX and stellaris.exe into a fail-closed Shader ABI inventory"
                 | Serialize _ -> "created serialized files for embedding"
                 | CacheFile _ -> "path to the cache file"
                 | RulesPath _ -> "path to the cwt rules"
@@ -589,6 +601,12 @@ module CWToolsCLI =
             0
         | Format f ->
             format f
+            0
+        | ShaderAbiInventory inventory ->
+            if game <> Game.STL then failwith "shader-abi-inventory currently supports only --game STL"
+            let output = inventory.GetResult <@ ShaderAbiInventoryArgs.Output @>
+            let version = inventory.TryGetResult <@ ShaderAbiInventoryArgs.GameVersion @>
+            global.CWToolsCLI.ShaderAbiInventory.run directory version output
             0
         | Directory _
         | Game _ ->

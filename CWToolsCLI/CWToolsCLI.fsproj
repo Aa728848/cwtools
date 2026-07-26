@@ -24,6 +24,7 @@
   <ItemGroup>
     <Compile Include="Validator.fs" />
     <Compile Include="Reporters.fs" />
+    <Compile Include="ShaderAbiInventory.fs" />
     <Compile Include="CWToolsCLI.fs" />
     <None Include="App.config" />
     <EmbeddedResource Include="../CWTools/files/**" />
