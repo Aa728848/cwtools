@@ -3554,12 +3554,25 @@ test_scripted_effect_none = {
 }
 """
 
+              let afterOptimizeMemory =
+                  cursorAtMarker
+                      """
+test_scripted_effect_none = {
+    optimize_memory
+    if = {
+        limit = { always = yes }
+    }
+    s|
+}
+"""
+
               let results =
                   [ "ordinary-partial", afterOrdinaryPartial
                     "batch", afterBatch
                     "ordinary", afterOrdinaryEffect
                     "unknown-scalar", afterUnknownScalarEffect
-                    "begin-value", afterBeginValue ]
+                    "begin-value", afterBeginValue
+                    "optimize-memory", afterOptimizeMemory ]
                   |> List.map (fun (caseName, (filetext, pos)) ->
                       caseName, (stl.Complete pos filename filetext |> List.map label))
               let failures =
@@ -3590,7 +3603,10 @@ test_scripted_effect_none = {
                   [ "empty", "test_scripted_effect_none = {\n    |\n}"
                     "partial", "test_scripted_effect_none = {\n    no|\n}"
                     "after-effect", "test_scripted_effect_none = {\n    set_country_flag = yes\n    no|\n}"
-                    "after-batch", "test_scripted_effect_none = {\n    set_spawn_system_batch = begin\n    no|\n}" ]
+                    "after-batch", "test_scripted_effect_none = {\n    set_spawn_system_batch = begin\n    no|\n}"
+                    "after-optimize-memory-empty", "test_scripted_effect_none = {\n    optimize_memory\n    |\n}"
+                    "after-optimize-memory-partial", "test_scripted_effect_none = {\n    optimize_memory\n    no|\n}"
+                    "after-optimize-memory-and-block", "test_scripted_effect_none = {\n    optimize_memory\n    if = { limit = { always = yes } }\n    no|\n}" ]
 
               let failures =
                   cases
@@ -3604,7 +3620,7 @@ test_scripted_effect_none = {
               let triggerFilename = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
               let triggerText, triggerPos =
                   cursorAtMarker
-                      "test_scripted_trigger_none = {\n    has_country_flag = yes\n    ha|\n}"
+                      "test_scripted_trigger_none = {\n    optimize_memory\n    ha|\n}"
               let triggerLabels = stl.Complete triggerPos triggerFilename triggerText |> List.map label
 
               Expect.contains triggerLabels "has_country_flag" (sprintf "A scripted trigger definition body should complete triggers from the full rules, got %A" (triggerLabels |> List.truncate 50))

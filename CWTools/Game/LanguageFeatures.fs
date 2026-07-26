@@ -320,6 +320,24 @@ module LanguageFeatures =
 
                             Some(String.concat "\n" linesWithMagic)
 
+    let private stripBareOptimizeMemoryTags (text: string) =
+        // In scripted definitions this is a parser tag, not a value that owns
+        // the following line. Remove it only from the temporary completion text.
+        text.Split('\n')
+        |> Array.map (fun line ->
+            let commentStart = commentStartOutsideQuotes line
+            let codeEnd = if commentStart < 0 then line.Length else commentStart
+            let code = line.Substring(0, codeEnd)
+
+            if code.Trim().Equals("optimize_memory", StringComparison.OrdinalIgnoreCase) then
+                let chars = line.ToCharArray()
+                for i = 0 to codeEnd - 1 do
+                    if chars.[i] <> '\r' then chars.[i] <- ' '
+                System.String(chars)
+            else
+                line)
+        |> String.concat "\n"
+
     let private scriptCompletion
         (fileManager: FileManager)
         (completionService: CompletionService option)
@@ -375,6 +393,9 @@ module LanguageFeatures =
                 || filepath.Contains("common\\scripted_triggers", StringComparison.OrdinalIgnoreCase)
 
             tryRepairIncompleteLhsCompletionText split filetext currentLineIdx pos isScriptedDefinitionFile
+            |> Option.map (fun repairedText ->
+                if isScriptedDefinitionFile then stripBareOptimizeMemoryTags repairedText
+                else repairedText)
             |> Option.bind processResourceTextCached
 
         // 检测当前文件是否是 inline_script 文件
