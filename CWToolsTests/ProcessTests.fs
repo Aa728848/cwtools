@@ -567,6 +567,32 @@ let plsConfigCompatibilityTests =
               | OK -> failtest "Existing file with an extension outside file_extensions should fail"
               | Invalid _ -> ()
 
+          testWithCapturedLogs "does not duplicate filepath prefixes or extensions"
+          <| fun () ->
+              let files =
+                  [| "gfx/FX/buttonstate_onlydisable.shader" |]
+                      .ToFrozenSet(System.StringComparer.OrdinalIgnoreCase)
+
+              let check value =
+                  CSharpHelpers.FieldValidatorsHelper.CheckFilePathField(
+                      value,
+                      files,
+                      Some "gfx/FX/",
+                      Some ".shader",
+                      true
+                  )
+
+              let completePathValid, _ = check "gfx/FX/buttonstate_onlydisable.shader"
+              let inferredPathValid, _ = check "buttonstate_onlydisable"
+              let differentlyCasedPathValid, _ = check "GFX/fx/BUTTONSTATE_ONLYDISABLE.SHADER"
+              let missingPathValid, missingPath = check "gfx/FX/missing.shader"
+
+              Expect.isTrue completePathValid "a complete path must not receive a second prefix or extension"
+              Expect.isTrue inferredPathValid "a short path should still receive the configured prefix and extension"
+              Expect.isTrue differentlyCasedPathValid "filepath lookup should retain case-insensitive matching"
+              Expect.isFalse missingPathValid "a genuinely missing file should still fail"
+              Expect.equal missingPath "gfx/FX/missing.shader" "the diagnostic path must not contain .shader.shader"
+
           testWithCapturedLogs "validates PLS absolute filepath and filename fields"
           <| fun () ->
               let config =

@@ -196,7 +196,15 @@ public static partial class FieldValidatorsHelper
 
         if (extension is not null)
         {
-            sb.Append(extension.Value);
+            var extensionSpan = extension.Value.AsSpan();
+            if (!sb.AsSpan().EndsWith(extensionSpan, StringComparison.OrdinalIgnoreCase))
+            {
+                sb.Append(extensionSpan);
+            }
+            if (!sb2.AsSpan().EndsWith(extensionSpan, StringComparison.OrdinalIgnoreCase))
+            {
+                sb2.Append(extensionSpan);
+            }
         }
 
         bool isValid = lookup.Contains(sb.AsSpan()) || lookup.Contains(sb2.AsSpan());
@@ -209,8 +217,17 @@ public static partial class FieldValidatorsHelper
             return isValid;
         }
 
-        sb.Insert(0, prefix.Value);
-        sb2.Insert(0, prefix.Value);
+        var normalizedPrefix = prefix.Value.Replace('\\', '/');
+        bool insertedPrefix = false;
+        if (!sb.AsSpan().StartsWith(normalizedPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            sb.Insert(0, normalizedPrefix);
+            insertedPrefix = true;
+        }
+        if (!sb2.AsSpan().StartsWith(normalizedPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            sb2.Insert(0, normalizedPrefix);
+        }
         isValid = lookup.Contains(sb.AsSpan()) || lookup.Contains(sb2.AsSpan());
 
         if (
@@ -227,14 +244,21 @@ public static partial class FieldValidatorsHelper
             noExtension.Append(key.AsSpan().Trim('\"'));
             noExtension.Replace('\\', '/');
             noExtension.Replace("//", "/");
-            noExtension.Insert(0, prefix.Value);
+            if (!noExtension.AsSpan().StartsWith(normalizedPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                noExtension.Insert(0, normalizedPrefix);
+            }
             isValid = lookup.Contains(noExtension.AsSpan());
         }
 
         if (!isValid && generateErrorMessage)
         {
-            // Remove prefix, because we don't want to show the prefix in the error message.
-            sb.Remove(0, prefix.Value.Length);
+            // Remove only a prefix added by this method. A complete path written by the
+            // user must remain complete in the diagnostic.
+            if (insertedPrefix)
+            {
+                sb.Remove(0, normalizedPrefix.Length);
+            }
             file = sb.ToString();
         }
 

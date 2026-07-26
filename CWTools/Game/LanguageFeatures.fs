@@ -294,15 +294,19 @@ module LanguageFeatures =
                         while tokenEnd < lineWithMagic.Length && isCompletionKeyChar lineWithMagic.[tokenEnd] do
                             tokenEnd <- tokenEnd + 1
 
-                        let lineForRepair, tokenEnd =
-                            if tokenStart = magicIndex && tokenEnd = magicIndex + 1 then
-                                lineWithMagic.Insert(magicIndex, "x"), tokenEnd + 1
-                            else
-                                lineWithMagic, tokenEnd
-
-                        let repairedLine = lineForRepair.Insert(tokenEnd, " = { }")
-                        linesWithMagic.[currentLineIdx] <- repairedLine
-                        Some(String.concat "\n" linesWithMagic)
+                        if tokenStart = magicIndex && tokenEnd = magicIndex + 1 then
+                            None
+                        else
+                            // Keep the cursor/magic character at its original column but
+                            // blank the incomplete key token. Completion can then resolve
+                            // the enclosing node and offer its fields; appending a synthetic
+                            // `= { }` node makes the cursor belong to that fake child and can
+                            // incorrectly fall back to root type names.
+                            let repairedChars = lineWithMagic.ToCharArray()
+                            for i = tokenStart to tokenEnd - 1 do
+                                if i <> magicIndex then repairedChars.[i] <- ' '
+                            linesWithMagic.[currentLineIdx] <- System.String(repairedChars)
+                            Some(String.concat "\n" linesWithMagic)
 
     let private scriptCompletion
         (fileManager: FileManager)
@@ -1385,12 +1389,16 @@ module LanguageFeatures =
                             |> Option.map (completeWithEntity completion infoOpt)
                             |> Option.defaultValue []
 
-                        if not (List.isEmpty originalItems) then
-                            originalItems
-                        else
+                        // An incomplete LHS such as `id<cursor>` can still produce a
+                        // non-empty but structurally wrong root/global list. Prefer the
+                        // repaired entity whenever it yields contextual items; the
+                        // original list remains the fallback for unparsable repairs.
+                        let repairedItems =
                             processRepairedResourceCached ()
                             |> Option.map (completeWithEntity completion infoOpt)
                             |> Option.defaultValue []
+
+                        if List.isEmpty repairedItems then originalItems else repairedItems
 
                     // 使用常规补全逻辑
                     match
