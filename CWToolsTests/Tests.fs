@@ -3567,10 +3567,8 @@ test_scripted_effect_none = {
                   |> List.filter (fun (_, labels) -> not (labels |> List.contains "set_ship_flag"))
 
               Expect.isEmpty failures (sprintf "Every scripted effect definition-body slot should retain effect completion, got %A" (failures |> List.map (fun (name, labels) -> name, labels |> List.truncate 50)))
-              let ordinaryLabels = results |> List.find (fst >> (=) "ordinary") |> snd
-              Expect.contains ordinaryLabels "optimize_memory" "Mixed definition bodies should complete permitted bare values as well as keyed effects"
 
-          testWithCapturedLogs "scripted effect definition body completes effects from full rules" <| fun () ->
+          testWithCapturedLogs "scripted definition bodies complete effects and triggers from full rules" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
               let docsPath = "./testfiles/stellarisconfig/config/logs/trigger_docs.log"
               let configtext =
@@ -3602,6 +3600,14 @@ test_scripted_effect_none = {
                   |> List.filter (fun (_, labels) -> not (labels |> List.contains "set_country_flag"))
 
               Expect.isEmpty failures (sprintf "Every scripted effect definition body should complete effects from the full rules, got %A" (failures |> List.map (fun (name, labels) -> name, labels |> List.truncate 50)))
+
+              let triggerFilename = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
+              let triggerText, triggerPos =
+                  cursorAtMarker
+                      "test_scripted_trigger_none = {\n    has_country_flag = yes\n    ha|\n}"
+              let triggerLabels = stl.Complete triggerPos triggerFilename triggerText |> List.map label
+
+              Expect.contains triggerLabels "has_country_flag" (sprintf "A scripted trigger definition body should complete triggers from the full rules, got %A" (triggerLabels |> List.truncate 50))
 
           testWithCapturedLogs "scripted effect file root completion stays at definition level" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"

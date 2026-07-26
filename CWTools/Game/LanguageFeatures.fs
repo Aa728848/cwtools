@@ -250,6 +250,7 @@ module LanguageFeatures =
         (filetextWithMagic: string)
         currentLineIdx
         (pos: pos)
+        removeMarkerInsideBlock
         =
         if currentLineIdx < 0 || currentLineIdx >= split.Length then None
         else
@@ -294,7 +295,10 @@ module LanguageFeatures =
                         while tokenEnd < lineWithMagic.Length && isCompletionKeyChar lineWithMagic.[tokenEnd] do
                             tokenEnd <- tokenEnd + 1
 
-                        if inBlock && tokenStart = magicIndex && tokenEnd = magicIndex + 1 then
+                        if inBlock
+                           && not removeMarkerInsideBlock
+                           && tokenStart = magicIndex
+                           && tokenEnd = magicIndex + 1 then
                             None
                         else
                             // Keep the cursor/magic character at its original column and
@@ -304,7 +308,8 @@ module LanguageFeatures =
                             // into the preceding definition's range and expose its fields.
                             let repairedChars = lineWithMagic.ToCharArray()
                             for i = tokenStart to tokenEnd - 1 do
-                                if i <> magicIndex then repairedChars.[i] <- ' '
+                                if (inBlock && removeMarkerInsideBlock) || i <> magicIndex then
+                                    repairedChars.[i] <- ' '
 
                             let repairedLine = System.String(repairedChars)
                             linesWithMagic.[currentLineIdx] <-
@@ -363,7 +368,13 @@ module LanguageFeatures =
             processResourceTextCached filetext
 
         let processRepairedResourceCached () =
-            tryRepairIncompleteLhsCompletionText split filetext currentLineIdx pos
+            let isScriptedDefinitionFile =
+                filepath.Contains("common/scripted_effects", StringComparison.OrdinalIgnoreCase)
+                || filepath.Contains("common\\scripted_effects", StringComparison.OrdinalIgnoreCase)
+                || filepath.Contains("common/scripted_triggers", StringComparison.OrdinalIgnoreCase)
+                || filepath.Contains("common\\scripted_triggers", StringComparison.OrdinalIgnoreCase)
+
+            tryRepairIncompleteLhsCompletionText split filetext currentLineIdx pos isScriptedDefinitionFile
             |> Option.bind processResourceTextCached
 
         // 检测当前文件是否是 inline_script 文件
