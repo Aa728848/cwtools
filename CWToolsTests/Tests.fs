@@ -3490,6 +3490,46 @@ test_scripted_effect_none = {
 
               Expect.contains labels "set_ship_flag" (sprintf "A scripted effect definition body tail should complete normal effects, got %A" (labels |> List.truncate 50))
 
+          testWithCapturedLogs "scripted effect file root completion stays at definition level" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let filename = Path.GetFullPath(Path.Combine(folder, "common", "scripted_effects", "test.txt"))
+
+              let emptyFiletext, emptyPos =
+                  cursorAtMarker
+                      """
+existing_scripted_effect = {
+    set_ship_flag = yes
+}
+|
+"""
+
+              let partialFiletext, partialPos =
+                  cursorAtMarker
+                      """
+existing_scripted_effect = {
+    set_ship_flag = yes
+}
+s|
+"""
+
+              for filetext, pos in [ emptyFiletext, emptyPos; partialFiletext, partialPos ] do
+                  let labels = stl.Complete pos filename filetext |> List.map label
+
+                  Expect.contains labels "scripted_effect" (sprintf "File-root completion should offer the definition type, got %A" (labels |> List.truncate 50))
+                  Expect.isFalse (labels |> List.contains "set_ship_flag") "File-root completion must not leak fields from the preceding definition body"
+
           testWithCapturedLogs "nested scripted effect calls inside definitions still complete params" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
               let configtext = configFilesFromDir folder

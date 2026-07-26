@@ -271,7 +271,7 @@ module LanguageFeatures =
             let hasEqualsAfterCursor = afterCursorBeforeComment.Contains("=")
             let inBlock = braceDepthBeforeCursor split currentLineIdx column > 0
 
-            if isCommentLine || hasEqualsBeforeCursor || hasEqualsAfterCursor || not inBlock then
+            if isCommentLine || hasEqualsBeforeCursor || hasEqualsAfterCursor then
                 None
             else
                 let linesWithMagic = filetextWithMagic.Split('\n')
@@ -294,18 +294,25 @@ module LanguageFeatures =
                         while tokenEnd < lineWithMagic.Length && isCompletionKeyChar lineWithMagic.[tokenEnd] do
                             tokenEnd <- tokenEnd + 1
 
-                        if tokenStart = magicIndex && tokenEnd = magicIndex + 1 then
+                        if inBlock && tokenStart = magicIndex && tokenEnd = magicIndex + 1 then
                             None
                         else
-                            // Keep the cursor/magic character at its original column but
-                            // blank the incomplete key token. Completion can then resolve
-                            // the enclosing node and offer its fields; appending a synthetic
-                            // `= { }` node makes the cursor belong to that fake child and can
-                            // incorrectly fall back to root type names.
+                            // Keep the cursor/magic character at its original column and
+                            // blank the incomplete key token. Inside a block this exposes
+                            // the enclosing node's fields. At file root, add a synthetic
+                            // definition body so a trailing partial key cannot be absorbed
+                            // into the preceding definition's range and expose its fields.
                             let repairedChars = lineWithMagic.ToCharArray()
                             for i = tokenStart to tokenEnd - 1 do
                                 if i <> magicIndex then repairedChars.[i] <- ' '
-                            linesWithMagic.[currentLineIdx] <- System.String(repairedChars)
+
+                            let repairedLine = System.String(repairedChars)
+                            linesWithMagic.[currentLineIdx] <-
+                                if inBlock then
+                                    repairedLine
+                                else
+                                    repairedLine.Insert(magicIndex + 1, " = { }")
+
                             Some(String.concat "\n" linesWithMagic)
 
     let private scriptCompletion
