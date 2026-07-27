@@ -334,14 +334,18 @@ type HOI4Game(setupSettings: HOI4Settings) =
 
     let validationSettings =
         { validators =
-            [ validateIfWithNoEffect, "ifnoeffect"
-              validateRedundantANDWithNOT, "AND"
-              validateOptimisations embeddedSettings.featureSettings.ListMergeOptimisations, "opt" ]
+            CWTools.Validation.ValidationCore.toLocalStructureValidators
+                [ validateIfWithNoEffect, "ifnoeffect"
+                  validateRedundantANDWithNOT, "AND"
+                  validateOptimisations embeddedSettings.featureSettings.ListMergeOptimisations, "opt" ]
+          globalValidators = []
           experimentalValidators = []
           heavyExperimentalValidators = []
           experimental = setupSettings.validation.experimental
           fileValidators = []
-          lookupValidators = commonValidationRules
+          globalFileValidators = []
+          lookupValidators = []
+          globalLookupValidators = commonValidationRules
           lookupFileValidators = []
           useRules = true
           debugRulesOnly = false

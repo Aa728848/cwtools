@@ -91,12 +91,15 @@ open CWTools.Localisation.EU5
 
 type EU5Game(setupSettings: EU5Settings) =
     let validationSettings =
-        { validators = [ validateIfWithNoEffect, "ifnoeffect" ]
+        { validators = CWTools.Validation.ValidationCore.toLocalStructureValidators [ validateIfWithNoEffect, "ifnoeffect" ]
+          globalValidators = []
           experimentalValidators = []
           heavyExperimentalValidators = []
           experimental = false
           fileValidators = []
-          lookupValidators =
+          globalFileValidators = []
+          lookupValidators = []
+          globalLookupValidators =
             [ validateUndefinedModifierTypes, "undefinedmodifiers"
               validateDefinitionInjections, "definitioninjections"
               validateConfiguredOnActionEventTypes, "configuredonactioneventtypes" ]

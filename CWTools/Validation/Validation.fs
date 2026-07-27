@@ -647,19 +647,20 @@ type ValidationResult =
 type EntitySet<'T when 'T :> ComputedData>(entities: struct (Entity * Lazy<'T>) seq) =
     static do GlobOptions.Default.Evaluation.CaseInsensitive <- true
 
-    let _entities = entities |> List.ofSeq
+    let _entities = lazy (entities |> List.ofSeq)
+    let force () = _entities.Value
 
     member _.GlobMatch(pattern: string) =
         let glob = Glob.Parse(pattern)
 
-        _entities
+        force ()
         |> List.choose (fun struct (es, _) -> if glob.IsMatch(es.filepath) then Some es.entity else None)
 
     member this.GlobMatchChildren(pattern: string) =
         this.GlobMatch(pattern) |> List.map (fun e -> e.Children) |> List.collect id
 
     member _.AllOfType(entityType: EntityType) =
-        _entities
+        force ()
         |> List.choose (fun struct (es, d) ->
             if es.entityType = entityType then
                 Some(es.entity, d)
@@ -671,19 +672,19 @@ type EntitySet<'T when 'T :> ComputedData>(entities: struct (Entity * Lazy<'T>) 
         |> List.map (fun (e, d) -> e.Children)
         |> List.collect id
 
-    member _.All = _entities |> List.map (fun struct (es, _) -> es.entity)
-    member _.AllWithData = _entities |> List.map (fun struct (es, d) -> es.entity, d)
+    member _.All = force () |> List.map (fun struct (es, _) -> es.entity)
+    member _.AllWithData = force () |> List.map (fun struct (es, d) -> es.entity, d)
 
     member this.AllEffects =
-        _entities
+        force ()
         |> List.collect (fun struct (_, d) -> d.Force().EffectBlocks |> Option.defaultValue [])
 
     member this.AllTriggers =
-        _entities
+        force ()
         |> List.collect (fun struct (_, d) -> d.Force().TriggerBlocks |> Option.defaultValue [])
 
     member _.AddOrGetCached id generator =
-        _entities
+        force ()
         |> List.collect (fun struct (e, d) ->
             let data = d.Force()
 
@@ -695,23 +696,53 @@ type EntitySet<'T when 'T :> ComputedData>(entities: struct (Entity * Lazy<'T>) 
                 v)
 
 
-    member _.Raw = _entities
+    member _.Raw = force ()
 
 type STLEntitySet = EntitySet<STLComputedData>
 type EU4EntitySet = EntitySet<EU4ComputedData>
 type VIC2EntitySet = EntitySet<VIC2ComputedData>
 type StructureValidator<'T when 'T :> ComputedData> = EntitySet<'T> -> EntitySet<'T> -> ValidationResult
+type LocalStructureValidator<'T when 'T :> ComputedData> = EntitySet<'T> -> ValidationResult
 type STLStructureValidator = StructureValidator<STLComputedData>
 type EU4StructureValidator = StructureValidator<EU4ComputedData>
 type VIC2StructureValidator = StructureValidator<VIC2ComputedData>
 type FileValidator<'T when 'T :> ComputedData> = IResourceAPI<'T> -> EntitySet<'T> -> ValidationResult
 type STLFileValidator = FileValidator<STLComputedData>
 type LookupValidator<'T when 'T :> ComputedData> = Lookup -> StructureValidator<'T>
+type LocalLookupValidator<'T when 'T :> ComputedData> = Lookup -> LocalStructureValidator<'T>
 
 type LocalisationValidator<'T when 'T :> ComputedData> =
-    EntitySet<'T> -> (Lang * Set<string>) array -> EntitySet<'T> -> ValidationResult
+    (Lang * Set<string>) array -> EntitySet<'T> -> ValidationResult
 
 module ValidationCore =
+
+    let private forbiddenWorkspaceEntitySet<'T when 'T :> ComputedData> () =
+        let entities =
+            Seq.delay (fun () ->
+                invalidOp
+                    "A validator registered for local validation attempted to enumerate the workspace entity set. Register it in the global validation domain instead.")
+
+        EntitySet<'T>(entities)
+
+    /// Adapts a legacy two-set validator after auditing it for local use. The
+    /// workspace view deliberately fails on first access so future changes cannot
+    /// silently reintroduce a full workspace enumeration on the editor path.
+    let toLocalStructureValidator (validator: StructureValidator<'T>) : LocalStructureValidator<'T> =
+        fun changedEntities -> validator (forbiddenWorkspaceEntitySet<'T> ()) changedEntities
+
+    let toLocalStructureValidators
+        (validators: (StructureValidator<'T> * string) list)
+        : (LocalStructureValidator<'T> * string) list =
+        validators |> List.map (fun (validator, name) -> toLocalStructureValidator validator, name)
+
+    let toLocalLookupValidator (validator: LookupValidator<'T>) : LocalLookupValidator<'T> =
+        fun lookup changedEntities ->
+            validator lookup (forbiddenWorkspaceEntitySet<'T> ()) changedEntities
+
+    let toLocalLookupValidators
+        (validators: (LookupValidator<'T> * string) list)
+        : (LocalLookupValidator<'T> * string) list =
+        validators |> List.map (fun (validator, name) -> toLocalLookupValidator validator, name)
 
 
     let inline invData (code: ErrorCode) (l: IKeyPos) (data: option<string>) =

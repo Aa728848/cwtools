@@ -131,12 +131,15 @@ open VIC2GameFunctions
 
 type VIC2Game(setupSettings: VIC2Settings) =
     let validationSettings =
-        { validators = [ validateIfWithNoEffect, "ifnoeffect" ]
+        { validators = CWTools.Validation.ValidationCore.toLocalStructureValidators [ validateIfWithNoEffect, "ifnoeffect" ]
+          globalValidators = []
           experimentalValidators = []
           heavyExperimentalValidators = []
           experimental = false
           fileValidators = []
-          lookupValidators = commonValidationRules
+          globalFileValidators = []
+          lookupValidators = []
+          globalLookupValidators = commonValidationRules
           lookupFileValidators = []
           useRules = true
           debugRulesOnly = false

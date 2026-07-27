@@ -153,7 +153,7 @@ module STLLocalisationValidation =
 
 
     let valTechLocs: LocalisationValidator =
-        fun _ keys es ->
+        fun keys es ->
             let entities = es.GlobMatchChildren("**/common/technology/*.txt")
 
             entities
@@ -210,7 +210,7 @@ module STLLocalisationValidation =
 
 
     let valPolicies: LocalisationValidator =
-        fun _ keys es ->
+        fun keys es ->
             let policies = es.GlobMatchChildren("**/common/policies/*.txt")
             let options = policies |> Seq.collect (fun p -> p.Childs "option")
 

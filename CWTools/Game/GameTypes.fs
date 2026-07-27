@@ -176,7 +176,8 @@ type ScopeInferenceInfo =
       candidates: string list
       resolvedScope: string
       certainty: string
-      evidence: string list }
+      evidence: string list
+      isIncomplete: bool }
 
 type IScopeInferenceProvider =
     abstract ScopeInferenceAtPos: pos -> string -> string -> ScopeContext -> ScopeInferenceInfo option

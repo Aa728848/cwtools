@@ -95,12 +95,15 @@ open CWTools.Localisation.CK3
 
 type CK3Game(setupSettings: CK3Settings) =
     let validationSettings =
-        { validators = [ validateIfWithNoEffect, "ifnoeffect" ]
+        { validators = CWTools.Validation.ValidationCore.toLocalStructureValidators [ validateIfWithNoEffect, "ifnoeffect" ]
+          globalValidators = []
           experimentalValidators = []
           heavyExperimentalValidators = []
           experimental = false
           fileValidators = []
-          lookupValidators = commonValidationRules
+          globalFileValidators = []
+          lookupValidators = []
+          globalLookupValidators = commonValidationRules
           lookupFileValidators = []
           useRules = true
           debugRulesOnly = false

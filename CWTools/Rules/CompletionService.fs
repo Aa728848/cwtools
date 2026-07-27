@@ -1283,6 +1283,12 @@ type CompletionService
 
         let scoreFunction = scoreFunction allUsedKeys
 
+        let isRootSubtypeValuePath =
+            match path with
+            | [ (_, _, _, CompletionContext.LeafValueRHS, _) ] ->
+                pathFilteredTypes |> List.exists _.rootCompletionFromSubtypes
+            | _ -> false
+
         let tryAliasParameterCompletions () =
             match aliasParamMarkers.Length, tryPathAfterParameters path, tryFindNodePathAtPos pos entity.entity with
             | 0, _, _
@@ -1363,6 +1369,7 @@ type CompletionService
                 let allVars = effectiveGlobalVars @ localVars
                 allVars |> List.distinct |> List.map (fun s -> CompletionResponse.CreateSimple s)
             | Some(_, _, _, CompletionContext.NodeLHS, _), 1 -> []
+            | Some(_, _, _, CompletionContext.LeafValueRHS, _), 1 when isRootSubtypeValuePath -> []
             | _ ->
                 match tryAliasParameterCompletions () with
                 | Some items -> items
@@ -1372,28 +1379,24 @@ type CompletionService
                     |> Seq.toList
         //TODO: Expand this to use a snippet not just the name of the type
         let createSnippetForType (typeDef: TypeDefinition) =
-            let subtypeSnippets =
-                typeDef.subtypes
-                |> List.choose (fun st ->
-                    if st.typeKeyField.IsSome then
-                        Some st.typeKeyField.Value
-                    else
-                        None)
-
-            let rootSnippets =
-                if typeDef.rootCompletionFromSubtypes then
-                    []
-                else
-                    match typeDef.typeKeyFilter with
-                    | Some(keys: string list, false) -> keys
-                    | _ -> [ typeDef.name ]
-
-            rootSnippets @ subtypeSnippets
+            (if typeDef.rootCompletionFromSubtypes then
+                 typeDef.subtypes
+                 |> List.collect (fun subtype ->
+                     [ subtype.typeKeyField; subtype.startsWith ] |> List.choose id)
+             else
+                 match typeDef.typeKeyFilter with
+                 | Some(keys: string list, false) -> keys
+                 | _ -> [ typeDef.name ])
             |> List.map (fun s -> createSnippetForClause (fun _ -> 1) [||] None s)
 
         let rootTypeItems =
             match path with
-            | [ (_, _, _, CompletionContext.NodeLHS, _) ] -> pathFilteredTypes |> List.collect createSnippetForType
+            | [ (_, _, _, CompletionContext.NodeLHS, _) ]
+                -> pathFilteredTypes |> List.collect createSnippetForType
+            | [ (_, _, _, CompletionContext.LeafValueRHS, _) ] ->
+                pathFilteredTypes
+                |> List.filter _.rootCompletionFromSubtypes
+                |> List.collect createSnippetForType
             | y when y.Length = 0 -> pathFilteredTypes |> List.collect createSnippetForType
             | _ -> []
         // eprintfn "%A" path
@@ -1577,33 +1580,30 @@ type CompletionService
                 let allVars = effectiveGlobalVars @ localVars
                 allVars |> List.distinct |> List.map (fun s -> CompletionResponse.CreateSimple s)
             | Some(_, _, _, CompletionContext.NodeLHS, _), 1 -> []
+            | Some(_, _, _, CompletionContext.LeafValueRHS, _), 1 when not callerHasTypeRoot -> []
             | _ ->
                 pathFilteredTypes
                 |> Seq.collect (fun t -> validateTypeSkipRootInline t t.skipRootKey inlinePath)
                 |> Seq.toList
 
         let createSnippetForType (typeDef: TypeDefinition) =
-            let subtypeSnippets =
-                typeDef.subtypes
-                |> List.choose (fun st -> if st.typeKeyField.IsSome then Some st.typeKeyField.Value else None)
-
-            let rootSnippets =
-                if typeDef.rootCompletionFromSubtypes then
-                    []
-                else
-                    match typeDef.typeKeyFilter with
-                    | Some(keys: string list, false) -> keys
-                    | _ -> [ typeDef.name ]
-
-            rootSnippets @ subtypeSnippets
+            (if typeDef.rootCompletionFromSubtypes then
+                 typeDef.subtypes
+                 |> List.collect (fun subtype ->
+                     [ subtype.typeKeyField; subtype.startsWith ] |> List.choose id)
+             else
+                 match typeDef.typeKeyFilter with
+                 | Some(keys: string list, false) -> keys
+                 | _ -> [ typeDef.name ])
             |> List.map (fun s -> createSnippetForClause (fun _ -> 1) [||] None s)
 
         // Only show root type items when there's NO intermediate caller path.
         // If we have a caller path, we're inside a block (e.g. immediate), not at type root.
         let rootTypeItems =
-            match intermediateCallerPath, inlinePath with
-            | [], [ (_, _, _, CompletionContext.NodeLHS, _) ] -> pathFilteredTypes |> List.collect createSnippetForType
-            | [], y when y.Length = 0 -> pathFilteredTypes |> List.collect createSnippetForType
+            match callerHasTypeRoot, intermediateCallerPath, inlinePath with
+            | false, [], [ (_, _, _, CompletionContext.NodeLHS, _) ]
+            | false, [], [ (_, _, _, CompletionContext.LeafValueRHS, _) ] -> pathFilteredTypes |> List.collect createSnippetForType
+            | false, [], y when y.Length = 0 -> pathFilteredTypes |> List.collect createSnippetForType
             | _ -> []
 
         let scoreForLabel (label: string) =

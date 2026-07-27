@@ -2408,7 +2408,7 @@ let testsv =
                   Expect.sequenceEqual suggestions expected "Completion should match"
               | Failure(e, _, _) -> Expect.isTrue false e
 
-          testWithCapturedLogs "test partial on_action root omits static subtype completion"
+          testWithCapturedLogs "test partial on_action root completes configured subtype keys"
           <| fun () ->
               let configtext =
                   [ "./testfiles/configtests/config/on_actions.cwt",
@@ -2448,9 +2448,50 @@ let testsv =
                       | Detailed _ -> failwith "todo")
                   |> Seq.toList
 
-              Expect.isEmpty
-                  suggestions
-                  "Partial on_action roots should not emit static subtype or type-name completions"
+              Expect.contains suggestions "on_game_start" "Configured on_action keys should be offered at the file root"
+              Expect.contains suggestions "on_monthly_pulse" "All configured subtype keys should remain available for client filtering"
+              Expect.isFalse (suggestions |> List.contains "events") "Root completion must not return on_action child fields"
+
+          testWithCapturedLogs "test on_action completion after stray root close stays at root"
+          <| fun () ->
+              let configtext =
+                  [ "./testfiles/configtests/config/on_actions.cwt",
+                    "types = {\n\
+                          ## root_completion = subtypes\n\
+                          type[on_action] = {\n\
+                              path = \"game/common/on_actions\"\n\
+                              ## type_key_filter = on_monthly_pulse\n\
+                              subtype[on_monthly_pulse] = { }\n\
+                          }\n\
+                      }\n\
+                      on_action = {\n\
+                          events = { scalar = scalar }\n\
+                          random_events = { scalar = scalar }\n\
+                      }" ]
+
+              let folder = "./testfiles/configtests/completiontests"
+              let settings = emptyStellarisSettings folder
+              let settings =
+                  { settings with
+                      embedded = FromConfig([], [])
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let input = "on_monthly_pulse = {\n    events = { test.1 }\n}\n}"
+              let labels =
+                  stl.Complete (mkPos 4 1) "common/on_actions/test.txt" input
+                  |> List.map (function
+                      | Simple(label, _, _)
+                      | Detailed(label, _, _, _)
+                      | Snippet(label, _, _, _, _) -> label)
+
+              Expect.isFalse (labels |> List.contains "events") "A stray root close must not reopen the previous on_action RHS"
+              Expect.isFalse (labels |> List.contains "random_events") "Root recovery must not return on_action child fields"
 
           testWithCapturedLogs "test test ship_behavior"
           <| fun () ->

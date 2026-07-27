@@ -101,7 +101,7 @@ module LanguageFeatures =
         (infoService: InfoService option)
         =
         let managerId = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(resourceManager)
-        let version = ResourceManagerEager.currentVersion ()
+        let version = ResourceManagerEager.currentResource ()
         let cacheKey = struct (managerId, version)
 
         let index =
@@ -1073,39 +1073,53 @@ module LanguageFeatures =
                         
                         log (sprintf "completion: scriptName='%s', scriptFileName='%s'" scriptName scriptFileName)
                         
-                        // 检查文件内容是否包含对指定 inline_script 的调用引用
-                        // 支持三种匹配模式：
-                        //   1. 精确匹配：完整路径或文件名出现在文件中
-                        //   2. 参数化路径匹配：将 script 行中的 $PARAM$ 替换为正则通配符后匹配
-                        //      例如 script = components/kuat_template_tech_overwrite_$kuat_tech_overwrite$
-                        //      匹配 → components/kuat_template_tech_overwrite_yes
-                        let fileContainsInlineRef allowPathDefaults (targetScriptName: string) (targetFileName: string) (fileContent: string) =
-                            let normTarget = targetScriptName.Replace('\\', '/')
-                            // 1. 精确匹配
-                            if fileContent.Contains(normTarget, StringComparison.OrdinalIgnoreCase) ||
-                               fileContent.Contains(normTarget.Replace('/', '\\'), StringComparison.OrdinalIgnoreCase) then
-                                true
-                            elif fileContent.Contains(targetFileName, StringComparison.OrdinalIgnoreCase) then
-                                true
-                            else
-                                // 2. 参数化路径匹配：提取所有 script = xxx 行，将 $..$ 替换为正则通配符后匹配
-                                let scriptLinePattern = System.Text.RegularExpressions.Regex(@"script\s*=\s*([^\s}]+)")
-                                let paramPattern = inlinePathParameterPattern allowPathDefaults
-                                let matches = scriptLinePattern.Matches(fileContent)
-                                matches
+                        // Extract only actual inline-script assignments. A plain substring
+                        // search for the target's basename can select unrelated definitions
+                        // (for example a button-effect key containing the same words), which
+                        // then gives completion the wrong caller grammar.
+                        let inlineReferencePattern =
+                            System.Text.RegularExpressions.Regex(
+                                @"(?:\binline_script\s*=\s*(?:""([^""]+)""|([^\s{}]+))|\bscript\s*=\s*(?:""([^""]+)""|([^\s{}]+)))",
+                                System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+
+                        let inlineReferences (fileContent: string) =
+                            fileContent.Split('\n')
+                            |> Seq.mapi (fun lineIndex line -> lineIndex, line.TrimEnd('\r'))
+                            |> Seq.filter (fun (_, line) -> not (line.TrimStart().StartsWith("#")))
+                            |> Seq.collect (fun (lineIndex, line) ->
+                                inlineReferencePattern.Matches(line)
                                 |> Seq.cast<System.Text.RegularExpressions.Match>
-                                |> Seq.exists (fun m ->
-                                    let callPath = m.Groups.[1].Value.Trim()
-                                    if callPath.Contains("$") && canMatchParameterizedInlinePath allowPathDefaults callPath then
-                                        // 将 $PARAM$ 替换为 .+ 正则通配符
-                                        let regexStr = paramPattern.Replace(callPath, ".+").Replace('\\', '/')
-                                        try
-                                            let regex = System.Text.RegularExpressions.Regex(
-                                                "^" + System.Text.RegularExpressions.Regex.Escape(regexStr).Replace(@"\.\+", ".+") + "$",
-                                                System.Text.RegularExpressions.RegexOptions.IgnoreCase)
-                                            regex.IsMatch(normTarget)
-                                        with _ -> false
-                                    else false)
+                                |> Seq.choose (fun m ->
+                                    [ 1 .. 4 ]
+                                    |> List.tryPick (fun groupIndex ->
+                                        let value = m.Groups.[groupIndex].Value.Trim()
+                                        if value = "" then None else Some(lineIndex, value))))
+
+                        let inlineReferenceMatches allowPathDefaults (targetScriptName: string) (callPath: string) =
+                            let normTarget = targetScriptName.Replace('\\', '/')
+                            let normCallPath = callPath.Replace('\\', '/')
+
+                            if String.Equals(normCallPath, normTarget, StringComparison.OrdinalIgnoreCase) then
+                                true
+                            elif normCallPath.Contains("$") && canMatchParameterizedInlinePath allowPathDefaults normCallPath then
+                                let paramPattern = inlinePathParameterPattern allowPathDefaults
+                                let regexStr = paramPattern.Replace(normCallPath, ".+")
+
+                                try
+                                    let regex =
+                                        System.Text.RegularExpressions.Regex(
+                                            "^" + System.Text.RegularExpressions.Regex.Escape(regexStr).Replace(@"\.\+", ".+") + "$",
+                                            System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+
+                                    regex.IsMatch(normTarget)
+                                with _ ->
+                                    false
+                            else
+                                false
+
+                        let fileContainsInlineRef allowPathDefaults (targetScriptName: string) (fileContent: string) =
+                            inlineReferences fileContent
+                            |> Seq.exists (fun (_, callPath) -> inlineReferenceMatches allowPathDefaults targetScriptName callPath)
                         
                         // 判断一个实体是否在 inline_scripts 目录
                         let isInlineScriptEntity (e: Entity) =
@@ -1128,13 +1142,13 @@ module LanguageFeatures =
                         let allEntities = resourceManager.Api.AllEntities()
                         
                         // 在指定的实体集合中搜索调用者
-                        let findCallerIn (entities: struct (Entity * 'a) seq) (targetName: string) (targetFileName: string) =
+                        let findCallerIn (entities: struct (Entity * 'a) seq) (targetName: string) =
                             entities
                             |> Seq.tryPick (fun struct (e, _) ->
                                 try
                                     let fileContent = System.IO.File.ReadAllText(e.filepath)
                                     let allowPathDefaults = not (isInlineScriptEntity e)
-                                    if fileContainsInlineRef allowPathDefaults targetName targetFileName fileContent then Some e else None
+                                    if fileContainsInlineRef allowPathDefaults targetName fileContent then Some e else None
                                 with _ -> None)
                         
                         // 递归查找根调用者（非 inline_script 的调用者）
@@ -1152,14 +1166,14 @@ module LanguageFeatures =
                                     |> Seq.filter (fun struct (e, _) ->
                                         e.logicalpath.Contains("common/component_templates", StringComparison.OrdinalIgnoreCase) ||
                                         e.logicalpath.Contains("common\\component_templates", StringComparison.OrdinalIgnoreCase))
-                                    |> findCallerIn <| targetName <| targetFileName
+                                    |> findCallerIn <| targetName
                                     |> function
                                        | Some e -> Some e
                                        | None ->
-                                           // 扩展搜索所有非 inline_script 文件
-                                           allEntities
-                                           |> Seq.filter (fun struct (e, _) -> not (isInlineScriptEntity e))
-                                           |> findCallerIn <| targetName <| targetFileName
+                                            // 扩展搜索所有非 inline_script 文件
+                                            allEntities
+                                            |> Seq.filter (fun struct (e, _) -> not (isInlineScriptEntity e))
+                                            |> findCallerIn <| targetName
                                 
                                 match nonInlineCallerOpt with
                                 | Some e -> Some e
@@ -1171,7 +1185,7 @@ module LanguageFeatures =
                                             isInlineScriptEntity e &&
                                             not (newVisited.Contains(
                                                 (extractInlineScriptName e.logicalpath |> Option.defaultValue "").ToLowerInvariant())))
-                                        |> findCallerIn <| targetName <| targetFileName
+                                        |> findCallerIn <| targetName
                                     
                                     match inlineCallerOpt with
                                     | Some inlineCaller ->
@@ -1212,41 +1226,14 @@ module LanguageFeatures =
                                     |> Seq.toList
                                 with _ -> []
 
-                            let scriptLinePattern = System.Text.RegularExpressions.Regex(@"script\s*=\s*([^\s}]+)")
-
-                            let findScriptLine allowPathDefaults (fileContent: string) (targetScriptFileName: string) (targetScriptName: string) =
-                                let lines = fileContent.Split('\n')
-                                let normName = targetScriptName.Replace('\\', '/')
-                                let mutable found = -1
-                                let paramPattern = inlinePathParameterPattern allowPathDefaults
-
-                                for i = 0 to lines.Length - 1 do
-                                    if found = -1 then
-                                        let line = lines.[i]
-
-                                        if line.Contains(targetScriptFileName, StringComparison.OrdinalIgnoreCase) then
-                                            found <- i
-                                        else
-                                            let m = scriptLinePattern.Match(line)
-
-                                            if m.Success && m.Groups.[1].Value.Contains("$") then
-                                                let callPath = m.Groups.[1].Value.Trim()
-                                                if canMatchParameterizedInlinePath allowPathDefaults callPath then
-                                                    let regexStr = paramPattern.Replace(callPath, ".+").Replace('\\', '/')
-
-                                                    try
-                                                        let regex =
-                                                            System.Text.RegularExpressions.Regex(
-                                                                "^" + System.Text.RegularExpressions.Regex.Escape(regexStr).Replace(@"\.\+", ".+") + "$",
-                                                                System.Text.RegularExpressions.RegexOptions.IgnoreCase
-                                                            )
-
-                                                        if regex.IsMatch(normName) then
-                                                            found <- i
-                                                    with _ ->
-                                                        ()
-
-                                found
+                            let findScriptLine allowPathDefaults (fileContent: string) (_targetScriptFileName: string) (targetScriptName: string) =
+                                inlineReferences fileContent
+                                |> Seq.tryPick (fun (lineIndex, callPath) ->
+                                    if inlineReferenceMatches allowPathDefaults targetScriptName callPath then
+                                        Some lineIndex
+                                    else
+                                        None)
+                                |> Option.defaultValue -1
 
                             let findDirectInlineCallerReferencingTarget () =
                                 allEntities
@@ -1255,7 +1242,7 @@ module LanguageFeatures =
                                         try
                                             let content = System.IO.File.ReadAllText(e.filepath)
 
-                                            if fileContainsInlineRef false scriptName scriptFileName content then
+                                            if fileContainsInlineRef false scriptName content then
                                                 Some e
                                             else
                                                 None

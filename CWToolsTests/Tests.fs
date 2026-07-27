@@ -47,6 +47,19 @@ Thread.CurrentThread.CurrentUICulture <- CultureInfo("ru-RU")
 
 [<Tests>]
 let carrierScopeContractTests =
+    let makeCarrierEntity logicalpath text =
+        match CKParser.parseString text logicalpath with
+        | Success(statements, _, _) ->
+            let node = STLProcess.shipProcess.ProcessNode () "root" (mkZeroFile logicalpath) statements
+            { filepath = logicalpath
+              logicalpath = logicalpath
+              rawEntity = node
+              entity = node
+              validate = true
+              entityType = EntityType.Other
+              overwrite = Overwrite.No }
+        | Failure(error, _, _) -> failwith error
+
     testList
         "carrier scope contracts"
         [ test "carrier inherits contracts supported by either planet or ship" {
@@ -69,7 +82,68 @@ let carrierScopeContractTests =
               Expect.sequenceEqual
                   (normalize [ ship; carrier; country ])
                   [ ship; country; carrier ]
-                  "ship contracts should accept the Carrier union" } ]
+                  "ship contracts should accept the Carrier union" }
+
+          test "carrier invalidation classifies semantic contributors" {
+              Expect.isFalse
+                  (ResourceManagerEager.isCarrierRelevantPath "common/buildings/example.txt")
+                  "ordinary definition files should keep the current Carrier snapshot"
+              Expect.isTrue
+                  (ResourceManagerEager.isCarrierRelevantPath "common/on_actions/example.txt")
+                  "on_action changes can alter Carrier event callers"
+              Expect.isTrue
+                  (ResourceManagerEager.isCarrierRelevantPath "events/example.txt")
+                  "root-level event paths must be classified without a leading slash"
+              Expect.isTrue
+                  (ResourceManagerEager.isCarrierRelevantNodeKey "country_event")
+                  "event calls and definitions contribute to Carrier propagation"
+              Expect.isTrue
+                  (ResourceManagerEager.isCarrierRelevantNodeKey "start_situation")
+                  "situation target propagation contributes to Carrier inference"
+              Expect.isFalse
+                  (ResourceManagerEager.isCarrierRelevantNodeKey "planet_modifier")
+                  "unrelated keys should not advance the Carrier epoch" }
+
+          test "carrier contribution fingerprint ignores formatting but tracks semantics" {
+              let baseline =
+                  makeCarrierEntity "events/test.txt" "country_event = { id = test.1 }"
+              let commentOnly =
+                  makeCarrierEntity "events/test.txt" "# formatting\ncountry_event = { id = test.1 }"
+              let changed =
+                  makeCarrierEntity "events/test.txt" "country_event = { id = test.2 }"
+
+              Expect.equal
+                  (CarrierContribution.semanticFingerprint baseline)
+                  (CarrierContribution.semanticFingerprint commentOnly)
+                  "comments and positions must not invalidate the Carrier snapshot"
+              Expect.notEqual
+                  (CarrierContribution.semanticFingerprint baseline)
+                  (CarrierContribution.semanticFingerprint changed)
+                  "event identity changes must invalidate the Carrier snapshot" } ]
+
+[<Tests>]
+let localValidationContractTests =
+    testList
+        "local validation contracts"
+        [ test "audited local validators cannot enumerate the workspace view" {
+              let validator: StructureValidator<STLComputedData> =
+                  fun workspace _changed ->
+                      workspace.All |> ignore
+                      OK
+              let local = ValidationCore.toLocalStructureValidator validator
+              let changed = EntitySet<STLComputedData>(Seq.empty)
+
+              Expect.throws
+                  (fun () -> local changed |> ignore)
+                  "misclassified project-wide validators must fail before a hot-path enumeration" }
+
+          test "audited local validators receive changed entities normally" {
+              let validator: StructureValidator<STLComputedData> =
+                  fun _workspace _changed -> OK
+              let local = ValidationCore.toLocalStructureValidator validator
+              let changed = EntitySet<STLComputedData>(Seq.empty)
+
+              Expect.equal (local changed) OK "a validator that ignores the workspace view remains local" } ]
 
 [<Tests>]
 let nameSuggestionTests =
@@ -3082,6 +3156,24 @@ let inlineScriptCompletionRegressionTests =
               Expect.contains labels "expected_leaf" "Nested inline completion should use the concrete child block"
               Expect.isFalse (labels |> List.contains "root_only") "Nested inline completion should not fall back to root fields"
 
+              let eventFragmentFilename =
+                  Path.GetFullPath(
+                      Path.Combine(folder, "common", "inline_scripts", "events", "event_fragment.txt")
+                  )
+              let eventFragmentText = File.ReadAllText(eventFragmentFilename).TrimEnd() + "\n"
+              let eventRootLabels =
+                  stl.Complete
+                      (mkPos (eventFragmentText.Split('\n').Length) 0)
+                      eventFragmentFilename
+                      eventFragmentText
+                  |> List.map (function
+                      | Simple(label, _, _)
+                      | Detailed(label, _, _, _)
+                      | Snippet(label, _, _, _, _) -> label)
+
+              Expect.contains eventRootLabels "option" "Completion after a closed inline option should return event-root fields"
+              Expect.isFalse (eventRootLabels |> List.contains "test") "Completion after a closed inline option must not stay inside that option"
+
               let parameterizedFilename =
                   Path.GetFullPath(
                       Path.Combine(folder, "common", "inline_scripts", "completion_param_common.txt")
@@ -4899,10 +4991,18 @@ let onActionLivenessTests =
             stl.UpdateFile true updatePath None
             |> List.filter (fun e -> e.code = "CW239")
 
+        Expect.isEmpty
+            updateErrors
+            "UpdateFile should defer unused-type diagnostics to the global validation domain"
+
+        let globalErrors =
+            stl.ValidateFiles [updatePath]
+            |> List.filter (fun e -> e.code = "CW239")
+
         Expect.equal
-            updateErrors.Length
+            globalErrors.Length
             1
-            $"UpdateFile should also report the unused on_action: %A{updateErrors |> List.map (fun e -> e.message)}"
+            $"Global validation should report the unused on_action: %A{globalErrors |> List.map (fun e -> e.message)}"
 
 [<Tests>]
 let dynamicPlanetKillerOnActionTests =

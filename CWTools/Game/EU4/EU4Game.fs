@@ -326,12 +326,16 @@ open EU4GameFunctions
 
 type EU4Game(setupSettings: EU4Settings) =
     let validationSettings =
-        { validators = [ validateEU4NaiveNot, "not"; validateIfWithNoEffect, "ifnoeffect" ]
+        { validators =
+            CWTools.Validation.ValidationCore.toLocalStructureValidators [ validateEU4NaiveNot, "not"; validateIfWithNoEffect, "ifnoeffect" ]
+          globalValidators = []
           experimentalValidators = []
           heavyExperimentalValidators = []
           experimental = false
           fileValidators = []
-          lookupValidators = commonValidationRules
+          globalFileValidators = []
+          lookupValidators = []
+          globalLookupValidators = commonValidationRules
           lookupFileValidators = [ valScriptedEffectParams, "scripted_effects" ]
           useRules = true
           debugRulesOnly = false

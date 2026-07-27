@@ -1,0 +1,3 @@
+event_fragment_button = {
+    custom_tooltip = event_fragment
+}

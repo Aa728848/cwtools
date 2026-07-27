@@ -198,6 +198,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 | FileWithContentResource(_, r) -> this.LocalisationManager.UpdateLocalisationFile r
                 | _ -> logWarning (sprintf "Localisation file failed to parse %s" filepath)
 
+                ResourceManagerEager.nextLocalisation () |> ignore
                 []
             | x when PdxShaderFeatures.isShaderFile x ->
                 let file =
@@ -219,12 +220,12 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
                 match shallow with
                 | true ->
-                    let shallowres, _ = validationManager.Validate(shallow, newEntities)
+                    let shallowres, _ = validationManager.ValidateLocal(newEntities)
                     let shallowres = shallowres @ (validationManager.ValidateLocalisation newEntities)
                     let deep = match errorCache.TryGetValue(filepath) with true, v -> v | _ -> []
                     shallowres @ deep
                 | false ->
-                    let shallowres, deepres = validationManager.Validate(shallow, newEntities)
+                    let shallowres, deepres = validationManager.ValidateLocal(newEntities)
                     let shallowres = shallowres @ (validationManager.ValidateLocalisation newEntities)
                     errorCache.[filepath] <- deepres
                     shallowres @ deepres
@@ -268,6 +269,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             match resource with
             | FileWithContentResource(_, r) -> this.LocalisationManager.UpdateLocalisationFile r
             | _ -> logWarning (sprintf "Localisation file failed to parse %s" staged.filepath)
+            ResourceManagerEager.nextLocalisation () |> ignore
         | ShaderFile -> ()
         | EntityFile ->
             afterUpdateFile this staged.filepath
@@ -336,12 +338,12 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             | Some entity ->
                 match shallow with
                 | true ->
-                    let shallowres, _ = validationManager.Validate(shallow, [ entity ])
+                    let shallowres, _ = validationManager.ValidateLocal([ entity ])
                     let shallowres = shallowres @ (validationManager.ValidateLocalisation [ entity ])
                     let deep = match errorCache.TryGetValue(filepath) with true, v -> v | _ -> []
                     shallowres @ deep
                 | false ->
-                    let shallowres, deepres = validationManager.Validate(shallow, [ entity ])
+                    let shallowres, deepres = validationManager.ValidateLocal([ entity ])
                     let shallowres = shallowres @ (validationManager.ValidateLocalisation [ entity ])
                     errorCache.[filepath] <- deepres
                     shallowres @ deepres
@@ -359,7 +361,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 match entityByFilePathWithFallback filepath with
                 | None -> Some []
                 | Some entity ->
-                    match validationManager.ValidateCancellable(shallow, [ entity ], shouldCancel) with
+                    match validationManager.ValidateLocalCancellable([ entity ], shouldCancel) with
                     | None -> None
                     | Some(shallowres, deepres) ->
                         if shouldCancel () then

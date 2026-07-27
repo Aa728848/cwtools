@@ -165,6 +165,15 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     let mutable tempEnumMap: FrozenDictionary<string, string * PrefixOptimisedStringSet> =
         FrozenDictionary.Empty
 
+    // One-entry cache for the expensive temporary validation service used by
+    // PrepareTypeIndex. Every semantic input is represented either by reference
+    // identity or by an explicit epoch; the single-entry bound prevents old
+    // FrozenDictionary/service graphs from accumulating across edits.
+    let mutable preparedTypeIndexServiceCache:
+        (obj * obj * int * int * int * RuleValidationService) option = None
+    let mutable preparedTypeIndexServiceCacheHits = 0L
+    let mutable preparedTypeIndexServiceCacheMisses = 0L
+
     let enumMapFrom (enumDefs: Map<string, string * (string * range option) array>) =
         (enumDefs
          |> Map.toSeq
@@ -1351,20 +1360,47 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let baseTypeDefInfo = lookup.typeDefInfo
         let baseTempTypeMap = tempTypeMap
 
-        let rulesWrapper = rulesWrapperFor lookup.configRules
-        let loc = currentLoc ()
-        let allFiles = currentFiles ()
-        let emptyVarMap: FrozenDictionary<string, PrefixOptimisedStringSet> = FrozenDictionary.Empty
-        let baseFrozenTypeMap = baseTempTypeMap.ToFrozenDictionary()
+        let configRulesIdentity = box lookup.configRules
+        let typeMapIdentity = box baseTempTypeMap
+        let typeRulesEpoch = ResourceManagerEager.currentTypeRules ()
+        let localisationEpoch = ResourceManagerEager.currentLocalisation ()
+        let fileSetEpoch = ResourceManagerEager.currentFileSet ()
 
         let tempRuleValidationService =
-            buildRuleValidationService
-                rulesWrapper
-                baseFrozenTypeMap
-                emptyVarMap
-                loc
-                allFiles
-                (Some(aliasKeyMapFor rulesWrapper baseTempTypeMap baseFrozenTypeMap))
+            match preparedTypeIndexServiceCache with
+            | Some(cachedRules, cachedTypeMap, cachedTypeRules, cachedLocalisation, cachedFiles, service)
+                when Object.ReferenceEquals(cachedRules, configRulesIdentity)
+                     && Object.ReferenceEquals(cachedTypeMap, typeMapIdentity)
+                     && cachedTypeRules = typeRulesEpoch
+                     && cachedLocalisation = localisationEpoch
+                     && cachedFiles = fileSetEpoch ->
+                preparedTypeIndexServiceCacheHits <- preparedTypeIndexServiceCacheHits + 1L
+                service
+            | _ ->
+                preparedTypeIndexServiceCacheMisses <- preparedTypeIndexServiceCacheMisses + 1L
+                let rulesWrapper = rulesWrapperFor lookup.configRules
+                let loc = currentLoc ()
+                let allFiles = currentFiles ()
+                let emptyVarMap: FrozenDictionary<string, PrefixOptimisedStringSet> = FrozenDictionary.Empty
+                let baseFrozenTypeMap = baseTempTypeMap.ToFrozenDictionary()
+                let service =
+                    buildRuleValidationService
+                        rulesWrapper
+                        baseFrozenTypeMap
+                        emptyVarMap
+                        loc
+                        allFiles
+                        (Some(aliasKeyMapFor rulesWrapper baseTempTypeMap baseFrozenTypeMap))
+                preparedTypeIndexServiceCache <-
+                    Some(
+                        configRulesIdentity,
+                        typeMapIdentity,
+                        typeRulesEpoch,
+                        localisationEpoch,
+                        fileSetEpoch,
+                        service
+                    )
+                service
 
         let entities =
             files
@@ -1437,7 +1473,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 let newValues = newTypeDefInfo |> Map.tryFind typeKey |> Option.defaultValue [||]
                 not (typeDefInfoArraysSemanticallyEqual oldValues newValues))
 
-        logInfo $"Prepare type index: files=%d{files.Length}, typeKeys=%d{typeKeys.Length}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
+        logInfo $"Prepare type index: files=%d{files.Length}, typeKeys=%d{typeKeys.Length}, cacheHits=%d{preparedTypeIndexServiceCacheHits}, cacheMisses=%d{preparedTypeIndexServiceCacheMisses}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
 
         Some
             { typeDefInfo = newTypeDefInfo
@@ -1461,6 +1497,9 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let baseTempEnumMap = tempEnumMap
         let clone = original.ShallowClone() :?> 'L
         lookup <- clone
+        // Dynamic enum/config staging has additional clone-local inputs that are
+        // intentionally not retained by the ordinary type-index cache.
+        preparedTypeIndexServiceCache <- None
 
         try
             refreshDynamicParameterEnums ()
@@ -1537,6 +1576,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             tempEnumMap <-
                 staged.newTempEnumMap :?> FrozenDictionary<string, string * PrefixOptimisedStringSet>
 
+            if staged.semanticChanged then ResourceManagerEager.nextTypeRules () |> ignore
+
             Some(
                 staged.services
                 |> Option.map (fun struct (rules, info, completion) ->
@@ -1552,6 +1593,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             lookup.typeDefInfo <- staged.typeDefInfo
             tempTypeMap <- staged.tempTypeMap
             lookup.typeDefInfoForValidation <- staged.typeDefInfoForValidation
+            if staged.semanticChanged then ResourceManagerEager.nextTypeRules () |> ignore
             true
 
     // Staged full refresh: run the heavy refreshConfig against a shallow clone of the
@@ -1607,6 +1649,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
             rulesDataGenerated <- staged.newRulesDataGenerated
 
+            ResourceManagerEager.nextTypeRules () |> ignore
+
             Some(
                 staged.ruleService :?> RuleValidationService,
                 staged.infoService :?> InfoService,
@@ -1614,7 +1658,10 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             )
 
     member _.LoadBaseConfig(rulesSettings) = loadBaseConfig rulesSettings
-    member _.RefreshConfig() = refreshConfig ()
+    member _.RefreshConfig() =
+        let result = refreshConfig ()
+        ResourceManagerEager.nextTypeRules () |> ignore
+        result
     member _.PrepareRefreshConfig() = prepareRefreshConfig ()
     member _.CommitRefreshConfig(staged) = commitRefreshConfig staged
     member _.RefreshScriptedTypes(files, typeKeys) = refreshScriptedTypes files typeKeys

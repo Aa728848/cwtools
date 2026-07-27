@@ -19,12 +19,15 @@ type LookupFileValidator<'T when 'T :> ComputedData> =
     Files.FileManager -> RuleValidationService option -> Lookup -> FileValidator<'T>
 
 type ValidationManagerSettings<'T when 'T :> ComputedData> =
-    { validators: (StructureValidator<'T> * string) list
+    { validators: (LocalStructureValidator<'T> * string) list
+      globalValidators: (StructureValidator<'T> * string) list
       experimentalValidators: (StructureValidator<'T> * string) list
       heavyExperimentalValidators: (LookupValidator<'T> * string) list
       experimental: bool
       fileValidators: (FileValidator<'T> * string) list
-      lookupValidators: (LookupValidator<'T> * string) list
+      globalFileValidators: (FileValidator<'T> * string) list
+      lookupValidators: (LocalLookupValidator<'T> * string) list
+      globalLookupValidators: (LookupValidator<'T> * string) list
       lookupFileValidators: (LookupFileValidator<'T> * string) list
       useRules: bool
       debugRulesOnly: bool
@@ -414,26 +417,30 @@ type ValidationManager<'T when 'T :> ComputedData>
             directErrors @ nonSelfErrors @ impactedErrors
             |> List.filter (fun error -> error.code <> "CW100")
 
-    let validate (shallow: bool) (entities: struct (Entity * Lazy<'T>) list) =
+    let validateGlobal (shallow: bool) (entities: struct (Entity * Lazy<'T>) list) =
         log (sprintf "Validating %i files" entities.Length)
         // log $"Validation cache size %i{errorCache.}"
         let oldEntities = EntitySet(resources.AllEntities())
         let newEntities = EntitySet entities
 
-        let runValidators f (validators: (StructureValidator<'T> * string) list) =
-            (validators <&!!&> (fun (v, s) -> duration (fun _ -> f v) s)
+        let runStructureValidators localValidators globalValidators experimentalValidators =
+            (localValidators <&!!&> (fun (v, s) -> duration (fun _ -> v newEntities) s)
              |> (function
              | Invalid(_, es) -> es
              | _ -> []))
+            @ (globalValidators <&!!&> (fun (v, s) -> duration (fun _ -> v oldEntities newEntities) s)
+               |> (function
+               | Invalid(_, es) -> es
+               | _ -> []))
             @ (if not settings.experimental then
                    []
                else
-                   settings.experimentalValidators <&!&> (fun (v, s) -> duration (fun _ -> f v) s)
+                   experimentalValidators <&!&> (fun (v, s) -> duration (fun _ -> v oldEntities newEntities) s)
                    |> (function
                    | Invalid(_, es) -> es
                    | _ -> []))
         // log "Validating misc"
-        let res = runValidators (fun f -> f oldEntities newEntities) validators
+        let res = runStructureValidators settings.validators settings.globalValidators settings.experimentalValidators
         // log "Validating rules"
         // let rres = (if settings.useRules && services.ruleValidationService.IsSome then (runValidators (fun f -> f oldEntities newEntities) [services.ruleValidationService.Value.RuleValidate(), "rules"]) else [])
         let rres = validateInteractive entities
@@ -445,18 +452,23 @@ type ValidationManager<'T when 'T :> ComputedData>
 
                 // log "Validating files"
                 let fres =
-                    settings.fileValidators
+                    (settings.fileValidators @ settings.globalFileValidators)
                     <&!&> (fun (v, s) -> duration (fun _ -> v resources newEntities) s)
                     |> (function
                     | Invalid(_, es) -> es
                     | _ -> [])
                 // log "Validating effects/triggers"
                 let lres =
-                    settings.lookupValidators
-                    <&!&> (fun (v, s) -> duration (fun _ -> v services.lookup oldEntities newEntities) s)
-                    |> function
-                        | Invalid(_, es) -> es
-                        | _ -> []
+                    (settings.lookupValidators
+                     <&!&> (fun (v, s) -> duration (fun _ -> v services.lookup newEntities) s)
+                     |> function
+                         | Invalid(_, es) -> es
+                         | _ -> [])
+                    @ (settings.globalLookupValidators
+                       <&!&> (fun (v, s) -> duration (fun _ -> v services.lookup oldEntities newEntities) s)
+                       |> function
+                           | Invalid(_, es) -> es
+                           | _ -> [])
 
                 let lfres =
                     settings.lookupFileValidators
@@ -488,16 +500,67 @@ type ValidationManager<'T when 'T :> ComputedData>
 
         shallow, deep
 
+    /// Local/single-file validation avoids the full workspace enumeration. Its
+    /// validator contracts expose only the changed entities; project-level checks
+    /// that need the full workspace remain in the global validation domain.
+    let validateLocal (entities: struct (Entity * Lazy<'T>) list) =
+        log (sprintf "Local validating %i files" entities.Length)
+        let newEntities = EntitySet entities
+
+        let res =
+            (settings.validators
+             <&!!&> (fun (v, s) -> duration (fun _ -> v newEntities) s)
+             |> (function
+             | Invalid(_, es) -> es
+             | _ -> []))
+
+        let rres = validateInteractive entities
+
+        if settings.debugRulesOnly then
+            rres, []
+        else
+            // log "Validating files"
+            let fres =
+                settings.fileValidators
+                <&!&> (fun (v, s) -> duration (fun _ -> v resources newEntities) s)
+                |> (function
+                | Invalid(_, es) -> es
+                | _ -> [])
+            // log "Validating effects/triggers"
+            let lres =
+                settings.lookupValidators
+                <&!&> (fun (v, s) -> duration (fun _ -> v services.lookup newEntities) s)
+                |> function
+                    | Invalid(_, es) -> es
+                    | _ -> []
+
+            let lfres =
+                settings.lookupFileValidators
+                <&!&> (fun (v, s) ->
+                    duration
+                        (fun _ ->
+                            v
+                                services.fileManager
+                                services.ruleValidationService
+                                services.lookup
+                                resources
+                                newEntities)
+                        s)
+                |> function
+                    | Invalid(_, es) -> es
+                    | _ -> []
+
+            res @ fres @ lres @ lfres @ rres, []
+
     let validateLocalisation buildReferenceIndex (entities: struct (Entity * Lazy<'T>) list) =
         log (sprintf "Localisation check %i files" entities.Length)
         let timer = System.Diagnostics.Stopwatch()
         timer.Start()
-        let oldEntities = EntitySet(resources.AllEntities())
         let newEntities = EntitySet entities
 
         let vs =
             (settings.localisationValidators
-             |> List.map (fun v -> v oldEntities (services.localisationKeys ()) newEntities)
+             |> List.map (fun v -> v (services.localisationKeys ()) newEntities)
              |> List.fold (<&&>) OK)
 
         let collectedReferences = ConcurrentBag<string * Set<string>>()
@@ -663,7 +726,7 @@ type ValidationManager<'T when 'T :> ComputedData>
         |> validateGlobalTypeLocalisationEntries
 
 
-    member _.Validate(shallow: bool, entities: struct (Entity * Lazy<'T>) list) = validate shallow entities
+    member _.Validate(shallow: bool, entities: struct (Entity * Lazy<'T>) list) = validateGlobal shallow entities
     member _.ValidateCancellable(shallow: bool, entities: struct (Entity * Lazy<'T>) list, shouldCancel: unit -> bool) =
         let previous = cancellationCheck.Value
         cancellationCheck.Value <- shouldCancel
@@ -673,7 +736,24 @@ type ValidationManager<'T when 'T :> ComputedData>
                 None
             else
                 try
-                    let result = validate shallow entities
+                    let result = validateGlobal shallow entities
+                    if shouldCancel () then None else Some result
+                with :? OperationCanceledException ->
+                    None
+        finally
+            cancellationCheck.Value <- previous
+
+    member _.ValidateLocal(entities: struct (Entity * Lazy<'T>) list) = validateLocal entities
+    member _.ValidateLocalCancellable(entities: struct (Entity * Lazy<'T>) list, shouldCancel: unit -> bool) =
+        let previous = cancellationCheck.Value
+        cancellationCheck.Value <- shouldCancel
+
+        try
+            if shouldCancel () then
+                None
+            else
+                try
+                    let result = validateLocal entities
                     if shouldCancel () then None else Some result
                 with :? OperationCanceledException ->
                     None

@@ -1,0 +1,4 @@
+#error
+country_event = {
+    inline_script = { script = events/event_fragment }
+}

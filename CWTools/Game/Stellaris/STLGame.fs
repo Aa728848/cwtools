@@ -1,8 +1,11 @@
 namespace CWTools.Games.Stellaris
 
 open System
+open System.Collections.Concurrent
 open System.Collections.Generic
 open System.Diagnostics
+open System.Threading
+open System.Threading.Tasks
 open CWTools.Game
 open CWTools.Parser
 open CWTools.Process
@@ -808,7 +811,9 @@ module STLGameFunctions =
     let private AnyCarrierHost = 3
 
     type private CarrierInferenceSnapshot =
-        { version: int
+        { resourceEpoch: int
+          carrierEpoch: int
+          generation: int
           eventHosts: Map<string, int>
           eventEvidence: Map<string, string list>
           eventFromChains: Map<string, Set<Scope list>>
@@ -820,6 +825,12 @@ module STLGameFunctions =
           situationEventTargetScopes: Map<string, Set<Scope>>
           expandedNodeOwners: Dictionary<Node, struct (Entity * Node)> }
 
+    type private CarrierSnapshotResult =
+        { snapshot: CarrierInferenceSnapshot
+          isComplete: bool
+          resourceEpoch: int
+          carrierEpoch: int }
+
     type internal CarrierScopeResolver
         (
             resources: IResourceAPI<STLComputedData>,
@@ -828,9 +839,21 @@ module STLGameFunctions =
         ) =
 
         let gate = obj ()
-        let mutable building = false
-        let mutable cached: CarrierInferenceSnapshot option = None
-        let mutable buildingExpandedNodeOwners: Dictionary<Node, struct (Entity * Node)> option = None
+        let mutable lastCompletedSnapshot: CarrierInferenceSnapshot option = None
+        // ConcurrentDictionary value factories may run more than once. Store a
+        // Lazy<Task<_>> so only the winning value starts the multi-GB build.
+        let snapshotTasks =
+            ConcurrentDictionary<(int * int), Lazy<Task<CarrierInferenceSnapshot>>>()
+        // Epoch-specific tasks share one build lane. A rapid edit sequence may
+        // enqueue newer epochs, but it must never run several multi-GB builds in
+        // parallel. Queued stale epochs are discarded before allocating.
+        let buildGate = new SemaphoreSlim(1, 1)
+        let mutable currentTarget: (int * int) option = None
+        let mutable generation = 0
+        let buildingKey = new ThreadLocal<(int * int) option>(fun () -> None)
+        let mutable snapshotHitCount = 0L
+        let mutable snapshotMissCount = 0L
+        let mutable snapshotBuildCount = 0L
         let emptyVars = CWTools.Utilities.Utils2.PrefixOptimisedStringSet()
 
         let emptyExpandedNodeOwners () =
@@ -1286,12 +1309,11 @@ module STLGameFunctions =
                     |> List.fold (fun context node -> changeContextByKey node.Key context) baseContext)
                 |> Option.defaultValue baseContext)
 
-        let buildSnapshot version =
-            let entities =
-                resources.AllEntities()
-                |> Seq.map (fun struct (entity, _) -> entity)
-                |> Seq.toArray
-
+        let buildSnapshot resourceEpoch carrierEpoch buildGeneration (entities: Entity array) =
+            let buildNumber = Interlocked.Increment(&snapshotBuildCount)
+            let startedAt = Stopwatch.StartNew()
+            let allocatedBefore = GC.GetTotalAllocatedBytes(false)
+            Utils.log $"CarrierSnapshot build-start build={buildNumber} resourceEpoch={resourceEpoch} carrierEpoch={carrierEpoch} generation={buildGeneration} entities={entities.Length}"
             // Expanded inline-script nodes keep the template's source range. Keep
             // their concrete caller/root ownership by object identity so contextual
             // event-target inference does not jump back to the unexpanded template.
@@ -1306,7 +1328,6 @@ module STLGameFunctions =
                         then
                             expandedNodeOwners[node] <- struct (entity, root)
 
-            buildingExpandedNodeOwners <- Some expandedNodeOwners
             let eventDefinitions = Dictionary<string, struct (Entity * Node)>(StringComparer.OrdinalIgnoreCase)
             let carrierEventIds = HashSet<string>(StringComparer.OrdinalIgnoreCase)
 
@@ -1692,46 +1713,159 @@ module STLGameFunctions =
                         eventSavedTargetScopes <- eventSavedTargetScopes |> Map.add targetKey after
                         targetScopesChanged <- true
 
-            { version = version
-              eventHosts = eventHosts
-              eventEvidence = evidence
-              eventFromChains = eventFromChains
-              eventSavedTargetScopes = eventSavedTargetScopes
-              globalSavedTargetScopes = globalSavedTargetScopes
-              projectCreationScopes = projectCreationScopes
-              projectLocationScopes = projectLocationScopes
-              situationTargetScopes = situationScopes
-              situationEventTargetScopes = situationEventTargetScopes
-              expandedNodeOwners = expandedNodeOwners }
+            let snapshot =
+                { resourceEpoch = resourceEpoch
+                  carrierEpoch = carrierEpoch
+                  generation = buildGeneration
+                  eventHosts = eventHosts
+                  eventEvidence = evidence
+                  eventFromChains = eventFromChains
+                  eventSavedTargetScopes = eventSavedTargetScopes
+                  globalSavedTargetScopes = globalSavedTargetScopes
+                  projectCreationScopes = projectCreationScopes
+                  projectLocationScopes = projectLocationScopes
+                  situationTargetScopes = situationScopes
+                  situationEventTargetScopes = situationEventTargetScopes
+                  expandedNodeOwners = expandedNodeOwners }
+
+            startedAt.Stop()
+            let allocatedAfter = GC.GetTotalAllocatedBytes(false)
+            Utils.log $"CarrierSnapshot build-end build={buildNumber} resourceEpoch={resourceEpoch} carrierEpoch={carrierEpoch} generation={buildGeneration} entities={entities.Length} elapsedMs={startedAt.ElapsedMilliseconds} allocDeltaMB={(allocatedAfter - allocatedBefore) / 1048576L}"
+            snapshot
 
         let currentSnapshot () =
-            let version = ResourceManagerEager.currentVersion ()
-            lock gate (fun () ->
-                match cached with
-                | Some snapshot when snapshot.version = version -> snapshot
-                | _ when building ->
-                    { version = version
-                      eventHosts = Map.empty
-                      eventEvidence = Map.empty
-                      eventFromChains = Map.empty
-                      eventSavedTargetScopes = Map.empty
-                      globalSavedTargetScopes = Map.empty
-                      projectCreationScopes = Map.empty
-                      projectLocationScopes = Map.empty
-                      situationTargetScopes = Map.empty
-                      situationEventTargetScopes = Map.empty
-                      expandedNodeOwners =
-                          buildingExpandedNodeOwners
-                          |> Option.defaultWith emptyExpandedNodeOwners }
-                | _ ->
-                    building <- true
-                    try
-                        let snapshot = buildSnapshot version
-                        cached <- Some snapshot
-                        snapshot
-                    finally
-                        building <- false
-                        buildingExpandedNodeOwners <- None)
+            let resourceEpoch = ResourceManagerEager.currentResource ()
+            let carrierEpoch = ResourceManagerEager.currentCarrier ()
+            let buildGeneration = lock gate (fun () -> generation)
+            // Resource-only edits do not invalidate Carrier inference. The
+            // snapshot keeps its capture resource epoch for diagnostics, while
+            // carrierEpoch plus the resolver generation define semantic identity.
+            let key = (carrierEpoch, buildGeneration)
+            let isCurrent (snapshot: CarrierInferenceSnapshot) =
+                snapshot.carrierEpoch = carrierEpoch && snapshot.generation = buildGeneration
+
+            let emptySnapshot () =
+                { resourceEpoch = resourceEpoch
+                  carrierEpoch = carrierEpoch
+                  generation = buildGeneration
+                  eventHosts = Map.empty
+                  eventEvidence = Map.empty
+                  eventFromChains = Map.empty
+                  eventSavedTargetScopes = Map.empty
+                  globalSavedTargetScopes = Map.empty
+                  projectCreationScopes = Map.empty
+                  projectLocationScopes = Map.empty
+                  situationTargetScopes = Map.empty
+                  situationEventTargetScopes = Map.empty
+                  expandedNodeOwners = emptyExpandedNodeOwners () }
+
+            let result snapshot isComplete =
+                { snapshot = snapshot
+                  isComplete = isComplete
+                  resourceEpoch = resourceEpoch
+                  carrierEpoch = carrierEpoch }
+
+            // Publish/read the target under the same gate. The old implementation
+            // accessed these mutable fields without synchronisation while builders
+            // published from a different thread.
+            let completed =
+                lock gate (fun () ->
+                    currentTarget <- Some key
+                    lastCompletedSnapshot |> Option.filter isCurrent)
+
+            match completed with
+            | Some snapshot ->
+                Interlocked.Increment(&snapshotHitCount) |> ignore
+                result snapshot true
+            | None when buildingKey.Value = Some key ->
+                // Re-entrant lookup from the builder must never wait on itself.
+                result (emptySnapshot ()) false
+            | None ->
+                Interlocked.Increment(&snapshotMissCount) |> ignore
+                let lazyTask =
+                    snapshotTasks.GetOrAdd(
+                        key,
+                        fun _ ->
+                            // Capture the resource view before dispatch. LSP callers
+                            // hold the game-state read lock here; the background task
+                            // must not enumerate a live map while a writer mutates it.
+                            let entities =
+                                resources.AllEntities()
+                                |> Seq.choose (fun struct (entity, _) ->
+                                    if CarrierContribution.isRelevantEntity entity then Some entity else None)
+                                |> Seq.toArray
+
+                            System.Lazy<Task<CarrierInferenceSnapshot>>(
+                                (fun () ->
+                                    Utils.log $"CarrierSnapshot miss resourceEpoch={resourceEpoch} carrierEpoch={carrierEpoch} generation={buildGeneration} hits={Volatile.Read(&snapshotHitCount)} misses={Volatile.Read(&snapshotMissCount)}"
+                                    Task.Run(fun () ->
+                                        buildGate.Wait()
+
+                                        try
+                                            let stillCurrent = lock gate (fun () -> currentTarget = Some key)
+                                            if not stillCurrent then
+                                                raise (OperationCanceledException("Carrier snapshot epoch was superseded before build start"))
+
+                                            let previousKey = buildingKey.Value
+                                            buildingKey.Value <- Some key
+
+                                            try
+                                                let snapshot = buildSnapshot resourceEpoch carrierEpoch buildGeneration entities
+
+                                                lock gate (fun () ->
+                                                    if currentTarget = Some key then
+                                                        lastCompletedSnapshot <- Some snapshot
+                                                        let staleKeys = snapshotTasks.Keys |> Seq.toArray
+
+                                                        for staleKey in staleKeys do
+                                                            if staleKey <> key then
+                                                                snapshotTasks.TryRemove(staleKey) |> ignore)
+
+                                                snapshot
+                                            finally
+                                                buildingKey.Value <- previousKey
+                                        finally
+                                            buildGate.Release() |> ignore)),
+                                LazyThreadSafetyMode.ExecutionAndPublication
+                            )
+                    )
+
+                let task = lazyTask.Value
+
+                if task.IsCompletedSuccessfully then
+                    let snapshot = task.Result
+                    lock gate (fun () ->
+                        if currentTarget = Some key then lastCompletedSnapshot <- Some snapshot)
+                    result snapshot true
+                else
+                    if task.IsFaulted || task.IsCanceled then
+                        // Do not pin a failed task forever; the next request retries.
+                        snapshotTasks.TryRemove(key) |> ignore
+
+                    match lock gate (fun () -> lastCompletedSnapshot) with
+                    | Some fallback ->
+                        // During normal editing, keep requests responsive while the
+                        // new epoch is built. Exact resolution rejects this stale
+                        // snapshot via isComplete=false.
+                        result fallback false
+                    | None when task.IsFaulted || task.IsCanceled ->
+                        result (emptySnapshot ()) false
+                    | None ->
+                        // Initial ComputedData construction needs Carrier inference
+                        // to be complete. Returning an empty snapshot here silently
+                        // degrades event scopes (for example Country becomes Any).
+                        // Re-entrant builder lookups were handled above, so waiting
+                        // here cannot wait on the builder's own thread.
+                        try
+                            let snapshot = task.GetAwaiter().GetResult()
+                            lock gate (fun () ->
+                                if currentTarget = Some key then lastCompletedSnapshot <- Some snapshot)
+                            result snapshot true
+                        with _ ->
+                            // A failed initial build is retryable and must not poison
+                            // all future lookups with a permanently faulted task.
+                            snapshotTasks.TryRemove(key) |> ignore
+                            result (emptySnapshot ()) false
 
         let tryEntityAndRoot (snapshot: CarrierInferenceSnapshot) (node: Node) =
             match snapshot.expandedNodeOwners.TryGetValue node with
@@ -1744,18 +1878,16 @@ module STLGameFunctions =
                     |> Option.map (fun root -> entity, root))
 
         member _.Invalidate() =
-            lock gate (fun () -> cached <- None)
+            lock gate (fun () ->
+                generation <- generation + 1
+                lastCompletedSnapshot <- None
+                currentTarget <- None
+                snapshotTasks.Clear())
 
         member _.Resolve(node: IClause, context: ScopeContext) =
             match node with
             | :? Node as node ->
-                let resolve () =
-                    // currentSnapshot serialises the initial graph build. Calls from
-                    // other validation workers must wait for that build; returning
-                    // None while `building` made scope results depend on which file
-                    // happened to validate first. Re-entrant calls on the builder
-                    // thread are still handled by currentSnapshot's empty snapshot.
-                    let snapshot = currentSnapshot ()
+                let resolveWithSnapshot snapshot =
                     let mutable resolved = context
                     let mutable changed = false
 
@@ -1881,21 +2013,33 @@ module STLGameFunctions =
 
                     if changed then Some resolved else None
 
-                resolve ()
+                let snapshotResult = currentSnapshot ()
+                if snapshotResult.isComplete then
+                    resolveWithSnapshot snapshotResult.snapshot
+                else
+                    // A stale snapshot may contain nodes and event edges from a
+                    // different resource epoch. Preserve the caller's generic
+                    // Carrier context until the exact snapshot is published.
+                    None
             | _ -> None
 
         member _.EventEvidence (eventId: string) =
-            currentSnapshot().eventEvidence
-            |> Map.tryFind (eventId.ToLowerInvariant())
-            |> Option.defaultValue []
+            let snapshotResult = currentSnapshot ()
+            if snapshotResult.isComplete then
+                snapshotResult.snapshot.eventEvidence
+                |> Map.tryFind (eventId.ToLowerInvariant())
+                |> Option.defaultValue []
+            else
+                []
 
         member _.ScopeEvidence(node: Node) =
-            let snapshot = currentSnapshot ()
+            let snapshotResult = currentSnapshot ()
+            let snapshot = snapshotResult.snapshot
             let evidence = ResizeArray<string>()
             let mutable carrierRelevant = false
 
-            match tryEntityAndRoot snapshot node with
-            | Some(entity, root) ->
+            match snapshotResult.isComplete, (if snapshotResult.isComplete then tryEntityAndRoot snapshot node else None) with
+            | true, Some(entity, root) ->
                 let rootKey = normalizeKey root.Key
                 let path = tryPathTo node root |> Option.defaultValue [ root ]
 
@@ -1939,9 +2083,9 @@ module STLGameFunctions =
                     if not (String.IsNullOrWhiteSpace targetScopes) then
                         carrierRelevant <- true
                         evidence.Add($"start_situation target scopes for %s{root.Key}: %s{targetScopes}")
-            | None -> ()
+            | _ -> ()
 
-            carrierRelevant, (evidence |> Seq.distinct |> Seq.toList)
+            carrierRelevant, (evidence |> Seq.distinct |> Seq.toList), (not snapshotResult.isComplete)
 
     let createEmbeddedSettings embeddedFiles cachedResourceData (configs: (string * string) list) cachedRuleMetadata =
         initializeScopesAndModifierCategories configs defaultScopeInputs defaultModifiersInputs
@@ -2023,25 +2167,29 @@ open STLGameFunctions
 type STLGame(setupSettings: StellarisSettings) =
     let validationSettings =
         { validators =
+            CWTools.Validation.ValidationCore.toLocalStructureValidators
+                [ valTechnology, "tech"
+                  validateIfElse, "ifelse2"
+                  validateNOTMultiple, "notmultiple"
+                  validateRedundantANDWithNOR, "AND"
+                  validateDeprecatedSetName, "setname"
+                  validateScriptedActionScopeOrder, "scriptedactionscopeorder"
+                  validateEvents, "eventsSimple"
+                  validatePreTriggers, "pre"
+                  validateIfWithNoEffect, "ifnoeffect" ]
+          globalValidators =
             [ validateVariables, "var"
-              valTechnology, "tech"
               validateShipDesigns, "designs"
-              validateIfElse, "ifelse2"
-              validateNOTMultiple, "notmultiple"
               validatePlanetKillers, "pk"
-              validateRedundantANDWithNOR, "AND"
               valMegastructureGraphics, "megastructure"
-              valPlanetClassGraphics, "pcg"
-              validateDeprecatedSetName, "setname"
-              validateScriptedActionScopeOrder, "scriptedactionscopeorder"
-              validateEvents, "eventsSimple"
-              validatePreTriggers, "pre"
-              validateIfWithNoEffect, "ifnoeffect" ]
+              valPlanetClassGraphics, "pcg" ]
           experimentalValidators = [ valSectionGraphics, "sections"; valComponentGraphics, "component" ]
           heavyExperimentalValidators = [ getEventChains, "event chains" ]
           experimental = setupSettings.validation.experimental
-          fileValidators = [ validateTechnologies, "tech2" ]
-          lookupValidators = (validateEconomicCatAIBudget, "aibudget") :: commonValidationRules
+          fileValidators = []
+          globalFileValidators = [ validateTechnologies, "tech2" ]
+          lookupValidators = []
+          globalLookupValidators = (validateEconomicCatAIBudget, "aibudget") :: commonValidationRules
           lookupFileValidators =
             [ valScriptedEffectParams, "scripted_effects"
               valScriptValueParams, "script_values" ]
@@ -2222,7 +2370,7 @@ type STLGame(setupSettings: StellarisSettings) =
                 |> Seq.tryFind (fun root -> rangeContainsPos root.Position pos)
                 |> Option.map deepestNode)
             |> Option.bind (fun node ->
-                let relevant, evidence = carrierScopeResolver.ScopeEvidence node
+                let relevant, evidence, isPending = carrierScopeResolver.ScopeEvidence node
                 if not relevant then
                     None
                 else
@@ -2245,7 +2393,8 @@ type STLGame(setupSettings: StellarisSettings) =
                             if evidence.IsEmpty then
                                 [ "No unique Planet/Ship caller was found; preserving the Carrier union." ]
                             else
-                                evidence })
+                                evidence
+                          isIncomplete = isPending })
 
     interface IGame<STLComputedData> with
         member _.ParserErrors() = parseErrors ()

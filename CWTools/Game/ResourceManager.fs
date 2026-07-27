@@ -19,12 +19,53 @@ open CWTools.Utilities
 open CWTools.Utilities.StringResource
 
 module ResourceManagerEager =
-    let mutable private eagerVersion = 0
+    let mutable private resourceEpoch = 0
+    let mutable private carrierEpoch = 0
+    let mutable private typeRulesEpoch = 0
+    let mutable private localisationEpoch = 0
+    let mutable private fileSetEpoch = 0
 
-    let nextVersion () =
-        Interlocked.Increment(&eagerVersion)
+    let nextResource () = Interlocked.Increment(&resourceEpoch)
+    let nextCarrier () = Interlocked.Increment(&carrierEpoch)
+    let nextTypeRules () = Interlocked.Increment(&typeRulesEpoch)
+    let nextLocalisation () = Interlocked.Increment(&localisationEpoch)
+    let nextFileSet () = Interlocked.Increment(&fileSetEpoch)
 
-    let currentVersion () = Volatile.Read(&eagerVersion)
+    let currentResource () = Volatile.Read(&resourceEpoch)
+    let currentCarrier () = Volatile.Read(&carrierEpoch)
+    let currentTypeRules () = Volatile.Read(&typeRulesEpoch)
+    let currentLocalisation () = Volatile.Read(&localisationEpoch)
+    let currentFileSet () = Volatile.Read(&fileSetEpoch)
+
+    let private carrierRelevantPathSegments =
+        [| "events"
+           "on_actions"
+           "inline_scripts"
+           "component_sets"
+           "component_templates"
+           "section_templates"
+           "solar_system_initializers"
+           "special_projects"
+           "situations" |]
+
+    let isCarrierRelevantPath (path: string) =
+        let normalized = path.Replace('\\', '/').ToLowerInvariant()
+        carrierRelevantPathSegments
+        |> Array.exists (fun segment ->
+            normalized.StartsWith($"{segment}/", StringComparison.Ordinal)
+            || normalized.Contains($"/{segment}/"))
+
+    let isCarrierRelevantNodeKey (key: string) =
+        let normalized = key.ToLowerInvariant()
+        normalized.EndsWith("_event", StringComparison.Ordinal)
+        || normalized = "carrier_is_type"
+        || normalized = "enable_special_project"
+        || normalized = "start_situation"
+
+    // Backwards-compatible aliases: many caches and tests rely on a monotonic
+    // resource version that advances whenever file entities change.
+    let nextVersion () = nextResource ()
+    let currentVersion () = currentResource ()
 
 // Fuzzy = prefix/suffix
 type ReferenceType =
@@ -177,6 +218,56 @@ type Entity =
 
     override x.ToString() =
         sprintf "%s %s %b" x.filepath x.logicalpath x.validate
+
+/// File-level semantic contribution used by Carrier inference. The fingerprint
+/// excludes source positions, comments and trivia, allowing formatting-only
+/// saves to retain the current global snapshot.
+module CarrierContribution =
+    let rec containsRelevantKey (node: Node) =
+        ResourceManagerEager.isCarrierRelevantNodeKey node.Key
+        || (node.Leaves
+            |> Seq.exists (fun leaf -> ResourceManagerEager.isCarrierRelevantNodeKey leaf.Key))
+        || (node.Nodes |> Seq.exists containsRelevantKey)
+
+    let isRelevantEntity (entity: Entity) =
+        ResourceManagerEager.isCarrierRelevantPath entity.logicalpath
+        || containsRelevantKey entity.rawEntity
+
+    let semanticFingerprint (entity: Entity) =
+        if not (isRelevantEntity entity) then
+            None
+        else
+            let inline mix (hash: uint64) (value: string) =
+                (hash * 1099511628211UL) ^^^ uint64 (StringComparer.Ordinal.GetHashCode value)
+
+            let rec hashChildren hash (children: Child array) =
+                children |> Array.fold (fun state child -> hashChild state child) hash
+
+            and hashNode hash (node: Node) =
+                let hash = mix (mix hash "node") node.Key
+                hashChildren hash node.AllArray
+
+            and hashValueClause hash (clause: ValueClause) =
+                let hash =
+                    clause.Keys
+                    |> Array.fold (fun state key -> mix state (key.GetString())) (mix hash "clause")
+                hashChildren hash clause.AllArray
+
+            and hashChild hash child =
+                match child with
+                | NodeC node -> hashNode hash node
+                | LeafC leaf ->
+                    let hash = mix hash "leaf"
+                    let hash = mix hash leaf.Key
+                    let hash = mix hash (string (int leaf.Operator))
+                    mix hash (leaf.Value.ToRawString())
+                | LeafValueC value -> mix (mix hash "value") (value.Value.ToRawString())
+                | ValueClauseC clause -> hashValueClause hash clause
+                | CommentC _ -> hash
+
+            entity.rawEntity.AllArray
+            |> hashChildren (mix 1469598103934665603UL entity.logicalpath)
+            |> Some
 
 type RawEntity = Entity
 
@@ -1316,7 +1407,7 @@ type ResourceManager<'T when 'T :> ComputedData>
         // Validation and language features force the data they actually consume.
         // A competing whole-workspace prewarm can evaluate PublicationOnly lazies
         // more than once and amplify peak allocation on large workspaces.
-        ResourceManagerEager.nextVersion () |> ignore
+        ResourceManagerEager.nextResource () |> ignore
 
     let dynamicParameterPaths =
         [| "common/scripted_effects/"
@@ -1342,7 +1433,43 @@ type ResourceManager<'T when 'T :> ComputedData>
             i <- i + 1
         forced
 
+    let isCarrierRelevantEntity = CarrierContribution.isRelevantEntity
+    let carrierSemanticFingerprint = CarrierContribution.semanticFingerprint
+
+    let advanceEpochsForChangedEntities (changed: Entity list) =
+        ResourceManagerEager.nextResource () |> ignore
+
+        if changed |> List.exists isCarrierRelevantEntity then
+            ResourceManagerEager.nextCarrier () |> ignore
+
     let updateFiles (files: ResourceInput array) =
+        let inputPath =
+            function
+            | EntityResourceInput input -> input.filepath
+            | FileResourceInput input -> input.filepath
+            | FileWithContentResourceInput input -> input.filepath
+            | CachedResourceInput(resource, _) ->
+                match resource with
+                | EntityResource(path, _)
+                | FileResource(path, _)
+                | FileWithContentResource(path, _) -> path
+
+        let priorCarrierFingerprints =
+            files
+            |> Array.map (fun input ->
+                let path = inputPath input
+                match entitiesMap.TryGetValue path with
+                | true, struct (entity, _) -> path, carrierSemanticFingerprint entity
+                | _ -> path, None)
+            |> Map.ofArray
+
+        let priorFilePresence =
+            files
+            |> Array.map (fun input ->
+                let path = inputPath input
+                path, fileMap.ContainsKey path)
+            |> Map.ofArray
+
         let news =
             files |> PSeq.map parseFileThenEntity |> Seq.collect saveResults |> Seq.toList
 
@@ -1354,9 +1481,33 @@ type ResourceManager<'T when 'T :> ComputedData>
 
         rebuildInlineScriptCallerIndex ()
 
-        // Advance the shared version without starting a second full-workspace
-        // computation alongside rule setup and initial validation.
-        ResourceManagerEager.nextVersion () |> ignore
+        // Advance the appropriate epoch(s). Bulk loading only invalidates the
+        // carrier snapshot if the changed files actually contribute to it.
+        let changedEntities = res |> List.choose (snd >> Option.map structFst)
+        ResourceManagerEager.nextResource () |> ignore
+        if
+            priorFilePresence
+            |> Map.exists (fun path wasPresent -> wasPresent <> fileMap.ContainsKey path)
+        then
+            ResourceManagerEager.nextFileSet () |> ignore
+        let carrierChanged =
+            (priorCarrierFingerprints
+             |> Map.exists (fun path oldFingerprint ->
+                 let newFingerprint =
+                     match entitiesMap.TryGetValue path with
+                     | true, struct (entity, _) -> carrierSemanticFingerprint entity
+                     | _ -> None
+                 oldFingerprint <> newFingerprint))
+            || (changedEntities
+                |> List.exists (fun entity ->
+                    let oldFingerprint =
+                        priorCarrierFingerprints
+                        |> Map.tryFind entity.filepath
+                        |> Option.defaultValue None
+                    oldFingerprint <> carrierSemanticFingerprint entity))
+
+        if carrierChanged then
+            ResourceManagerEager.nextCarrier () |> ignore
         res
 
     /// Parse a single file without changing the live resource maps.
@@ -1367,9 +1518,18 @@ type ResourceManager<'T when 'T :> ComputedData>
     /// Commit a previously parsed single-file update. The caller serialises this
     /// short mutation phase with other game-state writers.
     let commitPreparedFile (prepared: PreparedResourceUpdate) =
-        ResourceManagerEager.nextVersion () |> ignore
         let resource = prepared.parsedResource
         let entity = prepared.parsedEntity
+        let resourcePath =
+            match resource with
+            | EntityResource(f, _) -> f
+            | FileResource(f, _) -> f
+            | FileWithContentResource(f, _) -> f
+        let previousCarrierFingerprint =
+            match entitiesMap.TryGetValue resourcePath with
+            | true, struct (previous, _) -> carrierSemanticFingerprint previous
+            | _ -> None
+        let previousResourceExisted = fileMap.ContainsKey resourcePath
 
         // Save results to fileMap/entitiesMap, preserving the old overwrite state.
         let savedResults =
@@ -1393,11 +1553,6 @@ type ResourceManager<'T when 'T :> ComputedData>
                     entitiesMap[e.filepath] <- item
                     yield resource, Some item
                 | None ->
-                    let resourcePath =
-                        match resource with
-                        | EntityResource(f, _) -> f
-                        | FileResource(f, _) -> f
-                        | FileWithContentResource(f, _) -> f
                     entitiesMap.Remove resourcePath |> ignore
                     removeCallerContributions resourcePath
                     yield resource, None
@@ -1413,6 +1568,16 @@ type ResourceManager<'T when 'T :> ComputedData>
 
         // 跳过 updateOverwrite — 编辑内容不改变覆盖关系
         // 跳过 forceEagerData — Lazy 值按需求值，避免全量预热导致巨额分配
+
+        ResourceManagerEager.nextResource () |> ignore
+        if not previousResourceExisted then ResourceManagerEager.nextFileSet () |> ignore
+        let committedCarrierFingerprint =
+            res
+            |> List.tryPick (fun (_, entityOpt) ->
+                entityOpt |> Option.bind (structFst >> carrierSemanticFingerprint))
+
+        if previousCarrierFingerprint <> committedCarrierFingerprint then
+            ResourceManagerEager.nextCarrier () |> ignore
 
         if res.Length > 1 then
             log (sprintf "Prepared file %A returned multiple resources" prepared.parsedResource)
@@ -1467,17 +1632,27 @@ type ResourceManager<'T when 'T :> ComputedData>
                 |> ignore
 
                 // Expanded caller entities were replaced without going through
-                // UpdateFile. Advance the shared resource version so scope and
-                // language-feature snapshots cannot retain the old node objects.
-                ResourceManagerEager.nextVersion () |> ignore
+                // UpdateFile. Advance the resource epoch, and the carrier epoch only
+                // if one of the expanded callers actually contributes to carrier inference.
+                let changedEntities =
+                    refreshInputs |> List.choose (fun (_, _, entityOpt) -> entityOpt |> Option.map structFst)
+
+                advanceEpochsForChangedEntities changedEntities
 
             refreshInputs |> List.map (fun (path, _, _) -> path)
 
     let removeFile (filepath: string) =
-        ResourceManagerEager.nextVersion () |> ignore
         let storedPath = tryFindStoredFileKey filepath |> Option.defaultValue filepath
+        let removedCarrierFingerprint =
+            match entitiesMap.TryGetValue storedPath with
+            | true, struct (entity, _) -> carrierSemanticFingerprint entity
+            | _ -> None
         let removedResource = fileMap.Remove storedPath
         let removedEntity = entitiesMap.Remove storedPath
+        ResourceManagerEager.nextResource () |> ignore
+        if removedResource || removedEntity then ResourceManagerEager.nextFileSet () |> ignore
+        if removedCarrierFingerprint.IsSome then ResourceManagerEager.nextCarrier () |> ignore
+
         if removedResource || removedEntity then
             invalidateInlineScriptsCache ()
             removeCallerContributions storedPath

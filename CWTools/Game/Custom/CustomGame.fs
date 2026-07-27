@@ -94,12 +94,15 @@ open CWTools.Localisation.Custom
 
 type CustomGame(setupSettings: CustomSettings, gameFolderName: string) =
     let validationSettings =
-        { validators = [ validateIfWithNoEffect, "ifnoeffect" ]
+        { validators = CWTools.Validation.ValidationCore.toLocalStructureValidators [ validateIfWithNoEffect, "ifnoeffect" ]
+          globalValidators = []
           experimentalValidators = []
           heavyExperimentalValidators = []
           experimental = false
           fileValidators = []
-          lookupValidators = commonValidationRules
+          globalFileValidators = []
+          lookupValidators = []
+          globalLookupValidators = commonValidationRules
           lookupFileValidators = []
           useRules = true
           debugRulesOnly = false
