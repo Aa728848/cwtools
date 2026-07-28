@@ -1,5 +1,6 @@
 namespace CWTools.Games
 
+open System
 open System.Linq
 
 open CWTools.Common
@@ -8,6 +9,7 @@ open Files
 open System.Text
 open CWTools.Utilities.Utils
 open System.IO
+open System.Collections.Generic
 open CWTools.Rules
 
 
@@ -179,6 +181,152 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         )
     let errorCache = System.Collections.Concurrent.ConcurrentDictionary<string, CWError list>()
 
+    let readTextWithDeclaredEncoding filepath =
+        let strictPrimary =
+            Encoding.GetEncoding(
+                encoding.CodePage,
+                EncoderFallback.ExceptionFallback,
+                DecoderFallback.ExceptionFallback
+            )
+
+        try
+            File.ReadAllText(filepath, strictPrimary)
+        with :? DecoderFallbackException ->
+            File.ReadAllText(filepath, fallbackencoding)
+
+    let normaliseIncrementalPath path =
+        let resolved =
+            try Path.GetFullPath path
+            with _ -> path
+        if OperatingSystem.IsWindows() then resolved.ToLowerInvariant() else resolved
+
+    let incrementalTypeKeysForFiles (files: string list) =
+        let fileSet = files |> List.map normaliseIncrementalPath |> Set.ofList
+
+        let indexedTypeKeys =
+            lookup.typeDefInfo
+            |> Map.toSeq
+            |> Seq.choose (fun (typeKey, infos) ->
+                if
+                    infos
+                    |> Array.exists (fun info ->
+                        fileSet.Contains(normaliseIncrementalPath info.range.FileName))
+                then
+                    Some typeKey
+                else
+                    None)
+
+        let currentTypeKeys =
+            files
+            |> Seq.choose resourceManager.Api.GetEntityByFilePath
+            |> Seq.collect (fun struct (entity, _) ->
+                lookup.typeDefs
+                |> Seq.choose (fun definition ->
+                    if
+                        CSharpHelpers.FieldValidatorsHelper.CheckPathDir(
+                            definition.pathOptions,
+                            entity.logicalpath
+                        )
+                    then
+                        Some definition.name
+                    else
+                        None))
+
+        Seq.append indexedTypeKeys currentTypeKeys
+        |> Seq.distinct
+        |> Seq.toList
+
+    let semanticSignatureForFile (filepath: string) =
+        match resourceManager.Api.GetEntityByFilePath filepath, infoService with
+        | Some struct (entity, _), Some info ->
+            let logicalPath = entity.logicalpath.Replace('\\', '/').ToLowerInvariant()
+            let localSignature = info.GetSemanticSignature entity
+
+            let parameterSignature =
+                seq {
+                    if
+                        logicalPath.Contains("common/scripted_effects/")
+                        || logicalPath.Contains("common/scripted_triggers/")
+                    then
+                        yield!
+                            Compute.EU4.getScriptedEffectParamsEntity entity
+                            |> Seq.map (fun (parameter: string) -> "parameter|effect|" + parameter)
+
+                    if
+                        logicalPath.Contains("common/script_values/")
+                        || logicalPath.Contains("common/scripted_values/")
+                    then
+                        yield!
+                            Compute.Jomini.getScriptValueParamsEntity entity
+                            |> Seq.map (fun (parameter: string) -> "parameter|value|" + parameter)
+                }
+
+            Seq.append localSignature parameterSignature
+            |> Seq.distinct
+            |> Seq.sort
+            |> Seq.toArray
+            |> Some
+        | Some struct (entity, _), None ->
+            let logicalPath = entity.logicalpath.Replace('\\', '/').ToLowerInvariant()
+            seq {
+                if
+                    logicalPath.Contains("common/scripted_effects/")
+                    || logicalPath.Contains("common/scripted_triggers/")
+                then
+                    yield!
+                        Compute.EU4.getScriptedEffectParamsEntity entity
+                        |> Seq.map (fun (parameter: string) -> "parameter|effect|" + parameter)
+
+                if
+                    logicalPath.Contains("common/script_values/")
+                    || logicalPath.Contains("common/scripted_values/")
+                then
+                    yield!
+                        Compute.Jomini.getScriptValueParamsEntity entity
+                        |> Seq.map (fun (parameter: string) -> "parameter|value|" + parameter)
+            }
+            |> Seq.distinct
+            |> Seq.sort
+            |> Seq.toArray
+            |> Some
+        | None, _ -> None
+
+    let validateIncrementalLocalisationFiles
+        (changedKeys: string array)
+        (initialFiles: seq<string>)
+        =
+        let pathComparer =
+            if OperatingSystem.IsWindows() then
+                StringComparer.OrdinalIgnoreCase
+            else
+                StringComparer.Ordinal
+
+        let affectedFiles = HashSet<string>(pathComparer)
+        affectedFiles.UnionWith initialFiles
+
+        if changedKeys.Length > 0 then
+            affectedFiles.UnionWith(validationManager.LocalisationFilesForKeys changedKeys)
+            affectedFiles.UnionWith(validationManager.GlobalLocalisationFilesForKeys changedKeys)
+
+        let affectedFileSet = affectedFiles |> Set.ofSeq
+        let onlyAffected (errors: CWError list) =
+            errors
+            |> List.filter (fun error -> affectedFileSet.Contains error.range.FileName)
+
+        let localErrors =
+            validationManager.ValidateLocalisationFiles affectedFileSet
+            |> onlyAffected
+
+        let cachedRuleErrors =
+            validationManager.CachedRuleLocalisationErrorsForFiles affectedFileSet
+            |> onlyAffected
+
+        let globalErrors = globalLocalisation this |> onlyAffected
+        localisationManager.ApplyIncrementalErrors(affectedFileSet, localErrors, globalErrors)
+
+        { affectedFiles = affectedFiles |> Seq.toArray
+          errors = cachedRuleErrors @ localErrors @ globalErrors }
+
     let updateFile (shallow: bool) filepath (fileText: string option) =
         log $"updateFile %s{filepath}"
         let timer = System.Diagnostics.Stopwatch()
@@ -186,8 +334,8 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
         let res =
             match filepath with
-            | x when x.EndsWith localisationExtension ->
-                let file = fileText |> Option.defaultWith (fun () -> File.ReadAllText filepath)
+            | x when x.EndsWith(localisationExtension, StringComparison.OrdinalIgnoreCase) ->
+                let file = fileText |> Option.defaultWith (fun () -> readTextWithDeclaredEncoding filepath)
 
                 let resourceInput =
                     LanguageFeatures.makeFileWithContentResourceInput fileManager filepath file
@@ -202,7 +350,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 []
             | x when PdxShaderFeatures.isShaderFile x ->
                 let file =
-                    fileText |> Option.defaultWith (fun () -> File.ReadAllText(filepath, encoding))
+                    fileText |> Option.defaultWith (fun () -> readTextWithDeclaredEncoding filepath)
 
                 let resource =
                     LanguageFeatures.makeFileWithContentResourceInput fileManager filepath file
@@ -211,7 +359,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 PdxShaderFeatures.validate this.Resources filepath file
             | _ ->
                 let file =
-                    fileText |> Option.defaultWith (fun () -> File.ReadAllText(filepath, encoding))
+                    fileText |> Option.defaultWith (fun () -> readTextWithDeclaredEncoding filepath)
 
                 let resource = LanguageFeatures.makeEntityResourceInput fileManager filepath file
                 let newEntities = [ this.Resources.UpdateFile resource ] |> List.choose snd
@@ -238,18 +386,18 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let fullPath = Path.GetFullPath filepath
         let kind, file, resourceInput =
             match fullPath with
-            | x when x.EndsWith localisationExtension ->
-                let file = fileText |> Option.defaultWith (fun () -> File.ReadAllText fullPath)
+            | x when x.EndsWith(localisationExtension, StringComparison.OrdinalIgnoreCase) ->
+                let file = fileText |> Option.defaultWith (fun () -> readTextWithDeclaredEncoding fullPath)
                 LocalisationFile,
                 file,
                 LanguageFeatures.makeFileWithContentResourceInput fileManager fullPath file
             | x when PdxShaderFeatures.isShaderFile x ->
-                let file = fileText |> Option.defaultWith (fun () -> File.ReadAllText(fullPath, encoding))
+                let file = fileText |> Option.defaultWith (fun () -> readTextWithDeclaredEncoding fullPath)
                 ShaderFile,
                 file,
                 LanguageFeatures.makeFileWithContentResourceInput fileManager fullPath file
             | _ ->
-                let file = fileText |> Option.defaultWith (fun () -> File.ReadAllText(fullPath, encoding))
+                let file = fileText |> Option.defaultWith (fun () -> readTextWithDeclaredEncoding fullPath)
                 EntityFile,
                 file,
                 LanguageFeatures.makeEntityResourceInput fileManager fullPath file
@@ -548,6 +696,65 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     // member __.ValidatableLocalisation() = localisationManager.validatableLocalisation()
     member _.FileManager = (fun () -> fileManager) ()
     member _.LocalisationManager: LocalisationManager<'T> = localisationManager
+    member _.IsLocalisationFile(filepath: string) =
+        Path.GetExtension(filepath).Equals(localisationExtension, StringComparison.OrdinalIgnoreCase)
+
+    member _.IncrementalTypeKeysForFiles(files) = incrementalTypeKeysForFiles files
+    member _.PrepareIncrementalTypeIndex(files) =
+        rulesManager.PrepareTypeIndex(files, incrementalTypeKeysForFiles files)
+    member _.RemoveIncrementalTypeIndex(files) =
+        let typeKeys = incrementalTypeKeysForFiles files
+        for file in files do
+            this.RemoveFile file |> ignore
+        match rulesManager.PrepareTypeIndex(files, typeKeys) with
+        | Some staged -> rulesManager.CommitTypeIndex staged
+        | None -> false
+
+    member _.PrepareIncrementalScriptedTypes(files, additionalSemanticChanged) =
+        let typeKeys = incrementalTypeKeysForFiles files
+        if typeKeys.IsEmpty then
+            None
+        else
+            rulesManager.PrepareScriptedTypes(files, typeKeys, additionalSemanticChanged)
+
+    member this.RemoveIncrementalScriptedTypes(files) =
+        let typeKeys = incrementalTypeKeysForFiles files
+        for file in files do
+            this.RemoveFile file |> ignore
+        if typeKeys.IsEmpty then
+            false
+        else
+            this.RefreshScriptedTypesForFiles(files, typeKeys)
+            true
+
+    member _.SemanticSignatureForFile(filepath) = semanticSignatureForFile filepath
+    member _.TakeLocalisationDelta() =
+        let delta = localisationManager.TakeDelta()
+        if
+            localisationManager.localisationErrors.IsSome
+            && localisationManager.globalLocalisationErrors.IsSome
+        then
+            delta
+        else
+            None
+
+    member _.ValidateIncrementalLocalisationDelta(delta: LocalisationDelta) =
+        validateIncrementalLocalisationFiles delta.changedKeys delta.affectedLocalisationFiles
+
+    member _.ValidateIncrementalLocalisationFiles(files: string array) =
+        validateIncrementalLocalisationFiles [||] files
+
+    member this.RemoveIncrementalLocalisationFile(filepath: string) =
+        this.RemoveFile filepath |> ignore
+        localisationManager.RemoveLocalisationFile filepath
+        ResourceManagerEager.nextLocalisation () |> ignore
+        let delta =
+            localisationManager.TakeDelta()
+            |> Option.defaultValue
+                { changedKeys = [||]
+                  affectedLocalisationFiles = [| filepath |]
+                  semanticChanged = true }
+        validateIncrementalLocalisationFiles delta.changedKeys delta.affectedLocalisationFiles
     member _.ValidationManager = validationManager
     member _.Settings = settings
     member _.UpdateFile shallow file text = updateFile shallow file text

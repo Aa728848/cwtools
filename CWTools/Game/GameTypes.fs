@@ -146,9 +146,11 @@ type IncrementalLocalisationResult =
 /// Optional precise localisation invalidation. Games that do not implement it
 /// keep the existing full localisation refresh behaviour.
 type IIncrementalLocalisation =
+    abstract IsLocalisationFile: string -> bool
     abstract TakeLocalisationDelta: unit -> LocalisationDelta option
     abstract ValidateLocalisationDelta: LocalisationDelta -> IncrementalLocalisationResult
     abstract ValidateLocalisationFiles: string array -> IncrementalLocalisationResult
+    abstract RemoveLocalisationFile: string -> IncrementalLocalisationResult
 
 type IIncrementalTypeIndex =
     abstract PrepareTypeIndex: string list -> StagedTypeIndex option

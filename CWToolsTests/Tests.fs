@@ -46,6 +46,33 @@ Thread.CurrentThread.CurrentUICulture <- CultureInfo("ru-RU")
 // CWTools.Utilities.Utils.loglevel <- CWTools.Utilities.Utils.LogLevel.Verbose
 
 [<Tests>]
+let crossGameIncrementalCapabilityTests =
+    test "all game adapters expose cross-game incremental capabilities" {
+        let adapters =
+            [ typeof<CWTools.Games.Stellaris.STLGame>
+              typeof<CWTools.Games.HOI4.HOI4Game>
+              typeof<CWTools.Games.EU4.EU4Game>
+              typeof<CWTools.Games.EU5.EU5Game>
+              typeof<CWTools.Games.CK2.CK2Game>
+              typeof<CWTools.Games.CK3.CK3Game>
+              typeof<CWTools.Games.IR.IRGame>
+              typeof<CWTools.Games.VIC2.VIC2Game>
+              typeof<CWTools.Games.VIC3.VIC3Game>
+              typeof<CWTools.Games.Custom.CustomGame> ]
+
+        for adapter in adapters do
+            Expect.isTrue
+                (typeof<IIncrementalTypeIndex>.IsAssignableFrom adapter)
+                $"{adapter.Name} must expose staged type-index refresh"
+            Expect.isTrue
+                (typeof<IIncrementalLocalisation>.IsAssignableFrom adapter)
+                $"{adapter.Name} must expose incremental localisation refresh and deletion"
+            Expect.isTrue
+                (typeof<ISemanticDeltaProvider>.IsAssignableFrom adapter)
+                $"{adapter.Name} must expose a semantic contribution signature"
+    }
+
+[<Tests>]
 let carrierScopeContractTests =
     let makeCarrierEntity logicalpath text =
         match CKParser.parseString text logicalpath with
@@ -344,6 +371,222 @@ let emptyVictoriaSettings rootDirectory =
       maxFileSize = None
       debugSettings = DebugSettings.Default
       vanillaPath = None }
+
+let crossGameSettings<'L> folder ruleFiles langs : GameSetupSettings<'L> =
+    { rootDirectories = [| WD { name = "game"; path = folder } |]
+      modFilter = None
+      validation =
+        { validateVanilla = false
+          experimental = true
+          langs = langs }
+      rules =
+        Some
+            { ruleFiles = ruleFiles
+              validateRules = true
+              debugRulesOnly = false
+              debugMode = false }
+      embedded = FromConfig([], [])
+      scriptFolders = Some [| "common"; "events" |]
+      excludeGlobPatterns = None
+      maxFileSize = None
+      debugSettings = DebugSettings.Default
+      vanillaPath = None }
+
+[<Tests>]
+let crossGameIncrementalEquivalenceTests =
+    testSequenced
+    <| (testWithCapturedLogs "all game adapters match full refresh for shared incremental operations"
+    <| fun () ->
+        let folder =
+            Path.Combine(Path.GetTempPath(), "cwtools-cross-game-incremental-" + Guid.NewGuid().ToString("N"))
+        let scriptFolder = Path.Combine(folder, "common", "test_items")
+        let scriptFile = Path.Combine(scriptFolder, "items.txt")
+        Directory.CreateDirectory(scriptFolder) |> ignore
+        File.WriteAllText(scriptFile, "first_item = { value = 1 }")
+
+        let rules =
+            """
+types = {
+    type[test_item] = {
+        path = "game/common/test_items"
+    }
+}
+test_item = {
+    value = int
+}
+"""
+        let ruleFiles = [ Path.Combine(folder, "rules.cwt"), rules ]
+
+        let factories: (string * string * (unit -> IGame)) list =
+            [ "Stellaris", ".yml", fun () ->
+                  STLGame(crossGameSettings<STLLookup> folder ruleFiles [| Lang.STL STLLang.English |]) :> IGame
+              "HOI4", ".yml", fun () ->
+                  CWTools.Games.HOI4.HOI4Game(crossGameSettings<HOI4Lookup> folder ruleFiles [| Lang.HOI4 HOI4Lang.English |]) :> IGame
+              "EU4", ".yml", fun () ->
+                  CWTools.Games.EU4.EU4Game(crossGameSettings<EU4Lookup> folder ruleFiles [| Lang.EU4 EU4Lang.English |]) :> IGame
+              "EU5", ".yml", fun () ->
+                  CWTools.Games.EU5.EU5Game(crossGameSettings<JominiLookup> folder ruleFiles [| Lang.EU5 EU5Lang.English |]) :> IGame
+              "CK2", ".csv", fun () ->
+                  CWTools.Games.CK2.CK2Game(crossGameSettings<CK2Lookup> folder ruleFiles [| Lang.CK2 CK2Lang.English |]) :> IGame
+              "CK3", ".yml", fun () ->
+                  CWTools.Games.CK3.CK3Game(crossGameSettings<JominiLookup> folder ruleFiles [| Lang.CK3 CK3Lang.English |]) :> IGame
+              "Imperator", ".yml", fun () ->
+                  CWTools.Games.IR.IRGame(crossGameSettings<IRLookup> folder ruleFiles [| Lang.IR IRLang.English |]) :> IGame
+              "VIC2", ".yml", fun () ->
+                  CWTools.Games.VIC2.VIC2Game(crossGameSettings<VIC2Lookup> folder ruleFiles [| Lang.VIC2 VIC2Lang.English |]) :> IGame
+              "VIC3", ".yml", fun () ->
+                  CWTools.Games.VIC3.VIC3Game(crossGameSettings<JominiLookup> folder ruleFiles [| Lang.VIC3 VIC3Lang.English |]) :> IGame
+              "Custom", ".yml", fun () ->
+                  CWTools.Games.Custom.CustomGame(
+                      crossGameSettings<JominiLookup> folder ruleFiles [| Lang.Custom CustomLang.English |],
+                      "custom"
+                  )
+                  :> IGame ]
+
+        let typeFacts (game: IGame) =
+            game.Types()
+            |> Map.tryFind "test_item"
+            |> Option.defaultValue [||]
+            |> Array.map _.id
+            |> Array.sort
+
+        try
+            for gameName, localisationExtension, createGame in factories do
+                File.WriteAllText(scriptFile, "first_item = { value = 1 }")
+                let incrementalGame = createGame ()
+                let fullGame = createGame ()
+                incrementalGame.UpdateFile false scriptFile (Some "first_item = { value = 1 }") |> ignore
+                fullGame.UpdateFile false scriptFile (Some "first_item = { value = 1 }") |> ignore
+                let index = incrementalGame :?> IIncrementalTypeIndex
+                let localisation = incrementalGame :?> IIncrementalLocalisation
+                let semantics = incrementalGame :?> ISemanticDeltaProvider
+
+                Expect.isTrue
+                    (localisation.IsLocalisationFile("test" + localisationExtension))
+                    $"{gameName} must recognise its declared localisation extension"
+                Expect.isFalse
+                    (localisation.IsLocalisationFile("test.txt"))
+                    $"{gameName} must not classify scripts as localisation"
+                Expect.isSome
+                    (semantics.SemanticSignatureForFile scriptFile)
+                    $"{gameName} must expose a semantic signature for a loaded script"
+                Expect.contains
+                    (typeFacts incrementalGame)
+                    "first_item"
+                    $"{gameName} fixture must contribute a real CWT-derived type"
+
+                let renamed = "second_item = { value = 2 }"
+                incrementalGame.UpdateFile false scriptFile (Some renamed) |> ignore
+                let typeStage = index.PrepareTypeIndex [ scriptFile ]
+                Expect.isSome typeStage $"{gameName} must prepare a type-index stage"
+                Expect.isTrue
+                    (index.CommitTypeIndex typeStage.Value)
+                    $"{gameName} must commit its type-index stage"
+                fullGame.UpdateFile false scriptFile (Some renamed) |> ignore
+                fullGame.RefreshCaches()
+                Expect.equal
+                    (typeFacts incrementalGame)
+                    (typeFacts fullGame)
+                    $"{gameName} incremental type rename must match full refresh"
+
+                let scripted = "third_item = { value = 3 }"
+                incrementalGame.UpdateFile false scriptFile (Some scripted) |> ignore
+                let scriptedStage = incrementalGame.PrepareScriptedTypes([ scriptFile ], true)
+                Expect.isSome scriptedStage $"{gameName} must prepare scripted services"
+                Expect.isTrue
+                    (incrementalGame.CommitScriptedTypes scriptedStage.Value)
+                    $"{gameName} must commit scripted services"
+                fullGame.UpdateFile false scriptFile (Some scripted) |> ignore
+                fullGame.RefreshCaches()
+                Expect.equal
+                    (typeFacts incrementalGame)
+                    (typeFacts fullGame)
+                    $"{gameName} incremental scripted refresh must match full refresh"
+
+                Expect.isTrue
+                    (index.RemoveTypeIndex [ scriptFile ])
+                    $"{gameName} must remove a file from the type index"
+                fullGame.UpdateFile false scriptFile (Some "") |> ignore
+                fullGame.RefreshCaches()
+                Expect.equal
+                    (typeFacts incrementalGame)
+                    (typeFacts fullGame)
+                    $"{gameName} incremental type deletion must match full refresh"
+
+                let localisationFolder = Path.Combine(folder, "localisation")
+                Directory.CreateDirectory(localisationFolder) |> ignore
+                let localisationFile =
+                    Path.Combine(localisationFolder, "cross_game" + localisationExtension)
+                let localisationText key value =
+                    if gameName = "CK2" || gameName = "VIC2" then
+                        $"#CODE;ENGLISH;FRENCH;GERMAN;;SPANISH;;;;;;;;;x{Environment.NewLine}{key};{value};French;German;;Spanish;;;;;;;;;x"
+                    else
+                        $"l_english:\n {key}:0 \"{value}\"\n"
+
+                let originalLocalisation = localisationText "cross_old" "Old"
+                File.WriteAllText(localisationFile, originalLocalisation)
+                incrementalGame.UpdateFile false localisationFile (Some originalLocalisation) |> ignore
+                fullGame.UpdateFile false localisationFile (Some originalLocalisation) |> ignore
+                incrementalGame.RefreshLocalisationCaches()
+                fullGame.RefreshLocalisationCaches()
+                incrementalGame.LocalisationErrors(true, true) |> ignore
+                fullGame.LocalisationErrors(true, true) |> ignore
+
+                let renamedLocalisation = localisationText "cross_new" "New"
+                File.WriteAllText(localisationFile, renamedLocalisation)
+                incrementalGame.UpdateFile false localisationFile (Some renamedLocalisation) |> ignore
+                let localisationDelta = localisation.TakeLocalisationDelta()
+                Expect.isSome
+                    localisationDelta
+                    $"{gameName} localisation rename must produce an incremental delta"
+                Expect.containsAll
+                    localisationDelta.Value.changedKeys
+                    [| "cross_old"; "cross_new" |]
+                    $"{gameName} localisation rename must invalidate old and new keys"
+                let incrementalLocalisationErrors =
+                    localisation.ValidateLocalisationDelta localisationDelta.Value
+                fullGame.UpdateFile false localisationFile (Some renamedLocalisation) |> ignore
+                fullGame.RefreshLocalisationCaches()
+                let affectedAfterRename = incrementalLocalisationErrors.affectedFiles |> Set.ofArray
+                let fullRenameErrors =
+                    fullGame.LocalisationErrors(true, true)
+                    |> List.filter (fun error -> affectedAfterRename.Contains error.range.FileName)
+                let errorFacts errors =
+                    errors
+                    |> List.map (fun error ->
+                        error.code,
+                        error.range.FileName,
+                        error.range.StartLine,
+                        error.range.StartColumn,
+                        error.message)
+                    |> Set.ofList
+                Expect.equal
+                    (errorFacts incrementalLocalisationErrors.errors)
+                    (errorFacts fullRenameErrors)
+                    $"{gameName} incremental localisation rename diagnostics must match full refresh"
+
+                File.Delete(localisationFile)
+                let deletionResult = localisation.RemoveLocalisationFile localisationFile
+                Expect.contains
+                    deletionResult.affectedFiles
+                    localisationFile
+                    $"{gameName} localisation deletion must invalidate the removed path"
+                Expect.isFalse
+                    (incrementalGame.AllLoadedLocalisation()
+                     |> List.exists (fun value -> value.Contains localisationFile))
+                    $"{gameName} localisation deletion must remove the provider"
+                let fullAfterDelete = createGame ()
+                let affectedAfterDelete = deletionResult.affectedFiles |> Set.ofArray
+                let fullDeleteErrors =
+                    fullAfterDelete.LocalisationErrors(true, true)
+                    |> List.filter (fun error -> affectedAfterDelete.Contains error.range.FileName)
+                Expect.equal
+                    (errorFacts deletionResult.errors)
+                    (errorFacts fullDeleteErrors)
+                    $"{gameName} incremental localisation deletion diagnostics must match full refresh"
+        finally
+            try Directory.Delete(folder, true) with _ -> ()
+    )
 
 let getAllTestLocs node =
     let fNode =
@@ -1219,6 +1462,56 @@ let tests =
                       "resolved inbound references must not retain an undefined-reference diagnostic"
               finally
                   try Directory.Delete(tempFolder, true) with _ -> ()
+
+          testWithCapturedLogs "incremental localisation file deletion removes providers and matches full validation"
+          <| fun () ->
+              let configtext =
+                  [ "./testfiles/localisationtests/test.cwt",
+                    File.ReadAllText "./testfiles/localisationtests/test.cwt"
+                    "./testfiles/localisationtests/localisation.cwt",
+                    File.ReadAllText "./testfiles/localisationtests/localisation.cwt" ]
+              let settings = emptyStellarisSettings "./testfiles/localisationtests/gamefiles"
+              let settings =
+                  { settings with
+                      validation =
+                          { settings.validation with
+                              langs = [| STL STLLang.English |] }
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = false
+                                debugRulesOnly = false
+                                debugMode = false } }
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              stl.LocalisationErrors(true, true) |> ignore
+              let incremental = stl :?> IIncrementalLocalisation
+              let locPath =
+                  stl.AllFiles()
+                  |> List.pick (function
+                      | FileWithContentResource(_, file) when file.filepath.EndsWith("l_english.yml") ->
+                          Some file.filepath
+                      | _ -> None)
+              Expect.isTrue (incremental.IsLocalisationFile locPath) "the adapter must declare its localisation extension"
+              let result = incremental.RemoveLocalisationFile locPath
+              Expect.contains result.affectedFiles locPath "the deleted provider file must be invalidated"
+              Expect.isFalse
+                  (stl.AllLoadedLocalisation() |> List.exists (fun value -> value.Contains locPath))
+                  "the deleted file must be removed from the localisation API map"
+              let affected = result.affectedFiles |> Set.ofArray
+              let facts (errors: CWError list) =
+                  errors
+                  |> List.filter (fun error -> affected.Contains error.range.FileName)
+                  |> List.map (fun error ->
+                      error.code,
+                      error.range.FileName,
+                      error.range.StartLine,
+                      error.range.StartColumn,
+                      error.message)
+                  |> Set.ofList
+              Expect.equal
+                  (facts result.errors)
+                  (stl.LocalisationErrors(true, true) |> facts)
+                  "incremental deletion diagnostics must equal a full localisation validation"
 
           testWithCapturedLogs "incremental required type localisation reaches definitions and references"
           <| fun () ->

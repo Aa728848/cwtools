@@ -375,13 +375,19 @@ type IRGame(setupSettings: IRSettings) =
         member _.PrepareRefreshCaches() = game.PrepareRefreshCaches()
         member _.CommitRefreshCaches(staged) = game.CommitRefreshCaches(staged)
 
-        member _.RefreshScriptedTypes _ = false
+        member _.RefreshScriptedTypes files =
+            let typeKeys = game.IncrementalTypeKeysForFiles files
+            if typeKeys.IsEmpty then false
+            else
+                game.RefreshScriptedTypesForFiles(files, typeKeys)
+                true
 
-        member _.RemoveScriptedTypes _ = false
+        member _.RemoveScriptedTypes files = game.RemoveIncrementalScriptedTypes files
 
-        member _.PrepareScriptedTypes(_, _) = None
+        member _.PrepareScriptedTypes(files, additionalSemanticChanged) =
+            game.PrepareIncrementalScriptedTypes(files, additionalSemanticChanged)
 
-        member _.CommitScriptedTypes _ = false
+        member _.CommitScriptedTypes staged = game.CommitScriptedTypesForFiles staged
 
         member _.RefreshLocalisationCaches() =
             game.LocalisationManager.UpdateProcessedLocalisation()
@@ -405,3 +411,18 @@ type IRGame(setupSettings: IRSettings) =
 
         member _.GetEmbeddedMetadata() =
             getEmbeddedMetadata lookup game.LocalisationManager game.ResourceManager
+
+    interface IIncrementalTypeIndex with
+        member _.PrepareTypeIndex files = game.PrepareIncrementalTypeIndex files
+        member _.CommitTypeIndex staged = game.CommitTypeIndexForFiles staged
+        member _.RemoveTypeIndex files = game.RemoveIncrementalTypeIndex files
+
+    interface IIncrementalLocalisation with
+        member _.IsLocalisationFile filepath = game.IsLocalisationFile filepath
+        member _.TakeLocalisationDelta() = game.TakeLocalisationDelta()
+        member _.ValidateLocalisationDelta delta = game.ValidateIncrementalLocalisationDelta delta
+        member _.ValidateLocalisationFiles files = game.ValidateIncrementalLocalisationFiles files
+        member _.RemoveLocalisationFile filepath = game.RemoveIncrementalLocalisationFile filepath
+
+    interface ISemanticDeltaProvider with
+        member _.SemanticSignatureForFile filepath = game.SemanticSignatureForFile filepath

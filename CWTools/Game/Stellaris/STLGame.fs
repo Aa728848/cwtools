@@ -2551,6 +2551,7 @@ type STLGame(setupSettings: StellarisSettings) =
             else game.RemoveTypeIndexForFiles(files, typeKeys)
 
     interface IIncrementalLocalisation with
+        member _.IsLocalisationFile filepath = game.IsLocalisationFile filepath
         member _.TakeLocalisationDelta() =
             let delta = game.LocalisationManager.TakeDelta()
             if game.LocalisationManager.localisationErrors.IsSome
@@ -2560,6 +2561,8 @@ type STLGame(setupSettings: StellarisSettings) =
                 None
         member _.ValidateLocalisationDelta delta = validateIncrementalLocalisation game delta
         member _.ValidateLocalisationFiles files = validateIncrementalLocalisationFiles game [||] files
+        member _.RemoveLocalisationFile filepath =
+            game.RemoveIncrementalLocalisationFile filepath
 
     interface ISemanticDeltaProvider with
         member _.SemanticSignatureForFile filepath =

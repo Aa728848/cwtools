@@ -203,14 +203,16 @@ type LocalisationManager<'T when 'T :> ComputedData>
             addKeys api.GetLang api.GetKeys
         publishLocalisationKeys ()
 
-    let updateLocalisationSource (locFile: FileWithContentResource) =
-        let loc = parseLocFile locFile |> Option.defaultValue [||]
+    let updateLocalisationSourceForPath
+        (sourcePath: string)
+        (loc: ((string * Lang) * struct (bool * ILocalisationAPI)) array)
+        =
 
         let oldApis =
             localisationAPIMap
             |> Map.toArray
             |> Array.choose (fun ((filepath, lang), struct (_, api)) ->
-                if filepath = locFile.filepath then Some(lang, api) else None)
+                if pathComparer.Equals(filepath, sourcePath) then Some(lang, api) else None)
 
         let changedByLanguage = Dictionary<Lang, HashSet<string>>()
         let addChanged lang (keys: seq<string>) =
@@ -235,7 +237,7 @@ type LocalisationManager<'T when 'T :> ComputedData>
         // to prevent stale entries from accumulating when a file is re-parsed
         let cleanedMap =
             localisationAPIMap
-            |> Map.filter (fun (fp, _) _ -> fp <> locFile.filepath)
+            |> Map.filter (fun (fp, _) _ -> not (pathComparer.Equals(fp, sourcePath)))
 
         let newMap =
             loc
@@ -249,7 +251,7 @@ type LocalisationManager<'T when 'T :> ComputedData>
         let processLoc = processLocalisation lookup
         let affectedSourceKeys = Dictionary<Lang, HashSet<string>>()
         let affectedFiles = HashSet<string>(pathComparer)
-        affectedFiles.Add locFile.filepath |> ignore
+        affectedFiles.Add sourcePath |> ignore
         let changedKeys = HashSet<string>(StringComparer.Ordinal)
         let mutable semanticChanged = false
 
@@ -324,6 +326,13 @@ type LocalisationManager<'T when 'T :> ComputedData>
               semanticChanged = semanticChanged }
         mergePendingDelta delta
 
+    let updateLocalisationSource (locFile: FileWithContentResource) =
+        let loc = parseLocFile locFile |> Option.defaultValue [||]
+        updateLocalisationSourceForPath locFile.filepath loc
+
+    let removeLocalisationSource filepath =
+        updateLocalisationSourceForPath filepath [||]
+
     let updateProcessedLocalisation () =
         let validatableEntries =
             validatableLocalisation ()
@@ -350,6 +359,7 @@ type LocalisationManager<'T when 'T :> ComputedData>
 
     member _.UpdateProcessedLocalisation() = updateProcessedLocalisation ()
     member _.UpdateLocalisationFile(locFile: FileWithContentResource) = updateLocalisationSource locFile
+    member _.RemoveLocalisationFile(filepath: string) = removeLocalisationSource filepath
 
     member _.TakeDelta() =
         let result = pendingDelta
