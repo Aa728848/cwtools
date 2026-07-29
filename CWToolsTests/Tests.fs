@@ -4355,6 +4355,55 @@ country_event = {
                       "Go to definition should target the defining event file"
               finally
                   if Directory.Exists folder then
+                      Directory.Delete(folder, true)
+
+          testWithCapturedLogs "right-hand scripted variable does not resolve as the left-hand typed key" <| fun () ->
+              let folder =
+                  Path.Combine(Path.GetTempPath(), "cwtools-scripted-variable-goto-" + Guid.NewGuid().ToString("N"))
+
+              try
+                  let componentPath = Path.Combine(folder, "common", "component_templates", "test.txt")
+
+                  let filetext, pos =
+                      cursorAtTildeMarker
+                          """
+@s_t2_cost = 15
+
+sr_parts_adf = {
+    size = medium
+    type = weapon
+    resources = {
+        category = ship_components
+        cost = {
+            sr_parts_adf = @s_t2_~cost
+        }
+    }
+}
+"""
+
+                  writeFile componentPath filetext
+
+                  let configtext = configFilesFromDir "./testfiles/stellarisconfig"
+
+                  let settings =
+                      { emptyStellarisSettings folder with
+                          rules =
+                              Some
+                                  { ruleFiles = configtext
+                                    validateRules = true
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+
+                  let stl = STLGame(settings) :> IGame<STLComputedData>
+                  let target = stl.GoToType pos componentPath filetext
+
+                  Expect.isSome target "The right-hand scripted variable should resolve"
+                  Expect.equal
+                      target.Value.StartLine
+                      1
+                      "The right-hand token should resolve to the scripted-variable definition, not the left-hand component"
+              finally
+                  if Directory.Exists folder then
                       Directory.Delete(folder, true) ]
 
 [<Tests>]

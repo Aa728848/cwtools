@@ -29,6 +29,12 @@ module LanguageFeatures =
     let private scriptedEffectParamMapCache =
         ConcurrentDictionary<string, struct (obj * Map<string, string list>)>()
 
+    let private scriptedVariableReferencePattern =
+        System.Text.RegularExpressions.Regex(
+            @"@[A-Za-z_][A-Za-z0-9_.$:-]*",
+            System.Text.RegularExpressions.RegexOptions.Compiled
+        )
+
     let private buildScriptedEffectParamMap (e: Entity) : Map<string, string list> =
         let addNodes (root: Node) (acc: Map<string, string list>) =
             root.Children
@@ -1481,6 +1487,49 @@ module LanguageFeatures =
                 |> Seq.tryPick (fun (_, infos) ->
                     infos |> Array.tryPick (fun tdi -> if tdi.id = typeValue then Some tdi.range else None))
 
+            let scriptedVariableAtCursor =
+                try
+                    let lines = filetext.Split('\n')
+                    let lineIdx = pos.Line - 1
+
+                    if lineIdx < 0 || lineIdx >= lines.Length then
+                        None
+                    else
+                        let line = lines.[lineIdx].TrimEnd('\r')
+                        let col = Math.Max(0, Math.Min(pos.Column, line.Length))
+
+                        scriptedVariableReferencePattern.Matches(line)
+                        |> Seq.cast<System.Text.RegularExpressions.Match>
+                        |> Seq.tryPick (fun m ->
+                            if col >= m.Index && col <= m.Index + m.Length then Some m.Value else None)
+                with _ ->
+                    None
+
+            let scriptedVariableFallback variableName =
+                let rec findInNode (node: Node) =
+                    node.Leaves
+                    |> Seq.tryFind (fun leaf -> String.Equals(leaf.Key, variableName, StringComparison.Ordinal))
+                    |> Option.map (fun leaf -> leaf.Position)
+                    |> Option.orElseWith (fun () -> node.Nodes |> Seq.tryPick findInNode)
+
+                let entities = resourceManager.Api.AllEntities() |> Seq.map structFst
+                let pathComparison =
+                    if OperatingSystem.IsWindows() then
+                        StringComparison.OrdinalIgnoreCase
+                    else
+                        StringComparison.Ordinal
+
+                entities
+                |> Seq.tryFind (fun entity -> String.Equals(entity.filepath, filepath, pathComparison))
+                |> Option.bind (fun entity -> findInNode entity.entity)
+                |> Option.orElseWith (fun () ->
+                    entities
+                    |> Seq.filter (fun entity ->
+                        entity.logicalpath
+                            .Replace('\\', '/')
+                            .Contains("common/scripted_variables/", StringComparison.OrdinalIgnoreCase))
+                    |> Seq.tryPick (fun entity -> findInNode entity.entity))
+
             let primaryResult =
                 match processResourceCachedInfo resourceManager fileManager filepath filetext, infoService with
                 | Some e, Some info ->
@@ -1637,15 +1686,18 @@ module LanguageFeatures =
                                         None)
                 with _ -> None
 
-            match primaryResult with
-            | Some _ -> primaryResult
+            match scriptedVariableAtCursor with
+            | Some variableName -> scriptedVariableFallback variableName
             | None ->
-                match inlineScriptFallback () with
-                | Some _ as r -> r
+                match primaryResult with
+                | Some _ -> primaryResult
                 | None ->
-                    match scriptValueFallback () with
+                    match inlineScriptFallback () with
                     | Some _ as r -> r
-                    | None -> wordLookupFallback ()
+                    | None ->
+                        match scriptValueFallback () with
+                        | Some _ as r -> r
+                        | None -> wordLookupFallback ()
 
     let findAllRefsByType
         (resourceManager: ResourceManager<_>)
