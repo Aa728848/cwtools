@@ -2,7 +2,7 @@
   #error
   missing_ref:0 "Test $notreal$"
   has_ref:0 "Tets $missing_ref$"
-  #error
+  # no error: unknown lowercase first segment is treated as an unknown id/variable
   missing_event:0 "[missing.GetName]"
   defined_event:0 "[defined_event.GetName]"
   #error

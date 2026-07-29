@@ -1047,14 +1047,14 @@ let plsConfigCompatibilityTests =
 
 [<Tests>]
 let legacyLocalisationCommandTests =
-    let validate command =
+    let validateWithCommands commands command =
         let staticSettings: CWTools.Process.Localisation.LegacyLocStaticSettings =
             { questionMarkVariable = true
               usesVariableCommands = false
               parameterVariables = true
               locPrimaryScopes = [ "From", id ]
               scopedLocEffectsMap = EffectMap()
-              commands = []
+              commands = commands
               variableCommands = [] }
 
         CWTools.Process.Localisation.ChangeLocScope.createLegacyLocalisationCommandValidator
@@ -1062,6 +1062,8 @@ let legacyLocalisationCommandTests =
             (dynamicSettings ())
             defaultContext
             command
+
+    let validate = validateWithCommands []
 
     testList
         "legacy localisation commands"
@@ -1077,7 +1079,20 @@ let legacyLocalisationCommandTests =
           <| fun () ->
               match validate "myVariable" with
               | CWTools.Process.Localisation.Found "variable_fallback" -> ()
-              | result -> failtestf "Expected lowercase variable fallback, got %A" result ]
+              | result -> failtestf "Expected lowercase variable fallback, got %A" result
+
+          testCase "unknown first segment still validates chained commands"
+          <| fun () ->
+              let commands =
+                  [ "GetName", []; "GetIcon", []; "GetNamePlural", [] ]
+
+              match validateWithCommands commands "borg_agri_drone.GetIcon" with
+              | CWTools.Process.Localisation.Found _ -> ()
+              | result -> failtestf "Expected chained command after unknown first segment to be found, got %A" result
+
+              match validateWithCommands commands "borg_agri_drone.BogusCommand" with
+              | CWTools.Process.Localisation.LocNotFound "BogusCommand" -> ()
+              | result -> failtestf "Expected unknown chained command to be invalid, got %A" result ]
 
 let createStarbaseLazy =
     lazy

@@ -1294,7 +1294,7 @@ let tests =
                   stl.LocalisationErrors(true, true)
                   |> List.filter (fun e -> List.contains e.code locErrorCodes)
 
-              Expect.hasCountOf globalLocError 10u (fun _ -> true) $"wrong number of errors %A{globalLocError}"
+              Expect.hasCountOf globalLocError 9u (fun _ -> true) $"wrong number of errors %A{globalLocError}"
           // yield testWithCapturedLogs "globalLoc" <| fun () ->
           // Expect.hasCountOf globalLocError 10u (fun f -> true) (sprintf "wrong number of errors %A" globalLocError)
           testWithCapturedLogs "loc references are case-sensitive"

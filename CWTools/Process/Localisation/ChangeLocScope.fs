@@ -186,6 +186,16 @@ module ChangeLocScope =
                 | LocContextResult.VariableScope lastContext ->
                     // Assumes this is allowed in this game
                     inner (false, true, lastContext) nextKey
+                | LocContextResult.Found "variable_fallback" ->
+                    // The unknown lowercase/underscore segment may be a database id
+                    // (e.g. a job id in [borg_agri_drone.GetName]) or an unknown
+                    // variable, so keep validating chained commands in an any scope
+                    inner
+                        (false,
+                         false,
+                         { source with
+                             Scopes = source.Root.AnyScope :: source.Scopes })
+                        nextKey
                 // | LocContextResult.Found endContext -> inner (false, endContext) nextKey
                 | LocContextResult.Found endContext -> LocContextResult.LocNotFound nextKey //inner (false, endContext) nextKey
                 | res -> res
