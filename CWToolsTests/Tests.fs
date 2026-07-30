@@ -4080,6 +4080,79 @@ test_scripted_effect_none = {
               Expect.contains labels "test_lhs" "Nested scripted effect calls inside definition files should still complete call-site params"
               Expect.contains labels "test_rhs" "Nested scripted effect calls inside definition files should still complete all declared params"
 
+          testWithCapturedLogs "incremental scripted effect calls resolve same-file variables" <| fun () ->
+              let configFolder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
+              let folder =
+                  Path.Combine(Path.GetTempPath(), "cwtools-scripted-effect-local-vars-" + Guid.NewGuid().ToString("N"))
+
+              try
+                  let effectsDir = Path.Combine(folder, "common", "scripted_effects")
+                  let eventsDir = Path.Combine(folder, "events")
+                  Directory.CreateDirectory effectsDir |> ignore
+                  Directory.CreateDirectory eventsDir |> ignore
+
+                  let effectsFilename = Path.Combine(effectsDir, "effects.txt")
+                  let sameFileCaller = Path.Combine(eventsDir, "same_file.txt")
+                  let otherVariableFile = Path.Combine(eventsDir, "other_variable.txt")
+                  let crossFileCaller = Path.Combine(eventsDir, "cross_file.txt")
+                  File.WriteAllText(
+                      effectsFilename,
+                      "test_scripted_effect_variable_param = { set_country_flag = $FRACTION$ }"
+                  )
+                  File.WriteAllText(
+                      sameFileCaller,
+                      "namespace = test\ncountry_event = { is_triggered_only = yes }"
+                  )
+                  File.WriteAllText(
+                      otherVariableFile,
+                      "@OTHER_FILE_FRACTION = 0.4\nnamespace = other\ncountry_event = { is_triggered_only = yes }"
+                  )
+                  File.WriteAllText(
+                      crossFileCaller,
+                      "namespace = cross\ncountry_event = { is_triggered_only = yes option = { test_scripted_effect_variable_param = { FRACTION = @OTHER_FILE_FRACTION } } }"
+                  )
+
+                  let settings =
+                      { emptyStellarisSettings folder with
+                          rules =
+                              Some
+                                  { ruleFiles = configFilesFromDir configFolder
+                                    validateRules = true
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+
+                  let stl = STLGame(settings) :> IGame<STLComputedData>
+                  let updatedSameFile =
+                      "@MANDALORIAN_FLEET_FRACTION = 0.3\nnamespace = test\ncountry_event = { is_triggered_only = yes option = { test_scripted_effect_variable_param = { FRACTION = @MANDALORIAN_FLEET_FRACTION } } }"
+                  let staged = stl.PrepareUpdateFileInteractive sameFileCaller (Some updatedSameFile)
+                  Expect.isTrue
+                      (stl.CommitUpdateFileInteractive staged)
+                      "The editor update should commit before validation"
+                  let incrementalDiagnostics =
+                      stl.ValidateFile false sameFileCaller
+                  let diagnostics = incrementalDiagnostics @ stl.ValidationErrors()
+
+                  let expandedUndefinedErrors filename variable =
+                      diagnostics
+                      |> List.filter (fun error ->
+                          error.code = "CW101"
+                          && error.message.Contains($"{variable} is not defined")
+                          && String.Equals(
+                              Path.GetFullPath(error.range.FileName),
+                              Path.GetFullPath(filename),
+                              StringComparison.OrdinalIgnoreCase
+                          ))
+
+                  Expect.isEmpty
+                      (expandedUndefinedErrors sameFileCaller "@MANDALORIAN_FLEET_FRACTION")
+                      "A scripted effect call should resolve @variables from its caller file"
+                  Expect.isNonEmpty
+                      (expandedUndefinedErrors crossFileCaller "@OTHER_FILE_FRACTION")
+                      "A file-local @variable from another file must not satisfy a scripted effect call"
+              finally
+                  if Directory.Exists folder then
+                      Directory.Delete(folder, true)
+
           testWithCapturedLogs "script value bracket params feed value completion" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
               let configtext = configFilesFromDir folder

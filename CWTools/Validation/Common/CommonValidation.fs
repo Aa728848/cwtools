@@ -626,21 +626,56 @@ module CommonValidation =
         (fun fileManager rulesValidator lu res es ->
             let res = res.AllEntities()
 
-            // These lookups are shared by every expanded call-site validation. Building
-            // them per call creates quadratic allocation pressure in large workspaces.
-            let globalVarNames = lu.scriptedVariables |> List.map fst |> Set.ofList
-
-            let globalVarValues =
-                lu.scriptedVariables
-                |> Seq.distinctBy fst
-                |> Map.ofSeq
-
             let entityMap =
                 res |> Seq.map (fun struct (e, d) -> e.filepath, struct (e, d)) |> Map.ofSeq
 
-            let scriptedVariableValues = lu.scriptedVariables |> Map.ofList
+            let variablesInEntity (e: Entity) =
+                e.entity.Leaves
+                |> Seq.choose (fun leaf ->
+                    if leaf.Key.StartsWith("@", StringComparison.Ordinal)
+                       && not (leaf.Key.StartsWith("@[", StringComparison.Ordinal))
+                       && not (leaf.Key.StartsWith(@"@\[", StringComparison.Ordinal)) then
+                        Some(leaf.Key, leaf.Value.ToRawString())
+                    else
+                        None)
+                |> Seq.distinctBy fst
+                |> Map.ofSeq
+
+            let globalVarNames = lu.globalScriptedVariableNames |> Set.ofList
+
+            let globalVarValues =
+                res
+                |> Seq.map (fun struct (e, _) -> e)
+                |> Seq.filter (fun e ->
+                    e.logicalpath
+                        .Replace('\\', '/')
+                        .Contains("common/scripted_variables/", StringComparison.OrdinalIgnoreCase))
+                |> Seq.collect (variablesInEntity >> Map.toSeq)
+                |> Seq.distinctBy fst
+                |> Map.ofSeq
+
+            let fileVariableScopes =
+                entityMap
+                |> Map.map (fun _ struct (e, _) ->
+                    let values =
+                        variablesInEntity e
+                        |> Map.fold (fun acc key value -> Map.add key value acc) globalVarValues
+                    Set.union globalVarNames (values |> Map.toSeq |> Seq.map fst |> Set.ofSeq), values)
+
+            let variableScopeForFile filename =
+                fileVariableScopes
+                |> Map.tryFind filename
+                |> Option.defaultValue (globalVarNames, globalVarValues)
+
+            let mergeVariableScopes (leftNames, leftValues) (rightNames, rightValues) =
+                let values =
+                    rightValues
+                    |> Map.fold (fun acc key value -> Map.add key value acc) leftValues
+                Set.union leftNames rightNames, values
 
             let findParams (pos: range) =
+                let _, callerVariableValues = variableScopeForFile pos.FileName
+
                 match entityMap |> Map.tryFind pos.FileName with
                 | Some struct (e, _) ->
                     let rec findChild (node: Node) =
@@ -662,7 +697,7 @@ module CommonValidation =
                             if rawValue.StartsWith("@", StringComparison.Ordinal)
                                && not (rawValue.StartsWith("@[", StringComparison.Ordinal))
                                && not (rawValue.StartsWith(@"@\[", StringComparison.Ordinal)) then
-                                match scriptedVariableValues |> Map.tryFind rawValue with
+                                match callerVariableValues |> Map.tryFind rawValue with
                                 | Some numericValue -> numericValue
                                 | None -> rawValue
                             else rawValue
@@ -794,8 +829,12 @@ module CommonValidation =
                     foldOverNode seParams (stringReplace seParams) newNode
                     // eprintfn "%A %A" (CKPrinter.api.prettyPrintStatements newNode.ToRaw) (seParams)
                     // Validate variables after parameter substitution
+                    let variableNames, variableValues =
+                        mergeVariableScopes
+                            (variableScopeForFile node.Position.FileName)
+                            (variableScopeForFile callSite.FileName)
                     let varValidation =
-                        validateVariablesInExpandedNode logicalpath newNode callSite globalVarNames globalVarValues
+                        validateVariablesInExpandedNode logicalpath newNode callSite variableNames variableValues
                     let ruleRes = rv.ManualRuleValidate(logicalpath, rootNode)
                     // eprintfn "%A %A" logicalpath res
                     let scriptedKind =
