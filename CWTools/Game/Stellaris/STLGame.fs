@@ -831,6 +831,29 @@ module STLGameFunctions =
           resourceEpoch: int
           carrierEpoch: int }
 
+    /// Serialises expensive Carrier snapshot builds and identifies re-entrant
+    /// resolution on the active builder thread. A builder may outlive the epoch
+    /// it started for, so re-entry must be detected independently of the key.
+    type internal CarrierSnapshotBuildLane<'Key>() =
+        let gate = new SemaphoreSlim(1, 1)
+        let buildingKey = new ThreadLocal<'Key option>(fun () -> None)
+
+        member _.IsBuildingOnCurrentThread = buildingKey.Value.IsSome
+
+        member _.Run(key: 'Key, build: unit -> 'Result) =
+            gate.Wait()
+
+            try
+                let previousKey = buildingKey.Value
+                buildingKey.Value <- Some key
+
+                try
+                    build ()
+                finally
+                    buildingKey.Value <- previousKey
+            finally
+                gate.Release() |> ignore
+
     type internal CarrierScopeResolver
         (
             resources: IResourceAPI<STLComputedData>,
@@ -847,10 +870,9 @@ module STLGameFunctions =
         // Epoch-specific tasks share one build lane. A rapid edit sequence may
         // enqueue newer epochs, but it must never run several multi-GB builds in
         // parallel. Queued stale epochs are discarded before allocating.
-        let buildGate = new SemaphoreSlim(1, 1)
+        let buildLane = CarrierSnapshotBuildLane<int * int>()
         let mutable currentTarget: (int * int) option = None
         let mutable generation = 0
-        let buildingKey = new ThreadLocal<(int * int) option>(fun () -> None)
         let mutable snapshotHitCount = 0L
         let mutable snapshotMissCount = 0L
         let mutable snapshotBuildCount = 0L
@@ -1777,8 +1799,10 @@ module STLGameFunctions =
             | Some snapshot ->
                 Interlocked.Increment(&snapshotHitCount) |> ignore
                 result snapshot true
-            | None when buildingKey.Value = Some key ->
-                // Re-entrant lookup from the builder must never wait on itself.
+            | None when buildLane.IsBuildingOnCurrentThread ->
+                // An edit can advance the generation while the old builder is
+                // still running. That builder must not enqueue the new key and
+                // then wait on the single build lane it already owns.
                 result (emptySnapshot ()) false
             | None ->
                 Interlocked.Increment(&snapshotMissCount) |> ignore
@@ -1799,17 +1823,13 @@ module STLGameFunctions =
                                 (fun () ->
                                     Utils.log $"CarrierSnapshot miss resourceEpoch={resourceEpoch} carrierEpoch={carrierEpoch} generation={buildGeneration} hits={Volatile.Read(&snapshotHitCount)} misses={Volatile.Read(&snapshotMissCount)}"
                                     Task.Run(fun () ->
-                                        buildGate.Wait()
+                                        buildLane.Run(
+                                            key,
+                                            fun () ->
+                                                let stillCurrent = lock gate (fun () -> currentTarget = Some key)
+                                                if not stillCurrent then
+                                                    raise (OperationCanceledException("Carrier snapshot epoch was superseded before build start"))
 
-                                        try
-                                            let stillCurrent = lock gate (fun () -> currentTarget = Some key)
-                                            if not stillCurrent then
-                                                raise (OperationCanceledException("Carrier snapshot epoch was superseded before build start"))
-
-                                            let previousKey = buildingKey.Value
-                                            buildingKey.Value <- Some key
-
-                                            try
                                                 let snapshot = buildSnapshot resourceEpoch carrierEpoch buildGeneration entities
 
                                                 lock gate (fun () ->
@@ -1822,10 +1842,7 @@ module STLGameFunctions =
                                                                 snapshotTasks.TryRemove(staleKey) |> ignore)
 
                                                 snapshot
-                                            finally
-                                                buildingKey.Value <- previousKey
-                                        finally
-                                            buildGate.Release() |> ignore)),
+                                        ))),
                                 LazyThreadSafetyMode.ExecutionAndPublication
                             )
                     )
@@ -1880,8 +1897,10 @@ module STLGameFunctions =
         member _.Invalidate() =
             lock gate (fun () ->
                 generation <- generation + 1
-                lastCompletedSnapshot <- None
                 currentTarget <- None
+                // Keep the previous completed snapshot as a non-exact fallback
+                // while the new generation builds. Exact resolution checks
+                // isComplete and will reject stale scope data.
                 snapshotTasks.Clear())
 
         member _.Resolve(node: IClause, context: ScopeContext) =

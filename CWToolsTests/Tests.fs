@@ -146,7 +146,43 @@ let carrierScopeContractTests =
               Expect.notEqual
                   (CarrierContribution.semanticFingerprint baseline)
                   (CarrierContribution.semanticFingerprint changed)
-                  "event identity changes must invalidate the Carrier snapshot" } ]
+                  "event identity changes must invalidate the Carrier snapshot" }
+
+          test "carrier build lane never waits on itself after a generation change" {
+              let lane = STLGameFunctions.CarrierSnapshotBuildLane<int>()
+              let mutable nestedBuildRan = false
+
+              let resolveOrFallback generation =
+                  if lane.IsBuildingOnCurrentThread then
+                      "fallback"
+                  else
+                      lane.Run(
+                          generation,
+                          fun () ->
+                              nestedBuildRan <- true
+                              "built"
+                      )
+
+              let task =
+                  System.Threading.Tasks.Task.Run(fun () ->
+                      lane.Run(
+                          1,
+                          fun () ->
+                              // Simulate Invalidate advancing the target while the
+                              // old generation is still inside buildSnapshot.
+                              resolveOrFallback 2
+                      ))
+
+              Expect.isTrue
+                  (task.Wait(TimeSpan.FromSeconds 2.0))
+                  "cross-generation re-entry must not block on the lane already held by this builder"
+              Expect.equal task.Result "fallback" "the stale builder should use an incomplete snapshot"
+              Expect.isFalse nestedBuildRan "the re-entrant generation must not start inside the old builder"
+              Expect.equal
+                  (resolveOrFallback 2)
+                  "built"
+                  "the next generation should acquire the lane after the stale builder exits"
+              Expect.isTrue nestedBuildRan "the replacement generation should eventually build" } ]
 
 [<Tests>]
 let localValidationContractTests =
