@@ -43,7 +43,7 @@ module CWToolsScripts =
               @"C:\Users\Thomas\git\cwtools-ir-config\list_effects.cwt" ]
             |> List.map (fun fn -> fn, (System.IO.File.ReadAllText fn))
 
-        let rules, types, enums, complexenums, values =
+        let rules, types, enums, complexenums, values, _ =
             rulesFiles
             |> CWTools.Rules.RulesParser.parseConfigs
                 (scopeManager.ParseScope())

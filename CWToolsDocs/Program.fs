@@ -1,4 +1,4 @@
-﻿open System.IO
+open System.IO
 open CWTools.Parser
 open CWTools.Common.NewScope
 
@@ -54,7 +54,7 @@ let main argv =
     |> List.tryFind (fun (fileName, _) -> Path.GetFileName fileName = "modifier_categories.cwt")
     |> (fun f -> UtilityParser.initializeModifierCategories f (Some [||]))
 
-    let rules, types, enums, _, _ =
+    let rules, types, enums, _, _, _ =
         rulesFiles
         |> List.filter (fun (fileName, _) -> Path.GetExtension fileName = ".cwt")
         |> RulesParser.parseConfigs

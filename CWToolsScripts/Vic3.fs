@@ -1,4 +1,4 @@
-﻿module CWToolsScripts.Vic3
+module CWToolsScripts.Vic3
 
 
 open System.IO
@@ -38,7 +38,7 @@ let generateVic3 () =
         |> List.map (fun fn -> fn, (System.IO.File.ReadAllText fn))
 
 
-    let rules, types, enums, complexenums, values =
+    let rules, types, enums, complexenums, values, _ =
         rulesFiles
         |> CWTools.Rules.RulesParser.parseConfigs
             (scopeManager.ParseScope())
