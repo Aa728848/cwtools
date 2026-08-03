@@ -1029,9 +1029,9 @@ let testsv =
               | ParserResult.Failure _, ParserResult.Success _ -> failwith "todo"
               | ParserResult.Failure _, ParserResult.Failure _ -> failwith "todo"
 
-          // Depends on the process-global scopeManager while other game-building tests
-          // reinitialise it under parallelism; keep pending until global state is locked
-          // or the suite runs serially.
+          // Expected behaviour: the create_starbase root scope (replaceScopes root=country)
+          // should appear in the scope stack, but the implementation reports Any at the
+          // outer positions. Pending until that scope propagation is fixed.
           ptestCase "test scope at pos simple nodes"
           <| fun () ->
               let input =

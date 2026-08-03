@@ -8,6 +8,7 @@
         <ValidateExecutableReferencesMatchSelfContained>false</ValidateExecutableReferencesMatchSelfContained>
         <ServerGarbageCollection>true</ServerGarbageCollection>
         <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
+        <RunSettingsFilePath>$(MSBuildProjectDirectory)/test.runsettings</RunSettingsFilePath>
     </PropertyGroup>
     <ItemGroup>
         <ProjectReference Include="..\CWToolsCLI\CWToolsCLI.fsproj"/>
