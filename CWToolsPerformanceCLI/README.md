@@ -13,8 +13,8 @@ A command-line interface for running performance tests on various Paradox Intera
   - Use `--mod-path` to test vanilla + mod together
   
 Default Stellaris root and config paths:
-- Root: `./CWToolsTests/testfiles/performancetest2/`
-- Config: `./CWToolsTests/testfiles/performancetest2/.cwtools`
+- Root: auto-detected Steam install (`<SteamLibrary>/steamapps/common/Stellaris`); override with `-g`
+- Config: `~/Git/cwtools-stellaris-config/config`; override with `-c`
 
 #### Europa Universalis IV (EU4)
 - **`--eu4` / `-eu4`**: Run EU4 performance test
@@ -108,8 +108,8 @@ The CLI accepts several optional path parameters to customize test locations:
 # CK3 test with custom installation
  dotnet run -c Release -- --ck3 -g "D:\Games\Steam\steamapps\common\Crusader Kings III\game" -c "D:\Config\ck3-config"
 
-# Testing alternate Stellaris test files
- dotnet run -c Release -- --stellaris -g "./CWToolsTests/testfiles/performancetest/" -c "./CWToolsTests/testfiles/performancetest2/.cwtools"
+# Testing with the bundled self-contained sample (no game install needed)
+ dotnet run -c Release -- --stellaris -g "./CWToolsTests/testfiles/performancetest2/" -c "./CWToolsTests/testfiles/performancetest2/.cwtools"
 
 # Testing EU4 custom test files
  dotnet run -c Release -- --eu4 -g "./CWToolsTests/testfiles/custom/files" -c "./CWToolsTests/testfiles/custom/rules"
@@ -145,17 +145,26 @@ Running Stellaris Test (verbose)...
 When optional path parameters are not provided, the CLI uses these default paths. These are derived from a centralized path configuration consisting of `SteamRoot`, `GitRoot`, `UserHome`, and `CacheRoot`. Users can modify these roots to change default paths:
 
 ### Central Roots:
-- **SteamRoot**: `D:\Games\Steam\steamapps\common` (can be overridden with `--steam-root`)
+- **SteamRoot**: auto-detected (see below); can be overridden with `--steam-root`
 - **GitRoot**: `C:\Users\Thomas\Git` (can be overridden with `--git-root`)
 - **UserHome**: [User's Home Directory]
 - **CacheRoot**: `[ExecutableDirectory]\cache`
+
+### Steam Root Auto-Detection
+
+The default Steam root is detected automatically instead of being hardcoded:
+1. Windows registry: `HKCU\Software\Valve\Steam` (`SteamPath`), then `HKLM\SOFTWARE\WOW6432Node\Valve\Steam` (`InstallPath`)
+2. `steamapps/libraryfolders.vdf` of each candidate root, to pick up additional Steam libraries
+3. Fallback candidates: `C:\Program Files (x86)\Steam`
+
+The first existing `steamapps\common` directory across all libraries is used. On non-Windows hosts the registry step is skipped silently. Use `--steam-root` to force a specific Steam installation root.
 
 ### Alternative Test Paths
 
 For testing purposes, you can use these alternative paths:
 
 **Stellaris alternative test files:**
-- `./CWToolsTests/testfiles/performancetest/` (smaller test set)
+- `./CWToolsTests/testfiles/performancetest2/` (self-contained sample with bundled `.cwtools` rules; no game install needed)
 
 **EU4 custom test files:**
 - `./CWToolsTests/testfiles/custom/files` (root)

@@ -10,6 +10,7 @@ open CWTools.Parser.DocsParser
 open CWTools.Games
 open System.IO
 open System.Diagnostics
+open Microsoft.Win32
 open CWTools.Games.Files
 open CWTools.Common
 open CWTools.Parser
@@ -31,10 +32,62 @@ type PathConfig =
       UserHome: string
       CacheRoot: string }
 
+// Parse steamapps/libraryfolders.vdf into all Steam library roots
+let private libraryRootsFromVdf (steamRoot: string) : string list =
+    let vdfPath = Path.Combine(steamRoot, "steamapps", "libraryfolders.vdf")
+
+    if not (File.Exists vdfPath) then
+        []
+    else
+        File.ReadAllLines vdfPath
+        |> Array.choose (fun line ->
+            let m = System.Text.RegularExpressions.Regex.Match(line, "\"path\"\s+\"([^\"]+)\"")
+            if m.Success then Some(m.Groups.[1].Value.Replace("\\\\", "\\")) else None)
+        |> Array.distinct
+        |> List.ofArray
+
+// Candidate Steam installation roots: registry first, then the common install path.
+// Registry access is Windows-only and wrapped so non-Windows hosts just skip it.
+let private steamInstallRootCandidates () : string list =
+    let candidates = System.Collections.Generic.List<string>()
+
+    try
+        let hkcu = Registry.GetValue(@"HKEY_CURRENT_USER\Software\Valve\Steam", "SteamPath", null)
+        if not (isNull hkcu) then candidates.Add(string hkcu)
+    with _ ->
+        ()
+
+    try
+        let hklm = Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath", null)
+        if not (isNull hklm) then candidates.Add(string hklm)
+    with _ ->
+        ()
+
+    candidates.Add(@"C:\Program Files (x86)\Steam")
+
+    candidates
+    |> Seq.map (fun p -> p.Replace('/', Path.DirectorySeparatorChar).TrimEnd(Path.DirectorySeparatorChar))
+    |> Seq.distinct
+    |> Seq.filter Directory.Exists
+    |> List.ofSeq
+
+// Detect the first existing steamapps/common directory across all Steam libraries
+let tryDetectSteamCommonRoot () : string option =
+    steamInstallRootCandidates ()
+    |> List.collect (fun root -> root :: libraryRootsFromVdf root)
+    |> Seq.distinct
+    |> Seq.map (fun root -> Path.Combine(root, "steamapps", "common"))
+    |> Seq.tryFind Directory.Exists
+
 // Create default path configuration
 let createDefaultPathConfig () =
     let userHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
-    let steamRoot = @"D:\Games\Steam\steamapps\common"
+
+    let steamRoot =
+        match tryDetectSteamCommonRoot () with
+        | Some root -> root
+        | None -> @"D:\Games\Steam\steamapps\common"
+
     let gitRoot = Path.Combine(userHome, "Git")
 
     let cacheRoot =
