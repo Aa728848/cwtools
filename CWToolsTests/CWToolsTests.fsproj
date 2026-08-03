@@ -32,7 +32,7 @@
     <ItemGroup>
         <Content Include="testconfig.json"/>
 
-        <Content Include="testfiles\**">
+        <Content Include="testfiles\**" Exclude="testfiles\performancetest2\**">
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </Content>
     </ItemGroup>
