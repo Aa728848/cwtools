@@ -17,7 +17,17 @@
     </ItemGroup>
     <ItemGroup>
         <Compile Include="LoggingTestHelper.fs"/>
+        <Compile Include="TestHelpers.fs"/>
+        <Compile Include="LocalisationValidationTests.fs"/>
+        <Compile Include="StellarisConfigValidationTests.fs"/>
+        <Compile Include="ScopeRegressionTests.fs"/>
+        <Compile Include="ContractTests.fs"/>
+        <Compile Include="ShaderUnitTests.fs"/>
+        <Compile Include="CarrierEventTests.fs"/>
         <Compile Include="Tests.fs"/>
+        <Compile Include="FolderValidationTests.fs"/>
+        <Compile Include="EmbeddedResourceTests.fs"/>
+        <Compile Include="OnActionTests.fs"/>
         <Compile Include="ShaderFrontendTests.fs"/>
         <Compile Include="ShaderRuntimeTests.fs"/>
         <Compile Include="ShaderBaselineTests.fs"/>
