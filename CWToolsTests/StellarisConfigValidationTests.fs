@@ -1029,10 +1029,7 @@ let testsv =
               | ParserResult.Failure _, ParserResult.Success _ -> failwith "todo"
               | ParserResult.Failure _, ParserResult.Failure _ -> failwith "todo"
 
-          // Expected behaviour: the create_starbase root scope (replaceScopes root=country)
-          // should appear in the scope stack, but the implementation reports Any at the
-          // outer positions. Pending until that scope propagation is fixed.
-          ptestCase "test scope at pos simple nodes"
+          testCase "test scope at pos simple nodes"
           <| fun () ->
               let input =
                   "create_starbase = {\n\
@@ -1058,7 +1055,7 @@ let testsv =
 
                   let rules =
                       RuleValidationService(
-                          RulesWrapper [| TypeRule("create_starbase", createStarbaseLazy.Value); eopEffectLazy.Value |],
+                          RulesWrapper [| TypeRule("create_starbase", createStarbaseRule ()); eopEffectRule () |],
                           [ createStarbaseTypeDefLazy.Value ],
                           FrozenDictionary.Empty,
                           FrozenDictionary.Empty,
@@ -1077,7 +1074,7 @@ let testsv =
 
                   let infoService =
                       InfoService(
-                          RulesWrapper [| TypeRule("create_starbase", createStarbaseLazy.Value); eopEffectLazy.Value |],
+                          RulesWrapper [| TypeRule("create_starbase", createStarbaseRule ()); eopEffectRule () |],
                           [ createStarbaseTypeDefLazy.Value ],
                           FrozenDictionary.Empty,
                           FrozenDictionary.Empty,
@@ -1094,7 +1091,7 @@ let testsv =
                           processLocalisationLazy.Value,
                           validateLocalisationLazy.Value
                       )
-                  // let comp = CompletionService([TypeRule ("create_starbase", RulesParser.createStarbaseLazy.Value)], [RulesParser.createStarbaseTypeDefLazy.Value], Map.empty, Map.empty, [], Set.empty, [], [])
+                  // let comp = CompletionService([TypeRule ("create_starbase", RulesParser.createStarbaseRule ())], [RulesParser.createStarbaseTypeDefLazy.Value], Map.empty, Map.empty, [], Set.empty, [], [])
                   let pos = mkPos 3 23
                   let suggestions = infoService.GetInfo(pos, entity)
 
@@ -1109,7 +1106,7 @@ let testsv =
 
                       Expect.sequenceEqual scopes expected "Scopes should match"
               | Failure(e, _, _) -> Expect.isTrue false e
-          ptestCase "test scope at pos prev"
+          testCase "test scope at pos prev"
           <| fun () ->
               let input =
                   "create_starbase = {\n\
@@ -1138,9 +1135,9 @@ let testsv =
                   let rules =
                       RuleValidationService(
                           RulesWrapper
-                              [| TypeRule("create_starbase", createStarbaseLazy.Value)
-                                 eopEffectLazy.Value
-                                 leftScopeLazy.Value |],
+                              [| TypeRule("create_starbase", createStarbaseRule ())
+                                 eopEffectRule ()
+                                 leftScopeRule () |],
                           [ createStarbaseTypeDefLazy.Value ],
                           FrozenDictionary.Empty,
                           FrozenDictionary.Empty,
@@ -1160,9 +1157,9 @@ let testsv =
                   let infoService =
                       InfoService(
                           RulesWrapper
-                              [| TypeRule("create_starbase", createStarbaseLazy.Value)
-                                 eopEffectLazy.Value
-                                 leftScopeLazy.Value |],
+                              [| TypeRule("create_starbase", createStarbaseRule ())
+                                 eopEffectRule ()
+                                 leftScopeRule () |],
                           [ createStarbaseTypeDefLazy.Value ],
                           FrozenDictionary.Empty,
                           FrozenDictionary.Empty,
@@ -1179,7 +1176,7 @@ let testsv =
                           processLocalisationLazy.Value,
                           validateLocalisationLazy.Value
                       )
-                  // let comp = CompletionService([TypeRule ("create_starbase", RulesParser.createStarbaseLazy.Value)], [RulesParser.createStarbaseTypeDefLazy.Value], Map.empty, Map.empty, [], Set.empty, [], [])
+                  // let comp = CompletionService([TypeRule ("create_starbase", RulesParser.createStarbaseRule ())], [RulesParser.createStarbaseTypeDefLazy.Value], Map.empty, Map.empty, [], Set.empty, [], [])
                   let pos = mkPos 4 9
                   let suggestions = infoService.GetInfo(pos, entity)
 
@@ -1195,7 +1192,7 @@ let testsv =
 
                       Expect.sequenceEqual scopes expected "Scopes should match"
               | Failure(e, _, _) -> Expect.isTrue false e
-          ptestCase "test scope at pos leaf"
+          testCase "test scope at pos leaf"
           <| fun () ->
               let input =
                   "create_starbase = {\n\
@@ -1223,10 +1220,10 @@ let testsv =
                   let rules =
                       RuleValidationService(
                           RulesWrapper
-                              [| TypeRule("create_starbase", createStarbaseLazy.Value)
-                                 eopEffectLazy.Value
-                                 leftScopeLazy.Value
-                                 logEffectLazy.Value |],
+                              [| TypeRule("create_starbase", createStarbaseRule ())
+                                 eopEffectRule ()
+                                 leftScopeRule ()
+                                 logEffectRule () |],
                           [ createStarbaseTypeDefLazy.Value ],
                           FrozenDictionary.Empty,
                           FrozenDictionary.Empty,
@@ -1246,10 +1243,10 @@ let testsv =
                   let infoService =
                       InfoService(
                           RulesWrapper
-                              [| TypeRule("create_starbase", createStarbaseLazy.Value)
-                                 eopEffectLazy.Value
-                                 leftScopeLazy.Value
-                                 logEffectLazy.Value |],
+                              [| TypeRule("create_starbase", createStarbaseRule ())
+                                 eopEffectRule ()
+                                 leftScopeRule ()
+                                 logEffectRule () |],
                           [ createStarbaseTypeDefLazy.Value ],
                           FrozenDictionary.Empty,
                           FrozenDictionary.Empty,
@@ -1266,7 +1263,7 @@ let testsv =
                           processLocalisationLazy.Value,
                           validateLocalisationLazy.Value
                       )
-                  // let comp = CompletionService([TypeRule ("create_starbase", RulesParser.createStarbaseLazy.Value)], [RulesParser.createStarbaseTypeDefLazy.Value], Map.empty, Map.empty, [], Set.empty, [], [])
+                  // let comp = CompletionService([TypeRule ("create_starbase", RulesParser.createStarbaseRule ())], [RulesParser.createStarbaseTypeDefLazy.Value], Map.empty, Map.empty, [], Set.empty, [], [])
                   let pos = mkPos 4 2
                   let suggestions = infoService.GetInfo(pos, entity)
 

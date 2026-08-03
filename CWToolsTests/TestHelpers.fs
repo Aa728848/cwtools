@@ -101,44 +101,47 @@ let validateLocalisationLazy =
             ([], [], ([], []))
             (STLLookup()))
          |> snd)
-let createStarbaseLazy =
-    lazy
-        (let owner =
-            NewRule(LeafRule(specificField "owner", ScopeField [ scopeManager.AnyScope ]), requiredSingle)
+let createStarbaseRule () =
+    let owner =
+       NewRule(LeafRule(specificField "owner", ScopeField [ scopeManager.AnyScope ]), requiredSingle)
 
-         let size =
-             NewRule(LeafRule(specificField "size", ValueField(ValueType.Enum "size")), requiredSingle)
+    let size =
+        NewRule(LeafRule(specificField "size", ValueField(ValueType.Enum "size")), requiredSingle)
 
-         let moduleR =
-             NewRule(LeafRule(specificField "module", ValueField(ValueType.Enum "module")), optionalMany)
+    let moduleR =
+        NewRule(LeafRule(specificField "module", ValueField(ValueType.Enum "module")), optionalMany)
 
-         let building =
-             NewRule(LeafRule(specificField "building", ValueField(ValueType.Enum "building")), optionalMany)
+    let building =
+        NewRule(LeafRule(specificField "building", ValueField(ValueType.Enum "building")), optionalMany)
 
-         let effect =
-             NewRule(
-                 NodeRule(
-                     specificField "effect",
-                     [| (LeafRule(AliasField "effect", AliasField "effect")), optionalMany |]
-                 ),
-                 { optionalSingle with
-                     replaceScopes =
-                         Some
-                             { froms = None
-                               root = Some(scopeManager.ParseScope () "country")
-                               this = Some(scopeManager.ParseScope () "country")
-                               prevs = None } }
-             )
+    let effect =
+        NewRule(
+            NodeRule(
+                specificField "effect",
+                [| (LeafRule(AliasField "effect", AliasField "effect")), optionalMany |]
+            ),
+            { optionalSingle with
+                replaceScopes =
+                    Some
+                        { froms = None
+                          root = Some(scopeManager.ParseScope () "country")
+                          this = Some(scopeManager.ParseScope () "country")
+                          prevs = None } }
+        )
 
-         let rule =
-             NewRule(
-                 NodeRule(specificField "create_starbase", [| owner; size; moduleR; building; effect |]),
-                 optionalMany
-             )
+    let rule =
+        NewRule(
+            NodeRule(specificField "create_starbase", [| owner; size; moduleR; building; effect |]),
+            optionalMany
+        )
 
-         rule)
+    rule
 
-let createStarbaseAliasLazy = lazy AliasRule("effect", createStarbaseLazy.Value)
+let createStarbaseLazy = lazy (createStarbaseRule ())
+
+let createStarbaseAlias () = AliasRule("effect", createStarbaseRule ())
+
+let createStarbaseAliasLazy = lazy (createStarbaseAlias ())
 
 let createStarbaseEnumsLazy =
     lazy
@@ -283,20 +286,20 @@ let shipSizeTypeLazy =
 
 
 let effectMap = EffectMap()
-let leftScopeLazy =
-    lazy
-        RootRule.AliasRule(
+let leftScopeRule () =
+    RootRule.AliasRule(
             "effect",
             (NodeRule(
                 (ScopeField [ (scopeManager.ParseScope () "Any") ]),
                 [| LeafRule((AliasField "effect"), (AliasField "Effect")), optionalMany |]
              ),
              optionalMany)
-        )
+    )
 
-let eopEffectLazy =
-    lazy
-        RootRule.AliasRule(
+let leftScopeLazy = lazy (leftScopeRule ())
+
+let eopEffectRule () =
+    RootRule.AliasRule(
             "effect",
             (NodeRule(
                 SpecificField(SpecificValue(StringResource.stringManager.InternIdentifierToken "every_owned_planet")),
@@ -304,11 +307,12 @@ let eopEffectLazy =
              ),
              { optionalMany with
                  pushScope = Some(scopeManager.ParseScope () "Planet") })
-        )
+    )
 
-let logEffectLazy =
-    lazy
-        RootRule.AliasRule(
+let eopEffectLazy = lazy (eopEffectRule ())
+
+let logEffectRule () =
+    RootRule.AliasRule(
             "effect",
             (LeafRule(
                 NewField.SpecificField(SpecificValue(StringResource.stringManager.InternIdentifierToken "log")),
@@ -316,7 +320,9 @@ let logEffectLazy =
              ),
              { optionalMany with
                  pushScope = Some(scopeManager.ParseScope () "Planet") })
-        )
+    )
+
+let logEffectLazy = lazy (logEffectRule ())
 
 
 let emptyImperatorSettings rootDirectory =
