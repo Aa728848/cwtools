@@ -81,3 +81,7 @@ dotnetcore
 publish/
 BenchmarkTests/
 build-cache/
+
+# Test artifacts accidentally committed in the past
+*.binlog
+CWToolsTests/test.exe
