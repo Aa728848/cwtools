@@ -369,7 +369,7 @@ has_access_fleet - Checks if the target country is allowed to enter the system
 has_access_fleet = <target>
 Supported Scopes: galactic_object
 
-is_point_of_interest - Checks if the planet/country/ship/system/ambient object has a specific point of interest for a specific event chain for a specific country
+is_point_of_interest - Checks if the planet/country/ship/system/ambient object has a point of interest for a country. id and event_chain are optional; when omitted, matches any point of interest located at the scope for the owner.
 is_point_of_interest = { id = <id> event_chain = <event_chain> owner = <target> }
 Supported Scopes: planet country ship galactic_object ambient_object
 
@@ -903,7 +903,7 @@ Supported Scopes: planet ship colony
 
 is_pop_category - Checks if the pop group has the chosen pop category
 is_pop_category = <key>
-Supported Scopes: pop_group
+Supported Scopes: pop_group pop
 
 won_the_game - Checks if scoped country won the game
 won_the_game = yes
@@ -1051,7 +1051,7 @@ Supported Scopes: all
 
 is_ship_class - Checks if the ship/fleet/design is a specific class
 is_ship_class = shipclass_colonizer
-Supported Scopes: ship fleet ship_growth_stage
+Supported Scopes: ship fleet design ship_growth_stage
 
 has_attitude_behavior - Checks if the country has the specified AI behavior towards another country 
 has_attitude_behavior = {
@@ -1062,7 +1062,7 @@ Supported Scopes: country
 
 is_ship_size - Checks if the ship/fleet/design is a specific ship size
 is_ship_size = mining_station
-Supported Scopes: ship fleet design starbase ship_growth_stage
+Supported Scopes: ship fleet design starbase ship_growth_stage design
 
 is_capital - Checks if the colony is its owner's capital
 is_capital = yes
@@ -1084,9 +1084,16 @@ num_owned_leaders - Checks the country's number of owned (recruited) non-envoy l
 num_owned_leaders < 8
 Supported Scopes: country
 
-num_owned_planets - Checks the country's or sector's number of owned colonies (includes both planet and ship colonies)
-(Deprecated; use num_owned_colonies instead)
+num_owned_colonies - Checks the country's or sector's number of owned colonies (includes both planet and ship colonies)
 num_owned_colonies < 8
+Supported Scopes: country sector
+
+has_automation_setting - Checks whether the given automation setting is active for this fleet. Only valid during automated target selection (an action's ai.weight or possible block); the active-setting set is transient and empty everywhere else, so this returns false in events and other contexts.
+has_automation_setting = waystation_systems
+Supported Scopes: fleet
+
+num_owned_planets - Checks the country's or sector's number of owned colonies (includes both planet and ship colonies)
+num_owned_planets < 8
 Supported Scopes: country sector
 
 has_government - Checks if the country has a specific government type, or any government at all
@@ -1107,10 +1114,10 @@ Supported Scopes: country
 
 is_archetype - Checks if species has specified archetype:
 is_archetype = PRESAPIENT
-Supported Scopes: species
+Supported Scopes: species pop_group
 
 uplift_is_archetype - Checks if the uplifted version of the species has the specified archetype:
-	uplift_is_archetype = LITHOID
+uplift_is_archetype = LITHOID
 Supported Scopes: species
 
 is_inside_nebula - checks if the planet/ship/fleet/system is inside a nebula
@@ -1579,6 +1586,10 @@ Supported Scopes: country
 
 situation_progress - Checks if the scoped situation's progress is a certain value.
 situation_progress > 15
+Supported Scopes: situation
+
+situation_progress_percent - Checks the scoped situation's progress as a percentage (0-100) of its completion value, so it stays correct when the progress bar is rescaled.
+situation_progress_percent >= 33
 Supported Scopes: situation
 
 situation_monthly_progress - Checks if the scoped situation's monthly progress is a certain value. Returns the cached value from the last monthly tick.
@@ -2951,6 +2962,10 @@ num_commercial_pacts - Checks the number of commercial pacts the current country
 num_commercial_pacts > 2
 Supported Scopes: country
 
+num_waystation_pacts - Checks the number of waystation pacts the current country has.
+num_waystation_pacts > 2
+Supported Scopes: country
+
 num_research_agreements - Checks the number of research agreements a country has
 num_research_agreements > 2
 Supported Scopes: country
@@ -3363,7 +3378,7 @@ Supported Scopes: ship ship_growth_stage
 
 is_ship_category - Checks if the ship/fleet/design is a specific ship category
 is_ship_category = <key>
-Supported Scopes: ship fleet ship_growth_stage
+Supported Scopes: ship fleet ship_growth_stage design
 
 is_specimen_rarity - Checks if the specified specimen contained by the scoped exhibit is of indicated rarity
 is_specimen_rarity = <rarity>
@@ -3440,8 +3455,8 @@ is_aura_intensity_level - Checks the Psionic Aura's intensity level inside the s
 is_aura_intensity_level = 2
 Supported Scopes: galactic_object
 
-planet_happiness_above_threshold - Checks if a planet's happiness is past a given threshold. Can be used in a scoped system, then it returns the sum of every planets' happiness past the given threshold.
-planet_happiness_above_threshold = { threshold = 0.5 value > 0
+planet_happiness_above_threshold - Checks if a planet's happiness is past a given threshold. Can be used in a scoped system, then it returns the sum of every planets' happiness past the given threshold. In system scope an optional limit (colony scope) filters which colonies contribute.
+planet_happiness_above_threshold = { threshold = 0.5 limit = { is_owned_by = root } value > 0 }
 Supported Scopes: planet galactic_object
 
 governors_skill_in_system - Checks if valid colony governors in the scoped has a specific base experience level
@@ -3487,7 +3502,7 @@ total_workforce_with_job_tag - Checks how much workforce that has jobs with all 
 total_workforce_with_job_tag = { tags = { farmer trader } value = 1000 }
 Supported Scopes: planet ship colony
 
-total_system_workforce_with_job_tag - Checks how much workforce that has jobs with all given tags in a system
+total_system_workforce_with_job_tag -  Checks how much workforce that has jobs with all given tags in a system. An optional limit (colony scope) filters which colonies contribute.
 total_system_workforce_with_job_tag = { tags = { farmer trader } value = 1000 }
 Supported Scopes: galactic_object
 
@@ -3531,7 +3546,7 @@ is_last_increased_tech_rare = yes
 Supported Scopes: country
 
 is_last_increased_tech_category - Checks if the last increased tech is of the specified category:
-	is_last_increased_tech_category = psionics
+is_last_increased_tech_category = psionics
 Supported Scopes: country
 
 get_attunement_points_for - Checks the amount of attunement points earned for a specified patron.
@@ -3652,10 +3667,6 @@ hostile_military_power - Returns the hostile military power in the system (galac
 optionally multiplied by ENEMY_FLEET_POWER_MULT as a safety buffer.
 hostile_military_power = { who = root safety_buffer = yes value > 5000 }
 Supported Scopes: galactic_object
-
-num_owned_colonies - Checks the country's or sector's number of owned colonies (includes both planet and ship colonies)
-num_owned_colonies < 8
-Supported Scopes: country sector
 
 any_agreement - Iterate through each agreement - checks whether the enclosed triggers return true for any of them
 any_agreement = { <triggers> }
@@ -4132,14 +4143,14 @@ Supported Scopes: country
 
 any_fleet_in_orbit - Iterate through each fleet orbiting the current planet/starbase/megastructure - checks whether the enclosed triggers return true for any of them
 any_fleet_in_orbit = { <triggers> }
-Supported Scopes: megastructure planet ship starbase
+Supported Scopes: megastructure planet ship starbase colony
 
 count_fleet_in_orbit - Iterate through each fleet orbiting the current planet/starbase/megastructure - checks whether the enclosed triggers return true for X/all of them
 count_fleet_in_orbit = {
 	count = <num/all/variable>
 	limit = { <triggers> }
 }
-Supported Scopes: megastructure planet ship starbase
+Supported Scopes: megastructure planet ship starbase colony
 
 any_orbital_station - Iterate through each orbital station owned by the current country or in the current system - checks whether the enclosed triggers return true for any of them
 any_orbital_station = { <triggers> }
@@ -7845,11 +7856,11 @@ add_resource_to_local_stockpile = {
 	...
 	mult = <variable> (optional: multiplies all gained resources by a variable)
 }
-Supported Scopes: ship
+Supported Scopes: ship fleet
 
 issue_contract - Adds the specified contract to a target system.
 The issuing country is the scoped country, contract and system are specified as parameter to the effect. You can additionally restrict who can pick up the contract by using a target
-example: issue_contract = {
+issue_contract = {
 	contract = harvest_resources
 	location = overlord.capital
 	<target = this>
@@ -7975,7 +7986,7 @@ colony_event = {
 	random = y (optional: specify random delay, capped at value)
 	scopes = { from = fromfrom } (optional: specify scope overrides)
 }
-Supported Scopes: colony planet ship
+Supported Scopes: colony
 
 carrier_event - Fires a colony carrier event for the scoped carrier, with optional DAYS and RANDOM delay
 carrier_event = {
@@ -8136,7 +8147,7 @@ Supported Scopes: army
 
 prevent_anomaly - Disables or enables anomaly generation for the scoped planet
 prevent_anomaly = yes
-Supported Scopes: planet
+Supported Scopes: planet colony
 
 add_deposit - Adds resource deposit to the scoped object (note: if you add a blocker, it will add a random deposit that can be blocked by that deposit)
 add_deposit = <key/random/random_blocker/random_nonblocker>
@@ -8160,7 +8171,7 @@ Supported Scopes: leader
 
 conquer - Conquers the planet by setting its owner to target country and adding an unhappiness modifier
 conquer = <target country>
-Supported Scopes: planet
+Supported Scopes: planet colony
 
 pop_faction_event - Fires a pop faction event for the scoped pop faction, with optional DAYS and RANDOM delay
 pop_faction_event = {
@@ -8250,7 +8261,7 @@ clear_planet_purge_type = yes
 Supported Scopes: planet ship colony
 
 trigger_megastructure_icon - if a planet has trigger_megastructure_icon = yes then the map icon for the star will show a megastructure icon
-Supported Scopes: planet
+Supported Scopes: planet colony
 
 run_ai_strategic_data - Recomputes ALL strategic data for AI = yes
 Supported Scopes: country
@@ -9676,7 +9687,7 @@ random_fleet_in_orbit = {
 	}
 	<effects>
 }
-Supported Scopes: megastructure planet ship starbase
+Supported Scopes: megastructure planet ship starbase colony
 
 ordered_fleet_in_orbit - Iterate through each fleet orbiting the current planet/starbase/megastructure - executes the enclosed effects on one of them for which the limit triggers return true. Picks the specific object according to the order specified (position 0, order_by = trigger:num_pops would run the effects on the X with the most pops)
 ordered_fleet_in_orbit = {
@@ -9686,11 +9697,11 @@ ordered_fleet_in_orbit = {
 	inverse = yes/no (default: no - if yes, then 0 is lowest rather than highest)
 	<effects>
 }
-Supported Scopes: megastructure planet ship starbase
+Supported Scopes: megastructure planet ship starbase colony
 
 every_fleet_in_orbit - Iterate through each fleet orbiting the current planet/starbase/megastructure - executes the enclosed effects on all of them for which the limit triggers return true
 every_fleet_in_orbit = { limit = { <triggers> } <effects> }
-Supported Scopes: megastructure planet ship starbase
+Supported Scopes: megastructure planet ship starbase colony
 
 random_orbital_station - Iterate through each orbital station owned by the current country or in the current system - executes the enclosed effects on one of them for which the limit triggers return true. Picks the specific object randomly.
 random_orbital_station = {

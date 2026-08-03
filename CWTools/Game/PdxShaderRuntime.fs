@@ -96,6 +96,7 @@ module PdxShaderRuntime =
         | ManualRuntimeTest
         | ExecutableObservation
         | OfficialVanillaContract
+        | AutomaticInventory
 
     /// Rename permission recorded in the ABI catalog.
     type AbiRenamePolicy =
@@ -808,6 +809,7 @@ module PdxShaderRuntime =
         | "manual_runtime_test" -> Some ManualRuntimeTest
         | "executable_observation" -> Some ExecutableObservation
         | "official_vanilla_contract" -> Some OfficialVanillaContract
+        | "automatic_inventory" -> Some AutomaticInventory
         | _ -> None
 
     let private catalogDiagnostic source entryIndex code message =
@@ -869,7 +871,7 @@ module PdxShaderRuntime =
 
                 let evidence = evidenceText |> Option.bind parseEvidenceKind
                 if evidenceText.IsSome && evidence.IsNone then
-                    entryDiagnostics.Add(catalogDiagnostic source (Some index) "CWFXABI109" "Unknown evidence; reviewed evidence must be manual_runtime_test, executable_observation, or official_vanilla_contract.")
+                    entryDiagnostics.Add(catalogDiagnostic source (Some index) "CWFXABI109" "Unknown evidence; evidence must be manual_runtime_test, executable_observation, official_vanilla_contract, or automatic_inventory.")
 
                 let renamePolicy =
                     match renameText |> Option.map _.ToLowerInvariant() with
