@@ -1195,6 +1195,7 @@ type InfoService
             let rules =
                 match field with
                 | NodeRule(_, rs) -> rs
+                | ValueClauseRule rs -> rs
                 | _ -> [||]
 
             let noderules, leafrules, leafvaluerules, valueclauserules, nodeSpecificDict, leafSpecificDict =

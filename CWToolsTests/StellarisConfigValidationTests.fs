@@ -144,6 +144,163 @@ let testsv =
                   | None -> failtest "info failed"
               | Failure(e, _, _) -> failtest e
 
+          testWithCapturedLogs "value_set values inside value clauses are collected and completed"
+          <| fun () ->
+              UtilityParser.initializeScopes None (Some(defaultScopeInputs ()))
+
+              let config =
+                  "types = {\n\
+                       type[ship_size] = {\n\
+                           path = \"game/common/ship_sizes\"\n\
+                       }\n\
+                   }\n\
+                   ship_size = {\n\
+                       ## cardinality = 0..1\n\
+                       ship_roles = {\n\
+                           ## cardinality = 0..inf\n\
+                           value_set[ship_size_ship_roles]\n\
+                       }\n\
+                       ## cardinality = 0..1\n\
+                       triggered_ship_roles = {\n\
+                           ## cardinality = 0..inf\n\
+                           {\n\
+                               name = value_set[ship_size_ship_roles]\n\
+                           }\n\
+                       }\n\
+                       ## cardinality = 0..inf\n\
+                       roles = value[ship_size_ship_roles]\n\
+                   }\n"
+
+              let rules, types, _, _, _ =
+                  parseConfig
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      "ship_sizes.cwt"
+                      config
+
+              let input =
+                  "ship_size = {\n\
+                       ship_roles = { carrier }\n\
+                       triggered_ship_roles = {\n\
+                           {\n\
+                               name = artillery\n\
+                           }\n\
+                           {\n\
+                               name = artillery_stealth\n\
+                           }\n\
+                       }\n\
+                       roles = car\n\
+                   }\n"
+
+              match CKParser.parseString input "common/ship_sizes/test.txt" with
+              | Success(r, _, _) ->
+                  let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+
+                  let entity =
+                      { filepath = "common/ship_sizes/test.txt"
+                        logicalpath = "common/ship_sizes/test.txt"
+                        rawEntity = node
+                        entity = node
+                        validate = true
+                        entityType = EntityType.Other
+                        overwrite = Overwrite.No }
+
+                  let rulesWrapper = RulesWrapper(rules |> List.toArray)
+
+                  let validationService =
+                      RuleValidationService(
+                          rulesWrapper,
+                          types,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          [||],
+                          FrozenSet.Empty,
+                          effectMap,
+                          effectMap,
+                          (scopeManager.ParseScope () "Any"),
+                          changeScope,
+                          defaultContext,
+                          STL STLLang.Default,
+                          processLocalisationLazy.Value,
+                          validateLocalisationLazy.Value
+                      )
+
+                  let infoService =
+                      InfoService(
+                          rulesWrapper,
+                          types,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          [||],
+                          FrozenSet.Empty,
+                          effectMap,
+                          effectMap,
+                          validationService,
+                          changeScope,
+                          defaultContext,
+                          (scopeManager.ParseScope () "Any"),
+                          STL STLLang.Default,
+                          processLocalisationLazy.Value,
+                          validateLocalisationLazy.Value
+                      )
+
+                  let definedVars = infoService.GetDefinedVariables entity
+
+                  let collected =
+                      match Map.tryFind "ship_size_ship_roles" definedVars with
+                      | Some values -> values |> Seq.map fst |> List.ofSeq |> List.sort
+                      | None -> []
+
+                  Expect.sequenceEqual
+                      collected
+                      [ "artillery"; "artillery_stealth"; "carrier" ]
+                      "value_set values inside value clauses should be collected"
+
+                  let varMap =
+                      definedVars
+                      |> Map.map (fun _ values -> values |> Seq.map fst |> createStringSet)
+                      |> fun map -> map.ToFrozenDictionary()
+
+                  let comp =
+                      CompletionService(
+                          rulesWrapper,
+                          types,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          varMap,
+                          [||],
+                          FrozenSet.Empty,
+                          effectMap,
+                          effectMap,
+                          [],
+                          changeScope,
+                          defaultContext,
+                          (scopeManager.ParseScope () "Any"),
+                          [],
+                          STL STLLang.Default,
+                          emptyDataTypesLazy.Value,
+                          processLocalisationLazy.Value,
+                          validateLocalisationLazy.Value
+                      )
+
+                  let suggestions =
+                      comp.Complete(mkPos 11 10, entity, None, None)
+                      |> Seq.map (function
+                          | CompletionResponse.Simple(c, _, _) -> c
+                          | Snippet(l, _, _, _, _) -> l
+                          | Detailed(l, _, _, _) -> l)
+                      |> List.ofSeq
+
+                  Expect.containsAll
+                      suggestions
+                      [ "artillery"; "artillery_stealth"; "carrier" ]
+                      "value[ship_size_ship_roles] should complete collected values"
+              | Failure(e, _, _) -> failtest e
+
           testWithCapturedLogs "create_starbase"
           <| fun () ->
               let input =
