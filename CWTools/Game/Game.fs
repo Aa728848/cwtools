@@ -542,6 +542,29 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         log $"Validate files Time: %i{timer.ElapsedMilliseconds} files=%i{entities.Length}"
         shallowres @ deepres
 
+    let validateFilesLocalCancellable (filepaths: string list) (shouldCancel: unit -> bool) =
+        log $"validateFilesLocalCancellable count=%i{filepaths.Length}"
+        let timer = System.Diagnostics.Stopwatch.StartNew()
+        let entities =
+            filepaths
+            |> List.distinctBy normaliseComparableFilePath
+            |> List.choose entityByFilePathWithFallback
+
+        let result =
+            if shouldCancel () then
+                None
+            else
+                match validationManager.ValidateDynamicLocalCancellable(entities, shouldCancel) with
+                | None -> None
+                | Some(shallowres, deepres) when shouldCancel () -> None
+                | Some(shallowres, deepres) ->
+                    let localisationErrors = validationManager.ValidateLocalisation entities
+                    if shouldCancel () then None
+                    else Some(shallowres @ localisationErrors @ deepres)
+
+        log $"Validate local files time: %i{timer.ElapsedMilliseconds} files=%i{entities.Length}"
+        result
+
     let initialLoad () =
         let timer = System.Diagnostics.Stopwatch()
         timer.Start()
@@ -768,6 +791,8 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member _.ValidateFileCancellable shallow file shouldCancel =
         validateFileCancellable shallow file shouldCancel
     member _.ValidateFiles files = validateFiles files
+    member _.ValidateFilesLocalCancellable(files, shouldCancel) =
+        validateFilesLocalCancellable files shouldCancel
     member _.RemoveFile file = resourceManager.Api.RemoveFile file
 
     member _.RefreshValidationManager() =

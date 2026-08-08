@@ -99,6 +99,7 @@ type JominiGame(setupSettings: GameSetupSettings<JominiLookup>, profile: JominiG
     let validationSettings =
         { validators = CWTools.Validation.ValidationCore.toLocalStructureValidators [ validateIfWithNoEffect, "ifnoeffect" ]
           globalValidators = []
+          dynamicValidators = []
           experimentalValidators = []
           heavyExperimentalValidators = []
           experimental = false
@@ -263,6 +264,8 @@ type JominiGame(setupSettings: GameSetupSettings<JominiLookup>, profile: JominiG
         member _.ValidateFileInteractive staged = game.ValidateFileInteractive staged
         member _.ValidateFile shallow file = game.ValidateFile shallow file
         member _.ValidateFiles files = game.ValidateFiles files
+        member _.ValidateFilesLocalCancellable(files, shouldCancel) =
+            game.ValidateFilesLocalCancellable(files, shouldCancel)
         member _.AllEntities() = resources.AllEntities()
 
         member _.References() =
@@ -337,6 +340,8 @@ type JominiGame(setupSettings: GameSetupSettings<JominiLookup>, profile: JominiG
         member _.ForceRecompute() = resources.ForceRecompute()
         member _.ForceDynamicParameterData(timeoutMs, maxEntities) =
             resources.ForceDynamicParameterData(timeoutMs, maxEntities)
+        member _.ForceDynamicParameterDataForFiles filepaths =
+            resources.ForceDynamicParameterDataForFiles filepaths
         member _.GetInlineScriptCallers scriptName = resources.GetInlineScriptCallers scriptName
         member _.RefreshInlineScriptCallers scriptNames = game.RefreshInlineScriptCallers scriptNames
         member _.Types() = game.Lookup.typeDefInfo

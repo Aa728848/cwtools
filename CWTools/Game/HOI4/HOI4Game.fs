@@ -339,6 +339,7 @@ type HOI4Game(setupSettings: HOI4Settings) =
                   validateRedundantANDWithNOT, "AND"
                   validateOptimisations embeddedSettings.featureSettings.ListMergeOptimisations, "opt" ]
           globalValidators = []
+          dynamicValidators = []
           experimentalValidators = []
           heavyExperimentalValidators = []
           experimental = setupSettings.validation.experimental
@@ -486,6 +487,8 @@ type HOI4Game(setupSettings: HOI4Settings) =
         member _.ValidateFileInteractive staged = game.ValidateFileInteractive staged
         member _.ValidateFile shallow file = game.ValidateFile shallow file
         member _.ValidateFiles files = game.ValidateFiles files
+        member _.ValidateFilesLocalCancellable(files, shouldCancel) =
+            game.ValidateFilesLocalCancellable(files, shouldCancel)
         member _.AllEntities() = resources.AllEntities()
 
         member _.References() =
@@ -560,6 +563,8 @@ type HOI4Game(setupSettings: HOI4Settings) =
         member _.ForceRecompute() = resources.ForceRecompute()
         member _.ForceDynamicParameterData(timeoutMs, maxEntities) =
             resources.ForceDynamicParameterData(timeoutMs, maxEntities)
+        member _.ForceDynamicParameterDataForFiles filepaths =
+            resources.ForceDynamicParameterDataForFiles filepaths
         member _.GetInlineScriptCallers scriptName = resources.GetInlineScriptCallers scriptName
         member _.RefreshInlineScriptCallers scriptNames = game.RefreshInlineScriptCallers scriptNames
         member _.Types() = game.Lookup.typeDefInfo

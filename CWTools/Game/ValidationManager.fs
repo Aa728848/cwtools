@@ -21,6 +21,8 @@ type LookupFileValidator<'T when 'T :> ComputedData> =
 type ValidationManagerSettings<'T when 'T :> ComputedData> =
     { validators: (LocalStructureValidator<'T> * string) list
       globalValidators: (StructureValidator<'T> * string) list
+      /// Cross-file validators required by deferred dynamic call-site validation.
+      dynamicValidators: (StructureValidator<'T> * string) list
       experimentalValidators: (StructureValidator<'T> * string) list
       heavyExperimentalValidators: (LookupValidator<'T> * string) list
       experimental: bool
@@ -551,6 +553,23 @@ type ValidationManager<'T when 'T :> ComputedData>
 
             res @ fres @ lres @ lfres @ rres, []
 
+    let validateDynamicLocal (entities: struct (Entity * Lazy<'T>) list) =
+        let shallow, deep = validateLocal entities
+
+        if settings.dynamicValidators.IsEmpty || validationCancelled () then
+            shallow, deep
+        else
+            let workspaceEntities = EntitySet(resources.AllEntities())
+            let changedEntities = EntitySet entities
+            let dynamicErrors =
+                settings.dynamicValidators
+                <&!!&> (fun (validator, name) ->
+                    duration (fun _ -> validator workspaceEntities changedEntities) name)
+                |> function
+                    | Invalid(_, errors) -> errors
+                    | _ -> []
+            shallow @ dynamicErrors, deep
+
     let validateLocalisation buildReferenceIndex (entities: struct (Entity * Lazy<'T>) list) =
         log (sprintf "Localisation check %i files" entities.Length)
         let timer = System.Diagnostics.Stopwatch()
@@ -753,6 +772,22 @@ type ValidationManager<'T when 'T :> ComputedData>
             else
                 try
                     let result = validateLocal entities
+                    if shouldCancel () then None else Some result
+                with :? OperationCanceledException ->
+                    None
+        finally
+            cancellationCheck.Value <- previous
+
+    member _.ValidateDynamicLocalCancellable(entities: struct (Entity * Lazy<'T>) list, shouldCancel: unit -> bool) =
+        let previous = cancellationCheck.Value
+        cancellationCheck.Value <- shouldCancel
+
+        try
+            if shouldCancel () then
+                None
+            else
+                try
+                    let result = validateDynamicLocal entities
                     if shouldCancel () then None else Some result
                 with :? OperationCanceledException ->
                     None

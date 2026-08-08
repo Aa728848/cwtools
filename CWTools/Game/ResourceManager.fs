@@ -312,6 +312,7 @@ type IResourceAPI<'T when 'T :> ComputedData> =
     abstract ValidatableEntities: ValidatableEntities<'T>
     abstract ForceRecompute: unit -> unit
     abstract ForceDynamicParameterData: int * int -> int
+    abstract ForceDynamicParameterDataForFiles: string list -> int
     abstract ForceRulesDataGenerate: unit -> unit
     abstract GetInlineScriptCallers: string -> string list
     abstract RefreshInlineScriptCallers: string list -> string list
@@ -1433,6 +1434,22 @@ type ResourceManager<'T when 'T :> ComputedData>
             i <- i + 1
         forced
 
+    let forceDynamicParameterDataForFiles (filepaths: string list) =
+        let comparer =
+            if OperatingSystem.IsWindows() then
+                StringComparer.OrdinalIgnoreCase
+            else
+                StringComparer.Ordinal
+        let requested = HashSet<string>(filepaths, comparer)
+        let mutable forced = 0
+        for kvp in entitiesMap do
+            let filepath = kvp.Key
+            let struct (_, data) = kvp.Value
+            if requested.Contains filepath then
+                data.Force() |> ignore
+                forced <- forced + 1
+        forced
+
     let isCarrierRelevantEntity = CarrierContribution.isRelevantEntity
     let carrierSemanticFingerprint = CarrierContribution.semanticFingerprint
 
@@ -1719,6 +1736,8 @@ type ResourceManager<'T when 'T :> ComputedData>
             member _.ForceRecompute() = forceRecompute ()
             member _.ForceDynamicParameterData(timeoutMs, maxEntities) =
                 forceDynamicParameterData timeoutMs maxEntities
+            member _.ForceDynamicParameterDataForFiles filepaths =
+                forceDynamicParameterDataForFiles filepaths
             member _.ForceRulesDataGenerate() = forceRulesData ()
             member _.GetInlineScriptCallers scriptName = getInlineScriptCallers scriptName
             member _.RefreshInlineScriptCallers scriptNames = refreshInlineScriptCallers scriptNames

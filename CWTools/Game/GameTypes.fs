@@ -203,6 +203,8 @@ type IGame =
     abstract ValidateFile: bool -> string -> CWError list
     /// Deep-validate several files in one validation round so shared indexes are built once.
     abstract ValidateFiles: string list -> CWError list
+    /// Deep-validate only the requested files, cooperatively discarding the whole batch when superseded.
+    abstract ValidateFilesLocalCancellable: string list * (unit -> bool) -> CWError list option
     abstract Complete: pos -> string -> string -> CompletionResponse list
     abstract GoToType: pos -> string -> string -> range option
     abstract FindAllRefs: pos -> string -> string -> range list option
@@ -225,6 +227,8 @@ type IGame =
     abstract InvalidateFileCache: string -> unit
     abstract ForceRecompute: unit -> unit
     abstract ForceDynamicParameterData: int * int -> int
+    /// Force computed data only for the requested loaded files.
+    abstract ForceDynamicParameterDataForFiles: string list -> int
     abstract GetInlineScriptCallers: string -> string list
     abstract RefreshInlineScriptCallers: string list -> string list
     abstract Types: unit -> Map<string, TypeDefInfo array>

@@ -2207,6 +2207,7 @@ type STLGame(setupSettings: StellarisSettings) =
               validatePlanetKillers, "pk"
               valMegastructureGraphics, "megastructure"
               valPlanetClassGraphics, "pcg" ]
+          dynamicValidators = [ validateVariables, "var" ]
           experimentalValidators = [ valSectionGraphics, "sections"; valComponentGraphics, "component" ]
           heavyExperimentalValidators = [ getEventChains, "event chains" ]
           experimental = setupSettings.validation.experimental
@@ -2443,6 +2444,8 @@ type STLGame(setupSettings: StellarisSettings) =
         member _.ValidateFileInteractive staged = game.ValidateFileInteractive staged
         member _.ValidateFile shallow file = game.ValidateFile shallow file
         member _.ValidateFiles files = game.ValidateFiles files
+        member _.ValidateFilesLocalCancellable(files, shouldCancel) =
+            game.ValidateFilesLocalCancellable(files, shouldCancel)
         member _.AllEntities() = resources.AllEntities()
 
         member _.References() =
@@ -2541,6 +2544,8 @@ type STLGame(setupSettings: StellarisSettings) =
         member _.ForceRecompute() = resources.ForceRecompute()
         member _.ForceDynamicParameterData(timeoutMs, maxEntities) =
             resources.ForceDynamicParameterData(timeoutMs, maxEntities)
+        member _.ForceDynamicParameterDataForFiles filepaths =
+            resources.ForceDynamicParameterDataForFiles filepaths
         member _.GetInlineScriptCallers scriptName = resources.GetInlineScriptCallers scriptName
         member _.RefreshInlineScriptCallers scriptNames = game.RefreshInlineScriptCallers scriptNames
         member _.Types() = game.Lookup.typeDefInfo

@@ -612,7 +612,12 @@ let inlineScriptCompletionRegressionTests =
 
               // Dynamic diagnostics are displayed at the definition range, while
               // their Related source identifies the entity that must be revalidated.
-              let batchDiagnostics = stl.ValidateFiles [ inlineFilename; callerFilename ]
+              let batchDiagnostics =
+                  stl.ValidateFilesLocalCancellable(
+                      [ inlineFilename; callerFilename ],
+                      (fun () -> false)
+                  )
+                  |> Option.defaultWith (fun () -> failtest "local batch validation was unexpectedly cancelled")
               assertParameterErrors "batched file validation" batchDiagnostics
 
               // Mirror the server's Ctrl+S path: update the definition, rebuild
@@ -1755,6 +1760,10 @@ let incrementalScriptedRefreshTests =
                   cancellable.ValidateFileCancellable(false, triggerFile, (fun () -> true))
               Expect.isNone cancelled "an already superseded snapshot must stop before validation"
 
+              let cancelledBatch =
+                  stl.ValidateFilesLocalCancellable([ triggerFile ], (fun () -> true))
+              Expect.isNone cancelledBatch "an already superseded local batch must stop before validation"
+
               let mutable cancellationChecks = 0
               let cancelledDuringValidation =
                   cancellable.ValidateFileCancellable(
@@ -1770,6 +1779,14 @@ let incrementalScriptedRefreshTests =
               let completed =
                   cancellable.ValidateFileCancellable(false, triggerFile, (fun () -> false))
               Expect.isSome completed "the same cancellable path must preserve normal validation results"
+
+              let completedBatch =
+                  stl.ValidateFilesLocalCancellable([ triggerFile ], (fun () -> false))
+              Expect.isSome completedBatch "the local batch path must preserve normal validation results"
+
+              let forced =
+                  stl.ForceDynamicParameterDataForFiles [ triggerFile; triggerFile; triggerFile + ".missing" ]
+              Expect.equal forced 1 "targeted prewarm should force each loaded file at most once"
 
           testWithCapturedLogs "commit refreshes scripted parameter enums" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripteddefaults"
