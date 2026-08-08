@@ -1,4 +1,4 @@
-﻿open System.IO
+open System.IO
 open Fake.Api
 open Fake.Core
 open Fake.DotNet
@@ -72,7 +72,7 @@ let toolProjects =
     ++ "CWToolsScripts/CWToolsScripts.fsproj"
 
 let testProjects =
-    !!"CWTools.Tests/CWTools.Tests.fsproj" ++ "CWToolsCSTests/CWToolsCSTests.fsproj"
+    !!"CWToolsTests/CWToolsTests.fsproj" ++ "CWToolsCSTests/CWToolsCSTests.fsproj"
 
 let pkgPath = Path.GetFullPath "./pkg"
 

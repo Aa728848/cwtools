@@ -113,6 +113,23 @@ module PdxShaderProject =
         extension.Equals(".shader", StringComparison.OrdinalIgnoreCase)
         || extension.Equals(".fxh", StringComparison.OrdinalIgnoreCase)
 
+    /// LSP position from a raw text offset; shared by the shader LSP features.
+    let posFromOffset (text: string) offset =
+        let targetOffset = max 0 (min text.Length offset)
+        let mutable line = 1
+        let mutable column = 0
+        let mutable i = 0
+
+        while i < targetOffset do
+            if text[i] = '\n' then
+                line <- line + 1
+                column <- 0
+            elif text[i] <> '\r' then
+                column <- column + 1
+
+            i <- i + 1
+
+        CWTools.Utilities.Position.mkPos line column
     type ShaderLoadOrderRoot =
         { name: string
           path: string

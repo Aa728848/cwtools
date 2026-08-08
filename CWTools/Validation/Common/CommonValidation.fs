@@ -1157,7 +1157,7 @@ module CommonValidation =
         | AND = 1uy
         | OR = 2uy
 
-    let validateRedundantANDWithNOR: StructureValidator<_> =
+    let validateRedundantANDWith (keyword: string): StructureValidator<_> =
         fun _ es ->
             let effects = es.AllEffects
             let triggers = es.AllTriggers
@@ -1167,28 +1167,14 @@ module CommonValidation =
                     match last, x.Key with
                     | BoolState.AND, k when k == "AND" -> BoolState.AND, None
                     | BoolState.OR, k when k == "OR" -> BoolState.OR, Some(inv (ErrorCodes.UnnecessaryBoolean "OR") x)
-                    | _, k when k == "OR" || k == "NOR" -> BoolState.OR, None
+                    | _, k when k == "OR" || k == keyword -> BoolState.OR, None
                     | _, _ -> BoolState.AND, None
 
             (effects @ triggers)
             <&!&> (foldNodeWithState fNode BoolState.AND >> (fun e -> Invalid(Guid.NewGuid(), e)))
 
-    let validateRedundantANDWithNOT: StructureValidator<_> =
-        fun _ es ->
-            let effects = es.AllEffects
-            let triggers = es.AllTriggers
-
-            let fNode =
-                fun (last: BoolState) (x: Node) ->
-                    match last, x.Key with
-                    | BoolState.AND, k when k == "AND" -> BoolState.AND, None
-                    | BoolState.OR, k when k == "OR" -> BoolState.OR, Some(inv (ErrorCodes.UnnecessaryBoolean "OR") x)
-                    | _, k when k == "OR" || k == "NOT" -> BoolState.OR, None
-                    | _, _ -> BoolState.AND, None
-
-            (effects @ triggers)
-            <&!&> (foldNodeWithState fNode BoolState.AND >> (fun e -> Invalid(Guid.NewGuid(), e)))
-
+    let validateRedundantANDWithNOR<'T when 'T :> ComputedData> : StructureValidator<'T> = validateRedundantANDWith "NOR"
+    let validateRedundantANDWithNOT<'T when 'T :> ComputedData> : StructureValidator<'T> = validateRedundantANDWith "NOT"
     let validateUnusuedTypes: LookupValidator<_> =
         let merge (a: Map<'a, 'b>) (b: Map<'a, 'b>) (f: 'a -> 'b * 'b -> 'b) =
             Map.fold

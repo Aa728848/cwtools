@@ -392,8 +392,7 @@ type ValidationManager<'T when 'T :> ComputedData>
             let directErrors =
                 entities
                 |> List.map (fun struct (e, _) -> e)
-                <&!!&> ruleValidate
-                |> function
+                <&!&> ruleValidate                |> function
                     | Invalid(_, es) -> es
                     | _ -> []
 

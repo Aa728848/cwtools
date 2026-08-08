@@ -306,9 +306,6 @@ module DataTypeParser =
           functions = functionMap
           dataTypes = dataTypeMap
           dataTypeNames = names }
-        |> (fun f ->
-            eprintfn "%A" f
-            f)
 
     let private idChar = letter <|> digit <|> anyOf [ '_'; '['; ']'; ':' ]
 

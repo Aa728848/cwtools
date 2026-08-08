@@ -144,25 +144,36 @@ let _ = assert (isSyntheticMask = mask64 isSyntheticShift isSyntheticBitCount)
 
 // This is just a standard unique-index table
 type FileIndexTable() =
+    // Reads used to race with Dictionary/ResizeArray growth while the write path
+    // parsed files outside the game-state write lock (e.g. PrepareUpdateFileInteractive).
+    // A ReaderWriterLockSlim keeps reads concurrent and synchronized with writes, and
+    // stays serializable by FsPickler (unlike ConcurrentDictionary, which has no
+    // built-in pickler). The lock is recreated after deserialization.
     let indexToFileTable = new ResizeArray<_>(11)
     let fileToIndexTable = new Dictionary<string, int>(11)
 
     [<NonSerialized>]
-    let mutable lock = Lock()
+    let mutable rwLock = new System.Threading.ReaderWriterLockSlim()
 
     [<OnDeserialized>]
     member _.OnDeserialized(_context: StreamingContext) =
-        // Recreate the lock after deserialization
-        lock <- Lock()
+        rwLock <- new System.Threading.ReaderWriterLockSlim()
 
     member t.FileToIndex f =
-        let mutable res = 0
-        let ok = fileToIndexTable.TryGetValue(f, &res)
+        rwLock.EnterReadLock()
 
-        if ok then
+        let mutable found = false
+        let mutable res = 0
+
+        try
+            found <- fileToIndexTable.TryGetValue(f, &res)
+        finally
+            rwLock.ExitReadLock()
+
+        if found then
             res
         else
-            lock.Enter()
+            rwLock.EnterWriteLock()
 
             try
                 let mutable res = 0 in
@@ -176,17 +187,21 @@ type FileIndexTable() =
                     fileToIndexTable.[f] <- n
                     n
             finally
-                lock.Exit()
+                rwLock.ExitWriteLock()
 
     member t.IndexToFile n =
-        (if n < 0 then
-             failwithf "fileOfFileIndex: negative argument: n = %d\n" n)
+        rwLock.EnterReadLock()
 
-        (if n >= indexToFileTable.Count then
-             failwithf "fileOfFileIndex: invalid argument: n = %d\n" n)
+        try
+            (if n < 0 then
+                 failwithf "fileOfFileIndex: negative argument: n = %d\n" n)
 
-        indexToFileTable.[n]
+            (if n >= indexToFileTable.Count then
+                 failwithf "fileOfFileIndex: invalid argument: n = %d\n" n)
 
+            indexToFileTable.[n]
+        finally
+            rwLock.ExitReadLock()
 let maxFileIndex = pown32 fileIndexBitCount
 
 // ++GLOBAL MUTABLE STATE

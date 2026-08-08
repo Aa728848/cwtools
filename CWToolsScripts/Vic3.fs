@@ -3,6 +3,13 @@ module CWToolsScripts.Vic3
 
 open System.IO
 
+/// Config roots for the maintenance scripts. Overridable via CWTOOLS_CONFIG_ROOT;
+/// defaults to <userprofile>/Git (the original hardcoded C:\Users\Thomas\git paths).
+let configRoot () =
+    match System.Environment.GetEnvironmentVariable "CWTOOLS_CONFIG_ROOT" with
+    | null | "" -> Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile), "Git")
+    | root -> root
+
 open CWTools.Common
 open CWTools.Parser
 
@@ -24,7 +31,7 @@ type Trait =
 
 
 let generateVic3 () =
-    let root = @"C:\Users\Thomas\Git\cwtools-vic3-config\"
+    let root = (configRoot () + @"\cwtools-vic3-config\")
     let scopePath = root + @"config/scopes.cwt"
     let triggerPath = root + @"config/triggers.cwt"
     let listTriggerPath = root + @"config/list_triggers.cwt"

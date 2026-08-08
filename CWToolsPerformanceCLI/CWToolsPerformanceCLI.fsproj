@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
         <OutputType>Exe</OutputType>
@@ -9,7 +9,6 @@
         <Compile Include="CliArguments.fs"/>
         <Compile Include="PerfCommon.fs"/>
         <Compile Include="PerfFunctions.fs"/>
-        <Compile Include="Piecemeal.fs"/>
         <Compile Include="Program.fs"/>
     </ItemGroup>
 

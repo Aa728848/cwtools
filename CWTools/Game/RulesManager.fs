@@ -1401,11 +1401,15 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         ruleValidationService, infoService, completionService
 
     let normaliseFilePath (path: string) =
-        try
-            FileInfo(path).FullName.Replace('\\', '/').ToLowerInvariant()
-        with _ ->
+        // Resource paths are absolute: skip the FileInfo allocation on the hot path;
+        // FileInfo is only needed to resolve genuinely relative paths.
+        if Path.IsPathRooted(path) then
             path.Replace('\\', '/').ToLowerInvariant()
-
+        else
+            try
+                FileInfo(path).FullName.Replace('\\', '/').ToLowerInvariant()
+            with _ ->
+                path.Replace('\\', '/').ToLowerInvariant()
     let getEntityByFilePathWithFallback (path: string) =
         match resources.GetEntityByFilePath path with
         | Some entity -> Some entity

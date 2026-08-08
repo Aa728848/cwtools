@@ -25,24 +25,8 @@ module CKParser =
         applyParser SharedParsers.all stream
 
 
-    let private memoize keyFunction memFunction =
-        let dict = new System.Collections.Generic.Dictionary<_, _>()
-
-        fun n ->
-            match dict.TryGetValue(keyFunction (n)) with
-            | true, v -> v
-            | _ ->
-                let temp = memFunction (n)
-                dict.Add(keyFunction (n), temp)
-                temp
-
     let parseString fileString filename =
         runParserOnString SharedParsers.all () filename fileString
-
-    let parseEventString fileString fileName =
-        let inner = (fun (file, name) -> runParserOnString SharedParsers.alle () name file)
-        let hash = (fun (file, name) -> file.GetHashCode(), name)
-        (memoize hash inner) (fileString, fileName)
 
     let getSuccess result =
         match result with

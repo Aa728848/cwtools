@@ -1109,57 +1109,6 @@ module STLValidation =
 
             planetkillers <&!&> inner
 
-    let validateAnomaly210: STLStructureValidator =
-        fun _ es ->
-            let anomalies = es.GlobMatchChildren("**/anomalies/*.txt")
-
-            let fNode =
-                fun (x: Node) ->
-                    if x.Key == "anomaly" || x.Key == "anomaly_category" then
-                        Invalid(
-                            Guid.NewGuid(),
-                            [ inv
-                                  ((ErrorCodes.CustomError
-                                      "This style of anomaly was removed with 2.1.0, please see vanilla for details")
-                                      Severity.Error)
-                                  x ]
-                        )
-                    else
-                        OK
-
-            anomalies <&!&> fNode
-
-
-    let validateIfElse210: STLStructureValidator =
-        fun _ es ->
-            let codeBlocks = es.AllEffects // @ (es.AllTriggers |> List.map (fun n -> n :> Node))
-
-            let fNode =
-                (fun (x: Node) children ->
-                    if x.Key == "limit" || x.Key == "modifier" then
-                        OK
-                    else
-                        let res =
-                            if x.Key == "if" && x.Has "else" && not (x.Has "if") then
-                                Invalid(Guid.NewGuid(), [ inv ErrorCodes.DeprecatedElse x ])
-                            else
-                                OK
-
-                        let res2 =
-                            if x.Key == "else_if" && x.Has "else" && not (x.Has "if") then
-                                Invalid(Guid.NewGuid(), [ inv ErrorCodes.DeprecatedElse x ])
-                            else
-                                OK
-
-                        let res3 =
-                            if x.Key == "if" && x.Has "else" && x.Has "if" then
-                                Invalid(Guid.NewGuid(), [ inv ErrorCodes.AmbiguousIfElse x ])
-                            else
-                                OK
-
-                        (res <&&> res2 <&&> res3) <&&> children)
-
-            codeBlocks <&!!&> (foldNode2 fNode (<&&>) OK)
 
     let validateIfElse: STLStructureValidator =
         fun _ es ->
@@ -1195,8 +1144,7 @@ module STLValidation =
                         | None -> children
                         | Some r -> r <&&> children)
 
-            codeBlocks <&!!&> (foldNode2 fNode (<&&>) OK)
-
+            codeBlocks <&!&> (foldNode2 fNode (<&&>) OK)
 
 
     let validateDeprecatedSetName: STLStructureValidator =
@@ -1255,4 +1203,4 @@ module STLValidation =
                               econ ]
                     )
 
-            econs <&!!&> checkEcon
+            econs <&!&> checkEcon

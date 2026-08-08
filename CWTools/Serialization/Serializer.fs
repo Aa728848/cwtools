@@ -9,6 +9,7 @@ open System.Reflection
 open CWTools.Games.Files
 open CWTools.Games
 open CWTools.Games.VIC3
+open CWTools.Games.EU5
 open MBrace.FsPickler
 open CWTools.Process
 open CWTools.Utilities.Position
@@ -128,8 +129,6 @@ type GameSerializationConfig<'T when 'T :> ComputedData> =
       primaryEncoding: Encoding
       secondaryEncoding: Encoding
       encodingFlag: bool }
-
-let serialize gameDirName scriptFolders cacheDirectory = ()
 
 let serializeGame<'T when 'T :> ComputedData> (config: GameSerializationConfig<'T>) folder outputFileName compression =
     let folders =
@@ -609,12 +608,32 @@ let loadGame<'T when 'T :> ComputedData>
           debugSettings = DebugSettings.Default
           vanillaPath = None }
 
+    let EU5options: EU5Settings =
+        { rootDirectories = folders
+          modFilter = Some modFilter
+          validation =
+            { validateVanilla = scope = FilesScope.All || scope = FilesScope.Vanilla
+              experimental = true
+              langs = langs }
+          rules =
+            Some
+                { ruleFiles = config
+                  validateRules = true
+                  debugRulesOnly = true
+                  debugMode = false }
+          embedded = embedded
+          scriptFolders = None
+          excludeGlobPatterns = None
+          maxFileSize = Some 8
+          debugSettings = DebugSettings.Default
+          vanillaPath = None }
+
     let game: IGame =
         match game with
         | Game.HOI4 -> HOI4Game(HOI4options) :> IGame
         | Game.STL -> STLGame(STLoptions) :> IGame
         | Game.EU4 -> EU4Game(EU4options) :> IGame
-        | Game.EU5 -> EU4Game(EU4options) :> IGame
+        | Game.EU5 -> EU5Game(EU5options) :> IGame
         | Game.CK2 -> CK2Game(CK2options) :> IGame
         | Game.VIC2 -> VIC2Game(VIC2options) :> IGame
         | Game.IR -> IRGame(IRoptions) :> IGame

@@ -272,7 +272,9 @@ module Scopes =
                         let onetoone = oneToOneScopes |> List.tryFind (fun (k, _) -> k == nextKey)
 
                         match onetoone with
-                        | Some(_, f) -> f (context, false), NewScope(f (context, false) |> fst, [], None)
+                        | Some(_, f) ->
+                            let next = f (context, false)
+                            next, NewScope(fst next, [], None)
                         | None ->
                             let eventTargetLinkMatch =
                                 eventTargetLinks.TryFind nextKey

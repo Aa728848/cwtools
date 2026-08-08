@@ -578,27 +578,12 @@ module PdxShaderRuntime =
         | "portraittype" -> Some "portrait"
         | _ -> None
 
-    let private posFromOffset (text: string) offset =
-        let targetOffset = max 0 (min text.Length offset)
-        let mutable line = 1
-        let mutable column = 0
-        let mutable i = 0
-
-        while i < targetOffset do
-            if text[i] = '\n' then
-                line <- line + 1
-                column <- 0
-            elif text[i] <> '\r' then
-                column <- column + 1
-
-            i <- i + 1
-
-        mkPos line column
-
     /// LSP-compatible range for a raw offset span (offsets as produced by the scanners).
     let offsetRange (filepath: string) (text: string) (startOffset: int) (length: int) =
-        mkRange filepath (posFromOffset text startOffset) (posFromOffset text (startOffset + max 1 length))
-
+        mkRange
+            filepath
+            (PdxShaderProject.posFromOffset text startOffset)
+            (PdxShaderProject.posFromOffset text (startOffset + max 1 length))
     /// Extract `interface/*.gfx` sprite blocks that select a Shader file. Only
     /// direct scalar fields of the renderer block are attached as resource inputs;
     /// nested animation blocks remain separate until a renderer ABI profile exists.

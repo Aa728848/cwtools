@@ -211,7 +211,7 @@ let refreshConfigBeforeFirstTypesHook (lookup: Lookup) (resources: IResourceAPI<
           description = "Modifiers"
           valuesWithRange = lookup.coreModifiers |> Array.map (fun m -> m.tag, None) }
 
-    let scriptedEffectKeys =
+    let scriptedEffectKeys, scriptValueKeys =
         (resources.AllEntities()
          |> PSeq.choose (fun struct (e, l) ->
              if
@@ -219,13 +219,27 @@ let refreshConfigBeforeFirstTypesHook (lookup: Lookup) (resources: IResourceAPI<
                  || e.logicalpath.StartsWith("common/scripted_triggers", System.StringComparison.OrdinalIgnoreCase)
              then
                  Some(
-                     l.Force().ScriptedEffectParams
-                     |> Option.defaultWith (fun () -> Compute.EU4.getScriptedEffectParamsEntity e)
+                     Choice1Of2(
+                         l.Force().ScriptedEffectParams
+                         |> Option.defaultWith (fun () -> Compute.EU4.getScriptedEffectParamsEntity e)
+                     )
+                 )
+             elif e.logicalpath.StartsWith("common/script_values", System.StringComparison.OrdinalIgnoreCase) then
+                 Some(
+                     Choice2Of2(
+                         l.Force().ScriptValueParams
+                         |> Option.defaultWith (fun () -> Compute.Jomini.getScriptValueParamsEntity e)
+                     )
                  )
              else
                  None)
-         |> Seq.collect id
-         |> Seq.toArray)
+         |> Seq.fold
+             (fun (se, sv) ->
+                 function
+                 | Choice1Of2 keys -> List.rev keys @ se, sv
+                 | Choice2Of2 keys -> se, List.rev keys @ sv)
+             ([], [])
+         |> fun (se, sv) -> Array.ofList (List.rev se), Array.ofList (List.rev sv))
 
     let scriptedEffectParmas =
         { key = "scripted_effect_params"
@@ -240,21 +254,6 @@ let refreshConfigBeforeFirstTypesHook (lookup: Lookup) (resources: IResourceAPI<
           description = "Scripted effect parameter"
           values = paramsDValues
           valuesWithRange = paramsDValues |> Array.map (fun x -> x, None) }
-
-    // 提取 script_value 参数
-    let scriptValueKeys =
-        (resources.AllEntities()
-         |> PSeq.choose (fun struct (e, l) ->
-             if e.logicalpath.StartsWith("common/script_values", System.StringComparison.OrdinalIgnoreCase) then
-                 Some(
-                     l.Force().ScriptValueParams
-                     |> Option.defaultWith (fun () -> Compute.Jomini.getScriptValueParamsEntity e)
-                 )
-             else
-                 None)
-         |> Seq.collect id
-         |> Seq.toArray)
-
     let scriptValueParams =
         { key = "script_value_params"
           description = "Script value parameter"

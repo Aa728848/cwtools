@@ -99,6 +99,33 @@ module PdxShaderFeatures =
         let lastSlash = normalized.LastIndexOf('/')
         if lastSlash >= 0 then normalized.Substring(lastSlash + 1) else normalized
 
+    /// Bounded (last-write-time, length) -> text cache for FileResource shader files.
+    /// Unchanged files skip the disk read and the downstream content hash entirely;
+    /// this is the per-request cost the semantic LRU cannot avoid. Cleared wholesale
+    /// above the limit instead of maintaining an eviction order.
+    let private fileTextCache =
+        System.Collections.Concurrent.ConcurrentDictionary<string, struct (System.DateTime * int64 * string)>()
+
+    let private fileTextCacheLimit = 2048
+
+    let private readShaderFileText (filepath: string) =
+        let info = System.IO.FileInfo(filepath)
+
+        if not info.Exists then
+            fileTextCache.TryRemove filepath |> ignore
+            None
+        else
+            match fileTextCache.TryGetValue filepath with
+            | true, struct (lastWrite, length, text) when lastWrite = info.LastWriteTimeUtc && length = info.Length ->
+                Some text
+            | _ ->
+                if fileTextCache.Count > fileTextCacheLimit then
+                    fileTextCache.Clear()
+
+                let text = File.ReadAllText filepath
+                fileTextCache[filepath] <- struct (info.LastWriteTimeUtc, info.Length, text)
+                Some text
+
     /// Unified snapshot collection for every language-service feature. A content-bearing
     /// resource always wins over a FileResource
     /// disk read of the same file; a failed read is logged and skipped. Returns all
@@ -151,13 +178,16 @@ module PdxShaderFeatures =
                         None
                     elif File.Exists resource.filepath then
                         try
-                            Some(
-                                PdxShaderProject.createSnapshot
-                                    (PdxShaderProject.originForResource resource.scope resource.filepath)
-                                    resource.filepath
-                                    resource.logicalpath
-                                    (File.ReadAllText resource.filepath)
-                            )
+                            match readShaderFileText resource.filepath with
+                            | Some filetext ->
+                                Some(
+                                    PdxShaderProject.createSnapshot
+                                        (PdxShaderProject.originForResource resource.scope resource.filepath)
+                                        resource.filepath
+                                        resource.logicalpath
+                                        filetext
+                                )
+                            | None -> None
                         with ex ->
                             CWTools.Utilities.Utils.logWarning (
                                 sprintf "PdxShaderFeatures: failed to read shader file %s: %s" resource.filepath ex.Message
@@ -188,29 +218,11 @@ module PdxShaderFeatures =
     let private snapshotIncludeNames (snapshots: PdxShaderProject.ShaderSnapshot list) =
         snapshots |> List.map (fun snapshot -> fileName snapshot.displayPath) |> Set.ofList
 
-    let private posFromOffset (text: string) offset =
-        let targetOffset = max 0 (min text.Length offset)
-        let mutable line = 1
-        let mutable column = 0
-        let mutable i = 0
-
-        while i < targetOffset do
-            if text[i] = '\n' then
-                line <- line + 1
-                column <- 0
-            elif text[i] <> '\r' then
-                column <- column + 1
-
-            i <- i + 1
-
-        mkPos line column
-
     let private rangeBetweenOffsets filepath (text: string) startOffset endOffset =
-        mkRange filepath (posFromOffset text startOffset) (posFromOffset text endOffset)
+        mkRange filepath (PdxShaderProject.posFromOffset text startOffset) (PdxShaderProject.posFromOffset text endOffset)
 
     let private rangeFromOffset filepath (text: string) offset length =
         rangeBetweenOffsets filepath text offset (offset + max 1 length)
-
 
     let documentSymbols (filepath: string) (filetext: string) =
         let tree = PdxShaderSyntax.parse filepath filetext
@@ -1449,14 +1461,22 @@ module PdxShaderFeatures =
     let semanticTokens filepath filetext : ShaderSemanticToken list =
         let snapshot = PdxShaderProject.createSnapshot PdxShaderProject.CurrentDocument filepath filepath filetext
         let semantic = PdxShaderProject.semanticSnapshot snapshot
-        let symbolSpans = semantic.hlsl.symbols |> List.map (fun symbol -> symbol.selectionSpan, symbol) |> List.toArray
+        let symbolBySpan = System.Collections.Generic.Dictionary<struct (int * int), _>()
+        for symbol in semantic.hlsl.symbols do
+            let span = symbol.selectionSpan
+            let key = struct (span.startOffset, span.Length)
+            if not (symbolBySpan.ContainsKey key) then
+                symbolBySpan[key] <- symbol
         let directX = PdxShaderPreprocessor.defaultPlatformVariants |> List.find (fun variant -> variant.name = "directx11")
 
         semantic.syntax.tokens
         |> Array.choose (fun token ->
             if token.span.Length <= 0 then None
             else
-                let symbol = symbolSpans |> Array.tryFind (fun (span, _) -> span.startOffset = token.span.startOffset && span.Length = token.span.Length) |> Option.map snd
+                let symbol =
+                    match symbolBySpan.TryGetValue(struct (token.span.startOffset, token.span.Length)) with
+                    | true, symbol -> Some symbol
+                    | _ -> None
                 let tokenType, declaration, readonly =
                     match symbol with
                     | Some value -> hlslSymbolKindName value.kind, true, value.kind = PdxShaderHlsl.MacroSymbol

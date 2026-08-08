@@ -71,6 +71,7 @@
         <Compile Include="Validation/Stellaris/STLEvents.fs"/>
         <Compile Include="Validation/Stellaris/Graphics.fs"/>
         <Compile Include="Rules/FieldValidators.fs"/>
+        <Compile Include="Rules/RulesMemoize.fs"/>
         <Compile Include="Rules/RuleValidationService.fs"/>
         <Compile Include="Rules/InfoService.fs"/>
         <Compile Include="Rules/CompletionService.fs"/>
@@ -96,6 +97,7 @@
         <Compile Include="Game/CK2/CK2Game.fs"/>
         <Compile Include="Game/IR/IRGame.fs"/>
         <Compile Include="Game/VIC2/VIC2Game.fs"/>
+        <Compile Include="Game/Jomini/JominiGame.fs"/>
         <Compile Include="Game/CK3/CK3Game.fs"/>
         <Compile Include="Game/Custom/CustomGame.fs"/>
         <Compile Include="Game\VIC3\VIC3Game.fs"/>

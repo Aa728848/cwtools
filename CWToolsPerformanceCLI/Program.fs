@@ -47,7 +47,7 @@ let getTestMode (results: ParseResults<PerformanceArgs>) =
 let runPerfTest testName testFunc =
     try
         printfn $"Running %s{testName}..."
-        let result = testFunc
+        let result = testFunc ()
         let memoryAlloc = GC.GetTotalAllocatedBytes true
         printfn $"✓ %s{testName} completed successfully"
 
@@ -55,7 +55,7 @@ let runPerfTest testName testFunc =
             "  Elapsed: %dms, Errors: %d, Memory Allocated: %s"
             result.ElapsedMilliseconds
             result.ErrorCount
-            (ByteSize.FromBits(memoryAlloc).ToString("MiB", CultureInfo.InvariantCulture))
+            (ByteSize.FromBytes(float memoryAlloc).ToString("MiB", CultureInfo.InvariantCulture))
 
         0
     with ex ->
@@ -147,21 +147,21 @@ let runCommand (results: ParseResults<PerformanceArgs>) =
                 | Some _ -> " + mod"
                 | None -> ""
 
-            runPerfTest (sprintf "Stellaris Test %s" modInfo) (getTestFunction results)
+            runPerfTest (sprintf "Stellaris Test %s" modInfo) (fun () -> getTestFunction results)
         elif results.Contains EU4 then
             let modInfo =
                 match modPath with
                 | Some _ -> " + mod"
                 | None -> ""
 
-            runPerfTest (sprintf "EU4 Test %s" modInfo) (getTestFunction results)
+            runPerfTest (sprintf "EU4 Test %s" modInfo) (fun () -> getTestFunction results)
         elif results.Contains EU5 then
             let modInfo =
                 match modPath with
                 | Some _ -> " + mod"
                 | None -> ""
 
-            runPerfTest (sprintf "EU5 Test %s" modInfo) (getTestFunction results)
+            runPerfTest (sprintf "EU5 Test %s" modInfo) (fun () -> getTestFunction results)
         elif results.Contains HOI4 then
             // let cacheInfo = if cachePath.IsSome then " (cached)" else ""
 
@@ -170,7 +170,7 @@ let runCommand (results: ParseResults<PerformanceArgs>) =
                 | Some _ -> " + mod"
                 | None -> ""
 
-            runPerfTest (sprintf "HOI4 Test%s" modInfo) (getTestFunction results)
+            runPerfTest (sprintf "HOI4 Test%s" modInfo) (fun () -> getTestFunction results)
         elif results.Contains CK3 then
             // let cacheInfo = if cachePath.IsSome then " (cached)" else ""
 
@@ -179,7 +179,7 @@ let runCommand (results: ParseResults<PerformanceArgs>) =
                 | Some _ -> " + mod"
                 | None -> ""
 
-            runPerfTest (sprintf "CK3 Test%s" modInfo) (getTestFunction results)
+            runPerfTest (sprintf "CK3 Test%s" modInfo) (fun () -> getTestFunction results)
         else
             eprintfn "No valid command specified. Use --help for usage information."
             1

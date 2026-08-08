@@ -237,26 +237,6 @@ module STL =
     open CWTools.Process.ProcessCore
     open CWTools.Utilities.Utils
 
-    let getAllTechPrereqs (e: Entity) =
-        let fNode =
-            (fun (x: Node) acc ->
-                match x with
-                | _ -> acc)
-
-        let nodes = e.entity.Children |> List.collect (foldNode7 fNode)
-
-        let fNode =
-            fun (t: Node) children ->
-                let inner ls (l: Leaf) =
-                    if l.Key == "has_technology" then
-                        l.Value.ToRawString() :: ls
-                    else
-                        ls
-
-                t.Leaves |> Seq.fold inner children
-
-        (nodes |> List.collect (foldNode7 fNode))
-
     let computeSTLData (infoService: unit -> InfoService option) (e: Entity) =
         // eprintfn "csd %s" e.logicalpath
         let withRulesData = infoService().IsSome

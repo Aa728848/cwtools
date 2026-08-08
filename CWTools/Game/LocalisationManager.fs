@@ -68,16 +68,20 @@ type LocalisationManager<'T when 'T :> ComputedData>
                 let created = LocKeySet(StringComparer.Ordinal)
                 taggedKeySets.Add(lang, created)
                 created
+        let mutable added = Set.empty
+
         for key in keys do
             if tagged.Add key then
-                let current = localisationKeySets |> Map.tryFind lang |> Option.defaultValue Set.empty
-                localisationKeySets <- Map.add lang (Set.add key current) localisationKeySets
+                added <- Set.add key added
             else
                 let duplicateCounts = duplicateKeyCountMap lang
                 match duplicateCounts.TryGetValue key with
                 | true, count -> duplicateCounts.[key] <- count + 1
                 | false, _ -> duplicateCounts.Add(key, 2)
 
+        if not (Set.isEmpty added) then
+            let current = localisationKeySets |> Map.tryFind lang |> Option.defaultValue Set.empty
+            localisationKeySets <- Map.add lang (Set.union current added) localisationKeySets
     let removeKeys lang (keys: string array) =
         for key in keys do
             let mutable removeLastProvider = true
@@ -118,19 +122,18 @@ type LocalisationManager<'T when 'T :> ComputedData>
             |> Seq.sortBy (fun (lang, _) -> lang.ToString())
             |> Seq.toArray
 
-    let tryEffectiveValidatableEntry
+    let effectiveMapForLang
         (sourceMap: Map<string * Lang, struct (bool * ILocalisationAPI)>)
-        lang
-        key
+        (lang: Lang)
         =
-        let mutable result = None
-        for KeyValue((_, candidateLang), struct (validate, api)) in sourceMap do
-            if validate && candidateLang = lang then
-                match api.ValueMap |> Map.tryFind key with
-                | Some entry -> result <- Some entry
-                | None -> ()
-        result
-
+        sourceMap
+        |> Map.fold
+            (fun acc (_, candidateLang) struct (validate, api) ->
+                if validate && candidateLang = lang then
+                    Map.fold (fun m k v -> Map.add k v m) acc api.ValueMap
+                else
+                    acc)
+            Map.empty
     let processedMapFor lang =
         lookup.proccessedLoc
         |> List.tryPick (fun (candidateLang, entries) -> if candidateLang = lang then Some entries else None)
@@ -230,9 +233,9 @@ type LocalisationManager<'T when 'T :> ComputedData>
 
         let oldEffective = Dictionary<struct (Lang * string), Entry option>()
         for KeyValue(lang, changed) in changedByLanguage do
+            let effective = effectiveMapForLang localisationAPIMap lang
             for key in changed do
-                oldEffective.[struct (lang, key)] <- tryEffectiveValidatableEntry localisationAPIMap lang key
-
+                oldEffective.[struct (lang, key)] <- Map.tryFind key effective
         // First remove all existing entries for this file (across all languages)
         // to prevent stale entries from accumulating when a file is re-parsed
         let cleanedMap =
@@ -266,14 +269,14 @@ type LocalisationManager<'T when 'T :> ComputedData>
             keys.Add key |> ignore
 
         for KeyValue(lang, changed) in changedByLanguage do
+            let newEffectiveMap = effectiveMapForLang localisationAPIMap lang
             let oldProcessed = processedMapFor lang
             let mutable newProcessed = oldProcessed
             let additions = ResizeArray<string * Entry>()
-
             for key in changed do
                 changedKeys.Add key |> ignore
                 let oldEntry = oldEffective.[struct (lang, key)]
-                let newEntry = tryEffectiveValidatableEntry localisationAPIMap lang key
+                let newEntry = Map.tryFind key newEffectiveMap
                 if oldEntry <> newEntry then
                     semanticChanged <- true
                     addAffectedSource lang key

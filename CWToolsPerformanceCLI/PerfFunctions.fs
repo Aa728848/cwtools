@@ -156,6 +156,38 @@ let perfRunnerWithResult (buildGame: unit -> IGame<_>) runValidation =
     { ElapsedMilliseconds = timer.ElapsedMilliseconds
       ErrorCount = errorCount }
 
+// Table-driven performance runner shared by all five games. Each game supplies
+// its default-path picker and its settings/game builder; the runner handles
+// path resolution, cache flag, scope reset, verbose logging and mod folders.
+let private runPerfGame
+    (defaults: string option -> string option -> string option -> PathConfig -> string * string * string)
+    (buildGame: string -> string -> bool -> string -> StopPoint -> string option -> IGame<_>)
+    (verbose: bool)
+    rootDir
+    configPath
+    (cachePath: string option)
+    (modPath: string option)
+    (steamRoot: string option)
+    (gitRoot: string option)
+    (earlyStopMode: StopPoint)
+    runTests
+    =
+    let pathConfig = createPathConfig steamRoot gitRoot
+
+    let defaultRootDir, defaultConfigPath, defaultCachePath =
+        defaults rootDir configPath cachePath pathConfig
+
+    let useCache = cachePath.IsSome
+
+    if verbose then
+        CWTools.Utilities.Utils.loglevel <- CWTools.Utilities.Utils.LogLevel.Verbose
+
+    perfRunnerWithResult
+        (fun () ->
+            scopeManager.ReInit(defaultScopeInputs (), [||])
+            buildGame defaultRootDir defaultConfigPath useCache defaultCachePath earlyStopMode modPath)
+        runTests
+
 // Unified Stellaris settings builder with parameterized paths
 let buildStlSettings rootDir configPath useManual useCached cachePath earlyStopMode =
     let triggers, effects =
@@ -338,26 +370,14 @@ let perfStellaris
     (debugMode: StopPoint)
     runTests
     =
-    let pathConfig = createPathConfig steamRoot gitRoot
-
-    let (defaultStellarisRoot, defaultStellarisConfig, defaultStellarisCache), _, _, _ =
-        getDefaultGamePaths pathConfig
-
-    let useCache = cachePath.IsSome
-    let defaultRootDir = defaultArg rootDir defaultStellarisRoot
-    let defaultConfigPath = defaultArg configPath defaultStellarisConfig
-    let defaultCachePath = defaultArg cachePath defaultStellarisCache
-
-    // Enable verbose logging by default
-    CWTools.Utilities.Utils.loglevel <- CWTools.Utilities.Utils.LogLevel.Verbose
-
-    perfRunnerWithResult
-        (fun () ->
-            scopeManager.ReInit(defaultScopeInputs (), [||])
-
+    runPerfGame
+        (fun root config cache pathConfig ->
+            let (defaultRoot, defaultConfig, defaultCache), _, _, _ = getDefaultGamePaths pathConfig
+            defaultArg root defaultRoot, defaultArg config defaultConfig, defaultArg cache defaultCache)
+        (fun defaultRootDir defaultConfigPath useCache defaultCachePath earlyStopMode modPath ->
             let settings =
-                buildStlSettings defaultRootDir defaultConfigPath false useCache defaultCachePath debugMode
-            // Add mod path if provided
+                buildStlSettings defaultRootDir defaultConfigPath false useCache defaultCachePath earlyStopMode
+
             let finalSettings =
                 match modPath with
                 | Some mp ->
@@ -369,6 +389,14 @@ let perfStellaris
                 | None -> settings
 
             STLGame(finalSettings) :> IGame<_>)
+        true
+        rootDir
+        configPath
+        cachePath
+        modPath
+        steamRoot
+        gitRoot
+        debugMode
         runTests
 
 // Unified EU4 performance test runner
@@ -382,23 +410,14 @@ let perfEU4
     (earlyStopMode: StopPoint)
     runTests
     =
-    let pathConfig = createPathConfig steamRoot gitRoot
-
-    let _, (defaultEu4Root, defaultEu4Config, defaultEu4Cache), _, _ =
-        getDefaultGamePaths pathConfig
-
-    let useCache = cachePath.IsSome
-    let defaultRootDir = defaultArg rootDir defaultEu4Root
-    let defaultConfigPath = defaultArg configPath defaultEu4Config
-    let defaultCachePath = defaultArg cachePath defaultEu4Cache
-
-    perfRunnerWithResult
-        (fun () ->
-            scopeManager.ReInit(defaultScopeInputs (), [||])
-
+    runPerfGame
+        (fun root config cache pathConfig ->
+            let _, (defaultRoot, defaultConfig, defaultCache), _, _ = getDefaultGamePaths pathConfig
+            defaultArg root defaultRoot, defaultArg config defaultConfig, defaultArg cache defaultCache)
+        (fun defaultRootDir defaultConfigPath useCache defaultCachePath earlyStopMode modPath ->
             let settings =
                 buildEu4Settings defaultRootDir defaultConfigPath useCache defaultCachePath earlyStopMode
-            // Add mod path if provided
+
             let finalSettings =
                 match modPath with
                 | Some mp ->
@@ -407,6 +426,14 @@ let perfEU4
                 | None -> settings
 
             EU4Game(finalSettings) :> IGame<_>)
+        false
+        rootDir
+        configPath
+        cachePath
+        modPath
+        steamRoot
+        gitRoot
+        earlyStopMode
         runTests
 
 // Unified CK3 performance test runner
@@ -420,23 +447,14 @@ let perfCK3
     (earlyStopMode: StopPoint)
     runTests
     =
-    let pathConfig = createPathConfig steamRoot gitRoot
-
-    let _, _, _, (defaultCk3Root, defaultCk3Config, defaultCk3Cache) =
-        getDefaultGamePaths pathConfig
-
-    let useCache = cachePath.IsSome
-    let defaultRootDir = defaultArg rootDir defaultCk3Root
-    let defaultConfigPath = defaultArg configPath defaultCk3Config
-    let defaultCachePath = defaultArg cachePath defaultCk3Cache
-
-    perfRunnerWithResult
-        (fun () ->
-            scopeManager.ReInit(defaultScopeInputs (), [||])
-
+    runPerfGame
+        (fun root config cache pathConfig ->
+            let _, _, _, (defaultRoot, defaultConfig, defaultCache) = getDefaultGamePaths pathConfig
+            defaultArg root defaultRoot, defaultArg config defaultConfig, defaultArg cache defaultCache)
+        (fun defaultRootDir defaultConfigPath useCache defaultCachePath earlyStopMode modPath ->
             let settings =
                 buildCk3Settings defaultRootDir defaultConfigPath useCache defaultCachePath earlyStopMode
-            // Add mod path if provided
+
             let finalSettings =
                 match modPath with
                 | Some mp ->
@@ -445,6 +463,14 @@ let perfCK3
                 | None -> settings
 
             CK3Game(finalSettings) :> IGame<_>)
+        false
+        rootDir
+        configPath
+        cachePath
+        modPath
+        steamRoot
+        gitRoot
+        earlyStopMode
         runTests
 
 // Unified HOI4 performance test runner
@@ -458,25 +484,14 @@ let perfHOI4
     (earlyStopMode: StopPoint)
     runTests
     =
-    let pathConfig = createPathConfig steamRoot gitRoot
-
-    let _, _, (defaultHoi4Root, defaultHoi4Config, defaultHoi4Cache), _ =
-        getDefaultGamePaths pathConfig
-
-    let useCache = cachePath.IsSome
-    let defaultRootDir = defaultArg rootDir defaultHoi4Root
-    let defaultConfigPath = defaultArg configPath defaultHoi4Config
-    let defaultCachePath = defaultArg cachePath defaultHoi4Cache
-
-    CWTools.Utilities.Utils.loglevel <- CWTools.Utilities.Utils.LogLevel.Verbose
-
-    perfRunnerWithResult
-        (fun () ->
-            scopeManager.ReInit(defaultScopeInputs (), [||])
-
+    runPerfGame
+        (fun root config cache pathConfig ->
+            let _, _, (defaultRoot, defaultConfig, defaultCache), _ = getDefaultGamePaths pathConfig
+            defaultArg root defaultRoot, defaultArg config defaultConfig, defaultArg cache defaultCache)
+        (fun defaultRootDir defaultConfigPath useCache defaultCachePath earlyStopMode modPath ->
             let settings =
                 buildHoi4Settings defaultRootDir defaultConfigPath useCache defaultCachePath earlyStopMode
-            // Add mod path if provided
+
             let finalSettings =
                 match modPath with
                 | Some mp ->
@@ -485,6 +500,14 @@ let perfHOI4
                 | None -> settings
 
             HOI4Game(finalSettings) :> IGame<_>)
+        true
+        rootDir
+        configPath
+        cachePath
+        modPath
+        steamRoot
+        gitRoot
+        earlyStopMode
         runTests
 
 // Simple test function for parsing individual files
@@ -549,7 +572,7 @@ let buildEu5Settings rootDir configPath useCache cachePath earlyStopMode =
             EarlyStop = earlyStopMode }
       vanillaPath = None }
 
-// Unified EU5 performance test runner (uses EU4 defaults for convenience)
+// Unified EU5 performance test runner. No EU5 defaults exist, so explicit paths are required.
 let perfEU5
     rootDir
     configPath
@@ -560,23 +583,25 @@ let perfEU5
     (earlyStopMode: StopPoint)
     runTests
     =
-    let pathConfig = createPathConfig steamRoot gitRoot
+    runPerfGame
+        (fun root config cache pathConfig ->
+            let defaultRootDir =
+                match root with
+                | Some root -> root
+                | None -> failwith "EU5 performance test requires an explicit --game-path (no EU5 defaults are configured)"
 
-    let _, (defaultEu4Root, defaultEu4Config, defaultEu4Cache), _, _ =
-        getDefaultGamePaths pathConfig
+            let defaultConfigPath =
+                match config with
+                | Some config -> config
+                | None -> failwith "EU5 performance test requires an explicit --config-path (no EU5 defaults are configured)"
 
-    let useCache = cachePath.IsSome
-    let defaultRootDir = defaultArg rootDir defaultEu4Root
-    let defaultConfigPath = defaultArg configPath defaultEu4Config
-    let defaultCachePath = defaultArg cachePath defaultEu4Cache
-
-    perfRunnerWithResult
-        (fun () ->
-            scopeManager.ReInit(defaultScopeInputs (), [||])
-
+            defaultRootDir,
+            defaultConfigPath,
+            defaultArg cache (Path.Combine(pathConfig.CacheRoot, "eu5.cwb")))
+        (fun defaultRootDir defaultConfigPath useCache defaultCachePath earlyStopMode modPath ->
             let settings =
                 buildEu5Settings defaultRootDir defaultConfigPath useCache defaultCachePath earlyStopMode
-            // Add mod path if provided
+
             let finalSettings =
                 match modPath with
                 | Some mp ->
@@ -585,4 +610,12 @@ let perfEU5
                 | None -> settings
 
             EU5Game(finalSettings) :> IGame<_>)
+        false
+        rootDir
+        configPath
+        cachePath
+        modPath
+        steamRoot
+        gitRoot
+        earlyStopMode
         runTests

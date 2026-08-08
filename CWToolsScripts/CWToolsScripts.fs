@@ -37,10 +37,10 @@ module CWToolsScripts =
 
         /// Previous rules
         let rulesFiles =
-            [ @"C:\Users\Thomas\git\cwtools-ir-config\triggers.cwt"
-              @"C:\Users\Thomas\git\cwtools-ir-config\list_triggers.cwt"
-              @"C:\Users\Thomas\git\cwtools-ir-config\effects.cwt"
-              @"C:\Users\Thomas\git\cwtools-ir-config\list_effects.cwt" ]
+            [ (configRoot () + @"\cwtools-ir-config\triggers.cwt")
+              (configRoot () + @"\cwtools-ir-config\list_triggers.cwt")
+              (configRoot () + @"\cwtools-ir-config\effects.cwt")
+              (configRoot () + @"\cwtools-ir-config\list_effects.cwt") ]
             |> List.map (fun fn -> fn, (System.IO.File.ReadAllText fn))
 
         let rules, types, enums, complexenums, values, _ =
@@ -72,11 +72,11 @@ module CWToolsScripts =
                 | _ -> None)
 
         let triggers =
-            JominiParser.parseTriggerFilesRes @"C:\Users\Thomas\git\cwtools/Scripts/triggers.log"
+            JominiParser.parseTriggerFilesRes (configRoot () + @"\cwtools/Scripts/triggers.log")
             |> List.filter (fun t -> Array.contains t.name oldTriggers |> not)
 
         let effects =
-            JominiParser.parseEffectFilesRes @"C:\Users\Thomas\git\cwtools/Scripts/effects.log"
+            JominiParser.parseEffectFilesRes (configRoot () + @"\cwtools/Scripts/effects.log")
             |> List.filter (fun t -> Array.contains t.name oldEffects |> not)
 
 
@@ -315,8 +315,8 @@ module CWToolsScripts =
 
     let findUndefinedEffects () =
         let configFiles =
-            (if Directory.Exists @"C:\Users\Thomas\git\cwtools-stellaris-config\" then
-                 getAllFoldersUnion ([ @"C:\Users\Thomas\git\cwtools-stellaris-config\" ] |> Seq.ofList)
+            (if Directory.Exists (configRoot () + @"\cwtools-stellaris-config\") then
+                 getAllFoldersUnion ([ (configRoot () + @"\cwtools-stellaris-config\") ] |> Seq.ofList)
              else
                  Seq.empty)
             |> Seq.collect (Directory.EnumerateFiles)
@@ -458,8 +458,8 @@ module CWToolsScripts =
 
     let findUndefinedEffectsHOI4 () =
         let configFiles =
-            (if Directory.Exists @"C:\Users\Thomas\git\cwtools-hoi4-config\" then
-                 getAllFoldersUnion ([ @"C:\Users\Thomas\git\cwtools-hoi4-config\" ] |> Seq.ofList)
+            (if Directory.Exists (configRoot () + @"\cwtools-hoi4-config\") then
+                 getAllFoldersUnion ([ (configRoot () + @"\cwtools-hoi4-config\") ] |> Seq.ofList)
              else
                  Seq.empty)
             |> Seq.collect (Directory.EnumerateFiles)
@@ -522,7 +522,7 @@ module CWToolsScripts =
             let res =
                 triggers |> List.filter (fun t -> Set.contains t.name undefinedTriggers) |> tout
 
-            File.WriteAllText(@"C:\Users\Thomas\git\cwtools-hoi4-config\\Config\triggers_new.cwt", res)
+            File.WriteAllText((configRoot () + @"\cwtools-hoi4-config\\Config\triggers_new.cwt"), res)
 
         if undefinedEffects.IsEmpty then
             ()
@@ -533,13 +533,13 @@ module CWToolsScripts =
             let res =
                 effects |> List.filter (fun t -> Set.contains t.name undefinedEffects) |> eout
 
-            File.WriteAllText(@"C:\Users\Thomas\git\cwtools-hoi4-config\\Config\effects_new.cwt", res)
+            File.WriteAllText((configRoot () + @"\cwtools-hoi4-config\\Config\effects_new.cwt"), res)
 
         0
 
     let generateHOI4Modifiers () =
         let docs =
-            File.ReadAllText(@"C:\Users\Thomas\git\cwtools-hoi4-config\Config\script_documentation.json")
+            File.ReadAllText((configRoot () + @"\cwtools-hoi4-config\Config\script_documentation.json"))
 
         let json = JsonValue.Parse docs
         let modifiers = json?modifiers

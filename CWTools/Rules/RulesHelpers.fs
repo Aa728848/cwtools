@@ -359,34 +359,6 @@ let expandPredefinedValues
         else
             [ v ])
 
-// let generateModifiersFromType (typedefs : TypeDefinition list) (invertedTypeMap : Collections.Map<string, TypeDefInfo list>) (typeKey : string) (key : string) =
-//     let typenames = typeKey.Split('.')
-//     let typename = typenames.[0]
-//     let actualSubtypes =
-//         match invertedTypeMap |> Map.tryFind key with
-//         | Some keytypes ->
-//             keytypes |> List.tryPick (fun kt -> if kt.id = key kt.subtypes)
-//             // keytypes |> List.filter (fun kt -> kt.StartsWith (typename+".", StringComparison.OrdinalIgnoreCase))
-//                      // |> List.map (fun kt -> kt.Split('.').[1])
-//         | None -> []
-//     match typedefs |> List.tryFind (fun t -> t.name == typename) with
-//     |None -> []
-//     |Some typedef ->
-//         let inner =
-//             (fun (l : TypeModifier) ->
-//             let modifierKey = l.prefix + key + l.suffix
-//             { ActualModifier.tag = modifierKey
-//               source = ModifierSource.TypeDef (key, typedef.name)
-//               category = l.category
-//               })
-//         let subtype =
-//             let subtypes = (if typenames.Length > 1 then typenames.[1]::actualSubtypes else actualSubtypes) |> List.distinct
-//             let inner2 (nextSt : string) =
-//                 match typedef.subtypes |> List.tryFind (fun st -> st.name == nextSt) with
-//                 |None -> []
-//                 |Some st -> st.modifiers |> List.map inner
-//             subtypes |> List.collect inner2
-//         (typedef.modifiers |> List.map inner) @ subtype
 let generateModifiersFromType (typedef: TypeDefinition) (typeInstance: TypeDefInfo) =
     let actualSubtypes = typeInstance.subtypes
 
@@ -449,32 +421,7 @@ let computeAliasKeyMap
     (types: FrozenDictionary<string, PrefixOptimisedStringSet>)
     (enums: FrozenDictionary<string, string * PrefixOptimisedStringSet>)
     : Map<string, HashSet<StringToken>> =
-    let ruleToCompletionListHelper =
-        function
-        | LeafRule(SpecificField(SpecificValue x), _), _ -> seq { yield x.lower }
-        | NodeRule(SpecificField(SpecificValue x), _), _ -> seq { yield x.lower }
-        | LeafRule(NewField.TypeField(TypeType.Simple t), _), _
-        | NodeRule(NewField.TypeField(TypeType.Simple t), _), _ ->
-            types.TryFind(t)
-            |> Option.map (fun s -> s.IdValues |> Seq.map _.lower)
-            |> Option.defaultValue Seq.empty
-        | LeafRule(NewField.TypeField(TypeType.Complex(p, t, suff)), _), _
-        | NodeRule(NewField.TypeField(TypeType.Complex(p, t, suff)), _), _ ->
-            types.TryFind(t)
-            |> Option.map (fun s ->
-                s.IdValues
-                |> Seq.map (fun i ->
-                    let s = StringResource.stringManager.GetStringForID i.normal
-                    StringResource.stringManager.InternIdentifierToken(p + s + suff).lower))
-            |> Option.defaultValue Seq.empty
-        | LeafRule(NewField.ValueField(Enum e), _), _
-        | NodeRule(NewField.ValueField(Enum e), _), _ ->
-            enums.TryFind(e)
-            |> Option.map (fun (_, s) -> s.IdValues |> Seq.map _.lower)
-            |> Option.defaultValue Seq.empty
-        | _ -> Seq.empty
-
     rootRules.Aliases
     |> Map.toList
-    |> List.map (fun (key, rules) -> key, (rules |> Seq.collect ruleToCompletionListHelper |> HashSet<StringToken>))
+    |> List.map (fun (key, rules) -> key, (rules |> Seq.collect (RulesMemoize.ruleToCompletionListHelper types enums) |> HashSet<StringToken>))
     |> Map.ofList

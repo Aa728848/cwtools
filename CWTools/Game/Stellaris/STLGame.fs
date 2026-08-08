@@ -1823,13 +1823,18 @@ module STLGameFunctions =
                                 (fun () ->
                                     Utils.log $"CarrierSnapshot miss resourceEpoch={resourceEpoch} carrierEpoch={carrierEpoch} generation={buildGeneration} hits={Volatile.Read(&snapshotHitCount)} misses={Volatile.Read(&snapshotMissCount)}"
                                     Task.Run(fun () ->
+                                        // Fail fast before occupying the build lane: an edit may have
+                                        // advanced the epoch while this task was queued, so avoid
+                                        // blocking a thread-pool thread for a build that is already stale.
+                                        if not (lock gate (fun () -> currentTarget = Some key)) then
+                                            raise (OperationCanceledException("Carrier snapshot epoch was superseded before build start"))
+
                                         buildLane.Run(
                                             key,
                                             fun () ->
                                                 let stillCurrent = lock gate (fun () -> currentTarget = Some key)
                                                 if not stillCurrent then
                                                     raise (OperationCanceledException("Carrier snapshot epoch was superseded before build start"))
-
                                                 let snapshot = buildSnapshot resourceEpoch carrierEpoch buildGeneration entities
 
                                                 lock gate (fun () ->
@@ -2369,9 +2374,6 @@ type STLGame(setupSettings: StellarisSettings) =
                 | _ -> None)
 
 
-    let validateTechnology (entities: (string * Node) list) =
-        let tech = entities |> List.filter (fun (f, _) -> f.Contains("common/technology/"))
-        tech
 
     member _.Lookup = lookup
 

@@ -1146,8 +1146,8 @@ module LanguageFeatures =
                             else None
                         
                         let allEntities = resourceManager.Api.AllEntities()
-                        
-                        // 在指定的实体集合中搜索调用者
+
+                        // 在指定的实体集合中搜索调用者（仅作为索引未命中时的回退）
                         let findCallerIn (entities: struct (Entity * 'a) seq) (targetName: string) =
                             entities
                             |> Seq.tryPick (fun struct (e, _) ->
@@ -1156,7 +1156,7 @@ module LanguageFeatures =
                                     let allowPathDefaults = not (isInlineScriptEntity e)
                                     if fileContainsInlineRef allowPathDefaults targetName fileContent then Some e else None
                                 with _ -> None)
-                        
+
                         // 递归查找根调用者（非 inline_script 的调用者）
                         // 当直接调用者是另一个 inline_script 文件时，继续向上追溯
                         let rec findRootCaller (targetName: string) (targetFileName: string) (visited: Set<string>) =
@@ -1180,7 +1180,7 @@ module LanguageFeatures =
                                             allEntities
                                             |> Seq.filter (fun struct (e, _) -> not (isInlineScriptEntity e))
                                             |> findCallerIn <| targetName
-                                
+
                                 match nonInlineCallerOpt with
                                 | Some e -> Some e
                                 | None ->
@@ -1192,7 +1192,7 @@ module LanguageFeatures =
                                             not (newVisited.Contains(
                                                 (extractInlineScriptName e.logicalpath |> Option.defaultValue "").ToLowerInvariant())))
                                         |> findCallerIn <| targetName
-                                    
+
                                     match inlineCallerOpt with
                                     | Some inlineCaller ->
                                         log (sprintf "completion: found inline_script caller '%s', searching upward..." inlineCaller.filepath)
@@ -1208,9 +1208,30 @@ module LanguageFeatures =
                                                 Some inlineCaller
                                         | None -> Some inlineCaller
                                     | None -> None
-                        
-                        let callerEntityOpt = findRootCaller scriptName scriptFileName Set.empty
-                        
+
+                        // 索引优先：GetInlineScriptCallers 是免读盘的反向索引（含递归向上追溯），
+                        // 已覆盖 inline_script = 引用的常见情况；只有索引未命中（例如裸 script = 引用
+                        // 或索引与实体表键不一致）时才回退到全量读盘扫描，保证行为不回归。
+                        let indexCallers =
+                            resourceManager.Api.GetInlineScriptCallers scriptName
+                            |> List.sort
+                            |> List.choose (fun path ->
+                                resourceManager.Api.GetEntityByFilePath path
+                                |> Option.map (fun struct (e, _) -> e))
+
+                        let callerEntityOpt =
+                            indexCallers
+                            |> Seq.tryPick (fun e ->
+                                if
+                                    not (isInlineScriptEntity e)
+                                    && (e.logicalpath.Contains("common/component_templates", StringComparison.OrdinalIgnoreCase)
+                                        || e.logicalpath.Contains("common\\component_templates", StringComparison.OrdinalIgnoreCase))
+                                then
+                                    Some e
+                                else
+                                    None)
+                            |> Option.orElseWith (fun () -> indexCallers |> Seq.tryFind (fun e -> not (isInlineScriptEntity e)))
+                            |> Option.orElseWith (fun () -> findRootCaller scriptName scriptFileName Set.empty)                        
                         match callerEntityOpt with
                         | Some callerEntity ->
                             log (sprintf "completion: found caller '%s'" callerEntity.filepath)

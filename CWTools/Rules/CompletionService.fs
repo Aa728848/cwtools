@@ -89,6 +89,18 @@ type CompletionService
 
     let extendedConfigMetadata = defaultArg extendedConfigMetadata ExtendedConfigMetadata.empty
 
+    // Index TypeRules by name (case-insensitive, preserving entry order) so the
+    // per-node completion hot path does not re-filter the full rules array.
+    let typeRulesByName =
+        rootRules.TypeRules
+        |> Array.fold
+            (fun (m: Map<string, _>) (name, rules) ->
+                let key = name.ToLowerInvariant()
+                match Map.tryFind key m with
+                | Some existing -> Map.add key (Array.append existing [| rules |]) m
+                | None -> Map.add key [| rules |] m)
+            Map.empty
+
     let typesMap = types //|> Map.toSeq |> PSeq.map (fun (k, s) -> k, StringSet.Create(InsensitiveStringComparer(), (s |> List.map fst))) |> Map.ofSeq
 
     //let typesMap = types |> (Map.map (fun _ s -> StringSet.Create(InsensitiveStringComparer(), (s |> List.map fst))))
@@ -112,40 +124,13 @@ type CompletionService
         localisation
         |> Array.choose (fun (l, ks) -> if l = defaultLang then None else Some(l, ks))
 
-    let ruleToCompletionListHelper =
-        function
-        | LeafRule(SpecificField(SpecificValue x), _), _ -> seq { yield x.lower }
-        | NodeRule(SpecificField(SpecificValue x), _), _ -> seq { yield x.lower }
-        | LeafRule(NewField.TypeField(TypeType.Simple t), _), _
-        | NodeRule(NewField.TypeField(TypeType.Simple t), _), _ ->
-            typesMap.TryFind(t)
-            |> Option.map (fun s -> s.IdValues |> Seq.map _.lower)
-            |> Option.defaultValue (Seq.empty)
-        | LeafRule(NewField.TypeField(TypeType.Complex(p, t, suff)), _), _
-        | NodeRule(NewField.TypeField(TypeType.Complex(p, t, suff)), _), _ ->
-            typesMap.TryFind(t)
-            |> Option.map (fun s ->
-                s.IdValues
-                |> Seq.map (fun i ->
-                    let s = stringManager.GetStringForID i.normal
-                    stringManager.InternIdentifierToken(p + s + suff).lower))
-            |> Option.defaultValue Seq.empty
-        | LeafRule(NewField.ValueField(Enum e), _), _
-        | NodeRule(NewField.ValueField(Enum e), _), _ ->
-            enums.TryFind(e)
-            |> Option.map (fun (_, s) -> s.IdValues |> Seq.map _.lower)
-            |> Option.defaultValue Seq.empty
-        | _ -> Seq.empty
-
-
-
     let aliasKeyMap =
         match aliasKeyMapOverride with
         | Some precomputed -> precomputed
         | None ->
             rootRules.Aliases
             |> Map.toList
-            |> List.map (fun (key, rules) -> key, (rules |> Seq.collect ruleToCompletionListHelper |> HashSet<StringToken>))
+            |> List.map (fun (key, rules) -> key, (rules |> Seq.collect (RulesMemoize.ruleToCompletionListHelper typesMap enumsMap) |> HashSet<StringToken>))
             |> Map.ofList
 
     let aliasParamMarkers =
@@ -1321,12 +1306,9 @@ type CompletionService
             (path: (string * int * string option * CompletionContext * string option) list)
             =
             let typerules =
-                rootRules.TypeRules
-                |> Seq.choose (function
-                    | name, typerule when name == t.name -> Some typerule
-                    | _ -> None)
-                |> Seq.toArray
-
+                match Map.tryFind (t.name.ToLowerInvariant()) typeRulesByName with
+                | Some rules -> rules
+                | None -> [||]
             match skipRootKeyStack, t.type_per_file, path with
             | _, false, [] -> getCompletionFromPath scoreFunction typerules [] scopeContext
             | _, true, (head, c, b, nt, keyprefix) :: tail ->
@@ -1532,12 +1514,9 @@ type CompletionService
             (path: (string * int * string option * CompletionContext * string option) list)
             =
             let typerules =
-                rootRules.TypeRules
-                |> Seq.choose (function
-                    | name, typerule when name == t.name -> Some typerule
-                    | _ -> None)
-                |> Seq.toArray
-
+                match Map.tryFind (t.name.ToLowerInvariant()) typeRulesByName with
+                | Some rules -> rules
+                | None -> [||]
             let typeRoot = (t.name, 1, None, NodeRHS, None)
 
             match skipRootKeyStack, t.type_per_file, path with

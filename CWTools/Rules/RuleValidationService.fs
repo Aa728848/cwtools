@@ -88,6 +88,18 @@ type RuleValidationService
     let scopeContextOverride = defaultArg scopeContextOverride (fun _ _ -> None)
     let cancellationCheck = System.Threading.AsyncLocal<unit -> bool>()
 
+    // Index TypeRules by name (case-insensitive, preserving entry order) so the
+    // per-node validation hot path does not re-filter the full rules array.
+    let typeRulesByName =
+        rootRules.TypeRules
+        |> Array.fold
+            (fun (m: Map<string, _>) (name, rules) ->
+                let key = name.ToLowerInvariant()
+                match Map.tryFind key m with
+                | Some existing -> Map.add key (Array.append existing [| rules |]) m
+                | None -> Map.add key [| rules |] m)
+            Map.empty
+
     let validationCancelled () =
         let check = cancellationCheck.Value
         not (isNull (box check)) && check ()
@@ -132,163 +144,29 @@ type RuleValidationService
         localisation
         |> Array.choose (fun (l, ks) -> if l = defaultLang then None else Some(l, ks))
 
-    let ruleToCompletionListHelper =
-        function
-        | LeafRule(SpecificField(SpecificValue x), _), _ -> seq { yield x.lower }
-        | NodeRule(SpecificField(SpecificValue x), _), _ -> seq { yield x.lower }
-        | LeafRule(NewField.TypeField(TypeType.Simple t), _), _
-        | NodeRule(NewField.TypeField(TypeType.Simple t), _), _ ->
-            types.TryFind(t)
-            |> Option.map (fun s -> s.IdValues |> Seq.map _.lower)
-            |> Option.defaultValue (Seq.empty)
-        | LeafRule(NewField.TypeField(TypeType.Complex(p, t, suff)), _), _
-        | NodeRule(NewField.TypeField(TypeType.Complex(p, t, suff)), _), _ ->
-            types.TryFind(t)
-            |> Option.map (fun s ->
-                s.IdValues
-                |> Seq.map (fun i ->
-                    let s = stringManager.GetStringForID i.normal
-                    stringManager.InternIdentifierToken(p + s + suff).lower))
-            |> Option.defaultValue Seq.empty
-        | LeafRule(NewField.ValueField(Enum e), _), _
-        | NodeRule(NewField.ValueField(Enum e), _), _ ->
-            enums.TryFind(e)
-            |> Option.map (fun (_, s) -> s.IdValues |> Seq.map _.lower)
-            |> Option.defaultValue Seq.empty
-        | _ -> Seq.empty
-
-
     let aliasKeyMap =
         match aliasKeyMapOverride with
         | Some precomputed -> precomputed
         | None ->
             rootRules.Aliases
             |> Map.toList
-            |> List.map (fun (key, rules) -> key, (rules |> Seq.collect ruleToCompletionListHelper |> HashSet<StringToken>))
+            |> List.map (fun (key, rules) -> key, (rules |> Seq.collect (RulesMemoize.ruleToCompletionListHelper types enums) |> HashSet<StringToken>))
             |> Map.ofList
 
-    // let isValidValue (value : Value) =
-    //     let key = value.ToString().Trim([|'"'|])
-    //     function
-    //     |ValueType.Bool ->
-    //         key = "yes" || key = "no"
-    //     |ValueType.Enum e ->
-    //         match enumsMap.TryFind e with
-    //         |Some es -> es.Contains key
-    //         |None -> true
-    //     |ValueType.Float (min, max)->
-    //         match value with
-    //         |Float f -> true
-    //         |Int _ -> true
-    //         |_ -> false
-    //     |ValueType.Specific s -> key = s
-    //     |ValueType.Percent -> key.EndsWith("%")
-    //     |_ -> true
-    let monitor = new Object()
-    let mutable i = 0
-
-    let memoizeRulesInner memFunction =
-        let dict =
-            new System.Collections.Concurrent.ConcurrentDictionary<_, Dictionary<_, _>>()
-
-        fun (rules: NewRule array) (subtypes: string list) ->
-            match dict.TryGetValue(rules) with
-            | true, v ->
-                match v.TryGetValue(subtypes) with
-                | true, v2 -> v2
-                | _ ->
-                    let temp = memFunction rules subtypes
-
-                    lock monitor (fun () ->
-                        if v.ContainsKey(subtypes) then
-                            ()
-                        else
-                            v.Add(subtypes, temp))
-
-                    temp
-            | _ ->
-                let temp = memFunction rules subtypes
-                let innerDict = new System.Collections.Generic.Dictionary<_, _>()
-
-                lock monitor (fun () ->
-                    innerDict.Add(subtypes, temp)
-
-                    match dict.TryGetValue(rules) with
-                    | true, v2 -> ()
-                    | _ -> dict.TryAdd(rules, innerDict) |> ignore)
-                // i <- i + 1
-                // eprintfn "%i %i" i (((rules) :> Object).GetHashCode())
-                temp
-
     let memoizeRules =
-        let memFunction =
-            fun rules subtypes ->
-                let subtypedrules =
-                    rules
-                    |> Array.collect (fun (r, o) ->
-                        r
-                        |> (function
-                        | SubtypeRule(key, shouldMatch, cfs) ->
-                            (if (not shouldMatch) <> List.contains key subtypes then
-                                 cfs
-                             else
-                                 [||])
-                        | x -> [||]))
-
-                let expandedbaserules =
-                    rules
-                    |> Array.collect (function
-                        | LeafRule(AliasField a, _), _ -> (rootRules.Aliases.TryFind a |> Option.defaultValue [||])
-                        | NodeRule(AliasField a, _), _ -> (rootRules.Aliases.TryFind a |> Option.defaultValue [||])
-                        | x -> [||])
-
-                let expandedsubtypedrules =
-                    subtypedrules
-                    |> Array.collect (function
-                        | LeafRule(AliasField a, _), _ -> (rootRules.Aliases.TryFind a |> Option.defaultValue [||])
-                        | NodeRule(AliasField a, _), _ -> (rootRules.Aliases.TryFind a |> Option.defaultValue [||])
-                        | x -> [||])
-                // let res = expandedsubtypedrules @ subtypedrules @ rules @ expandedbaserules
-                // let res = expandedsubtypedrules @ subtypedrules @ rules @ expandedbaserules
-                let noderules = new ResizeArray<_>()
-                let leafrules = new ResizeArray<_>()
-                let leafvaluerules = new ResizeArray<_>()
-                let valueclauserules = new ResizeArray<_>()
-                let nodeSpecificMap = new Dictionary<_, _>()
-                let leafSpecificMap = new Dictionary<_, _>()
-
-                let inner =
-                    (fun r ->
-                        match r with
-                        | NodeRule(SpecificField(SpecificValue v), rs), o as x ->
-                            let found, res = nodeSpecificMap.TryGetValue(v.lower)
-
-                            if found then
-                                nodeSpecificMap.[v.lower] <- x :: res
-                            else
-                                nodeSpecificMap.[v.lower] <- [ x ]
-                        | NodeRule(l, rs), o as x -> noderules.Add(x)
-                        | LeafRule(SpecificField(SpecificValue v), r), o as x ->
-                            let found, res = leafSpecificMap.TryGetValue(v.lower)
-
-                            if found then
-                                leafSpecificMap.[v.lower] <- x :: res
-                            else
-                                leafSpecificMap.[v.lower] <- [ x ]
-                        | LeafRule(l, r), o as x -> leafrules.Add(x)
-                        | LeafValueRule lv, o as x -> leafvaluerules.Add(x)
-                        | ValueClauseRule rs, o as x -> valueclauserules.Add(x)
-                        | _ -> ())
-                // res |> Seq.iter inner
-                // expandedres |> Seq.iter inner
-                // expandedres2 |> Seq.iter inner
-                expandedsubtypedrules |> Seq.iter inner
-                subtypedrules |> Seq.iter inner
-                rules |> Seq.iter inner
-                expandedbaserules |> Seq.iter inner
-                noderules, leafrules, leafvaluerules, valueclauserules, nodeSpecificMap, leafSpecificMap
-        // seq { yield! rules; yield! subtypedrules; yield! expandedbaserules; yield! expandedsubtypedrules }
-        memoizeRulesInner memFunction
+        RulesMemoize.memoizeRulesWith
+            rootRules
+            (fun rules subtypes ->
+                rules
+                |> Array.collect (fun (r, o) ->
+                    r
+                    |> (function
+                    | SubtypeRule(key, shouldMatch, cfs) ->
+                        (if (not shouldMatch) <> List.contains key subtypes then
+                             cfs
+                         else
+                             [||])
+                    | x -> [||])))
 
     let p =
         { varMap = varMap
@@ -1312,11 +1190,9 @@ type RuleValidationService
         let inner (typedefs: TypeDefinition list) (node: IClause) =
             let validateType (typedef: TypeDefinition) (n: IClause) =
                 let typerules =
-                    rootRules.TypeRules
-                    |> Seq.choose (function
-                        | name, r when name == typedef.name -> Some r
-                        | _ -> None)
-
+                    match Map.tryFind (typedef.name.ToLowerInvariant()) typeRulesByName with
+                    | Some rules -> rules :> seq<_>
+                    | None -> Seq.empty
                 let filterKey =
                     match n with
                     | :? ValueClause as vc -> vc.FirstKey |> Option.defaultValue "clause"
