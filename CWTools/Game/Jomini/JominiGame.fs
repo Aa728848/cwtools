@@ -115,6 +115,7 @@ type JominiGame(setupSettings: GameSetupSettings<JominiLookup>, profile: JominiG
             else
                 commonValidationRules
           lookupFileValidators = []
+          scriptedParamsValidators = []
           useRules = true
           debugRulesOnly = false
           localisationValidators = [] }

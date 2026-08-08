@@ -365,6 +365,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 let newEntities = [ this.Resources.UpdateFile resource ] |> List.choose snd
                 afterUpdateFile this filepath
                 validationManager.InvalidateInteractive newEntities
+                validationManager.MarkScriptedParamsDirty [ filepath ]
 
                 match shallow with
                 | true ->
@@ -423,6 +424,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             afterUpdateFile this staged.filepath
             entity
             |> Option.iter (fun current -> validationManager.InvalidateInteractive [ current ])
+            validationManager.MarkScriptedParamsDirty [ staged.filepath ]
 
         true
 
@@ -793,7 +795,9 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member _.ValidateFiles files = validateFiles files
     member _.ValidateFilesLocalCancellable(files, shouldCancel) =
         validateFilesLocalCancellable files shouldCancel
-    member _.RemoveFile file = resourceManager.Api.RemoveFile file
+    member _.RemoveFile file =
+        validationManager.MarkScriptedParamsDirty [ file ]
+        resourceManager.Api.RemoveFile file
 
     member _.RefreshValidationManager() =
         validationManager <-

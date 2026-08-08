@@ -15,8 +15,130 @@ open CWTools.Process.Scopes
 open FSharp.Collections.ParallelSeq
 open CWTools.Process.Localisation
 
+/// Whole-workspace entity snapshot shared by the scripted-effect/trigger and
+/// scripted-value parameter validators. Holds only Entity references (never
+/// their Lazy computed data) so workspace updates cannot strand large objects.
+/// Invalidated per file: refreshFile re-extracts a single changed file.
+type ScriptedParamsSnapshot =
+    { entitiesByFile: Map<string, Entity>
+      fileLocalVariables: Map<string, Map<string, string>>
+      globalVarValues: Map<string, string>
+      scriptedEffectNodes: Map<string * string, Node>
+      scriptedTriggerNodes: Map<string * string, Node>
+      scriptValueNodes: Map<string * string, Node> }
+
+module ScriptedParamsSnapshot =
+    let private variablesInEntity (e: Entity) =
+        e.entity.Leaves
+        |> Seq.choose (fun leaf ->
+            if leaf.Key.StartsWith("@", StringComparison.Ordinal)
+               && not (leaf.Key.StartsWith("@[", StringComparison.Ordinal))
+               && not (leaf.Key.StartsWith(@"@\[", StringComparison.Ordinal)) then
+                Some(leaf.Key, leaf.Value.ToRawString())
+            else
+                None)
+        |> Seq.distinctBy fst
+        |> Map.ofSeq
+
+    let private isScriptedVariablesPath (e: Entity) =
+        e.logicalpath
+            .Replace('\\', '/')
+            .Contains("common/scripted_variables/", StringComparison.OrdinalIgnoreCase)
+
+    let findNodeInEntity (entity: Entity) (pos: range) =
+        let rec findChild (node: Node) =
+            if node.Position.Equals(pos) then
+                Some node
+            else
+                match node.Nodes |> Seq.tryFind (fun n -> rangeContainsRange n.Position pos) with
+                | Some c -> findChild c
+                | None -> None
+        findChild entity.entity
+
+    let private definitionNodes (lu: Lookup) (typeName: string) (entitiesByFile: Map<string, Entity>) =
+        lu.typeDefInfo
+        |> Map.tryFind typeName
+        |> Option.defaultValue [||]
+        |> Array.choose (fun se ->
+            entitiesByFile
+            |> Map.tryFind se.range.FileName
+            |> Option.bind (fun e -> findNodeInEntity e se.range)
+            |> Option.map (fun node -> (se.id, se.range.FileName), node))
+        |> Map.ofArray
+
+    let build (res: IResourceAPI<'T>) (lu: Lookup) : ScriptedParamsSnapshot =
+        let allEntities =
+            res.AllEntities()
+            |> Seq.map (fun struct (e, _) -> e)
+            |> Seq.filter (fun e -> e.overwrite <> Overwrite.Overwritten)
+            |> Seq.toList
+        let entitiesByFile = allEntities |> List.map (fun e -> e.filepath, e) |> Map.ofList
+        let fileLocalVariables = entitiesByFile |> Map.map (fun _ e -> variablesInEntity e)
+        let globalVarValues =
+            allEntities
+            |> Seq.filter isScriptedVariablesPath
+            |> Seq.collect (variablesInEntity >> Map.toSeq)
+            |> Seq.distinctBy fst
+            |> Map.ofSeq
+        { entitiesByFile = entitiesByFile
+          fileLocalVariables = fileLocalVariables
+          globalVarValues = globalVarValues
+          scriptedEffectNodes = definitionNodes lu "scripted_effect" entitiesByFile
+          scriptedTriggerNodes = definitionNodes lu "scripted_trigger" entitiesByFile
+          scriptValueNodes = definitionNodes lu "script_value" entitiesByFile }
+
+    /// Re-extract one changed file. Called before validation for every file
+    /// that was updated or removed since the snapshot was last refreshed,
+    /// keeping the whole-workspace build amortised O(changed files).
+    let refreshFile (res: IResourceAPI<'T>) (lu: Lookup) (snap: ScriptedParamsSnapshot) (filepath: string) : ScriptedParamsSnapshot =
+        let removeNodesForFile (nodes: Map<string * string, Node>) =
+            nodes |> Map.filter (fun _ n -> n.Position.FileName <> filepath)
+        let addNodesForFile (lu: Lookup) (typeName: string) (nodes: Map<string * string, Node>) (entitiesByFile: Map<string, Entity>) =
+            lu.typeDefInfo
+            |> Map.tryFind typeName
+            |> Option.defaultValue [||]
+            |> Array.fold (fun acc se ->
+                if se.range.FileName <> filepath then
+                    acc
+                else
+                    match entitiesByFile |> Map.tryFind filepath |> Option.bind (fun e -> findNodeInEntity e se.range) with
+                    | Some node -> Map.add (se.id, se.range.FileName) node acc
+                    | None -> acc) (removeNodesForFile nodes)
+        match res.GetEntityByFilePath filepath with
+        | Some struct (e, _) when e.overwrite <> Overwrite.Overwritten ->
+            let entitiesByFile = snap.entitiesByFile |> Map.add filepath e
+            let localVariables = variablesInEntity e
+            let globalVarValues =
+                if isScriptedVariablesPath e then
+                    let oldVars =
+                        snap.fileLocalVariables |> Map.tryFind filepath |> Option.defaultValue Map.empty
+                    let withoutOld = oldVars |> Map.fold (fun acc k _ -> Map.remove k acc) snap.globalVarValues
+                    localVariables |> Map.fold (fun acc k v -> Map.add k v acc) withoutOld
+                else
+                    snap.globalVarValues
+            { entitiesByFile = entitiesByFile
+              fileLocalVariables = snap.fileLocalVariables |> Map.add filepath localVariables
+              globalVarValues = globalVarValues
+              scriptedEffectNodes = addNodesForFile lu "scripted_effect" snap.scriptedEffectNodes entitiesByFile
+              scriptedTriggerNodes = addNodesForFile lu "scripted_trigger" snap.scriptedTriggerNodes entitiesByFile
+              scriptValueNodes = addNodesForFile lu "script_value" snap.scriptValueNodes entitiesByFile }
+        | _ ->
+            let entitiesByFile = snap.entitiesByFile |> Map.remove filepath
+            { entitiesByFile = entitiesByFile
+              fileLocalVariables = snap.fileLocalVariables |> Map.remove filepath
+              globalVarValues = snap.globalVarValues
+              scriptedEffectNodes = removeNodesForFile snap.scriptedEffectNodes
+              scriptedTriggerNodes = removeNodesForFile snap.scriptedTriggerNodes
+              scriptValueNodes = removeNodesForFile snap.scriptValueNodes }
+
 type LookupFileValidator<'T when 'T :> ComputedData> =
     Files.FileManager -> RuleValidationService option -> Lookup -> FileValidator<'T>
+
+/// Validators that consume a whole-workspace entity snapshot built once and
+/// invalidated per file. Receives the snapshot instead of rebuilding it on
+/// every validation pass.
+type ScriptedParamsValidator<'T when 'T :> ComputedData> =
+    ScriptedParamsSnapshot -> LookupFileValidator<'T>
 
 type ValidationManagerSettings<'T when 'T :> ComputedData> =
     { validators: (LocalStructureValidator<'T> * string) list
@@ -31,6 +153,7 @@ type ValidationManagerSettings<'T when 'T :> ComputedData> =
       lookupValidators: (LocalLookupValidator<'T> * string) list
       globalLookupValidators: (LookupValidator<'T> * string) list
       lookupFileValidators: (LookupFileValidator<'T> * string) list
+      scriptedParamsValidators: (ScriptedParamsValidator<'T> * string) list
       useRules: bool
       debugRulesOnly: bool
       localisationValidators: LocalisationValidator<'T> list }
@@ -172,6 +295,43 @@ type ValidationManager<'T when 'T :> ComputedData>
     let validators = settings.validators
     let errorCache = errorCache
     let cancellationCheck = System.Threading.AsyncLocal<unit -> bool>()
+
+    // Whole-workspace snapshot consumed by the scripted-parameter validators,
+    // invalidated per file. Entity-only (no Lazy computed data) so workspace
+    // updates cannot strand large objects behind the cache.
+    let scriptedParamsGate = obj ()
+    let mutable scriptedParamsSnapshotCache: ScriptedParamsSnapshot option = None
+    let mutable scriptedParamsDirtyFiles: Set<string> = Set.empty
+
+    let ensureScriptedParamsSnapshot () =
+        lock scriptedParamsGate (fun () ->
+            match scriptedParamsSnapshotCache with
+            | Some snap when scriptedParamsDirtyFiles.IsEmpty -> snap
+            | Some snap ->
+                let snap' =
+                    scriptedParamsDirtyFiles
+                    |> Set.fold
+                        (fun acc filepath -> ScriptedParamsSnapshot.refreshFile resources services.lookup acc filepath)
+                        snap
+                scriptedParamsDirtyFiles <- Set.empty
+                scriptedParamsSnapshotCache <- Some snap'
+                snap'
+            | None ->
+                let snap = ScriptedParamsSnapshot.build resources services.lookup
+                scriptedParamsDirtyFiles <- Set.empty
+                scriptedParamsSnapshotCache <- Some snap
+                snap)
+
+    let markScriptedParamsDirty (filepaths: string list) =
+        lock scriptedParamsGate (fun () ->
+            if scriptedParamsSnapshotCache.IsSome then
+                scriptedParamsDirtyFiles <-
+                    filepaths |> List.fold (fun acc filepath -> Set.add filepath acc) scriptedParamsDirtyFiles)
+
+    let clearScriptedParamsSnapshot () =
+        lock scriptedParamsGate (fun () ->
+            scriptedParamsSnapshotCache <- None
+            scriptedParamsDirtyFiles <- Set.empty)
 
     // A DidChange interactive pass and the following save often validate the exact
     // same immutable Entity with the exact same RuleValidationService. Keep a small
@@ -487,6 +647,26 @@ type ValidationManager<'T when 'T :> ComputedData>
                         | Invalid(_, es) -> es
                         | _ -> []
 
+                let spres =
+                    if settings.scriptedParamsValidators.IsEmpty then
+                        []
+                    else
+                        let snapshot = ensureScriptedParamsSnapshot ()
+                        settings.scriptedParamsValidators
+                        <&!&> (fun (v, s) ->
+                            duration
+                                (fun _ ->
+                                    (v snapshot)
+                                        services.fileManager
+                                        services.ruleValidationService
+                                        services.lookup
+                                        resources
+                                        newEntities)
+                                s)
+                        |> function
+                            | Invalid(_, es) -> es
+                            | _ -> []
+
                 let hres =
                     if settings.experimental && (not shallow) then
                         settings.heavyExperimentalValidators
@@ -497,7 +677,7 @@ type ValidationManager<'T when 'T :> ComputedData>
                     else
                         []
 
-                res @ fres @ lres @ lfres @ rres, hres
+                res @ fres @ lres @ lfres @ spres @ rres, hres
 
         shallow, deep
 
@@ -551,7 +731,27 @@ type ValidationManager<'T when 'T :> ComputedData>
                     | Invalid(_, es) -> es
                     | _ -> []
 
-            res @ fres @ lres @ lfres @ rres, []
+            let spres =
+                if settings.scriptedParamsValidators.IsEmpty then
+                    []
+                else
+                    let snapshot = ensureScriptedParamsSnapshot ()
+                    settings.scriptedParamsValidators
+                    <&!&> (fun (v, s) ->
+                        duration
+                            (fun _ ->
+                                (v snapshot)
+                                    services.fileManager
+                                    services.ruleValidationService
+                                    services.lookup
+                                    resources
+                                    newEntities)
+                            s)
+                    |> function
+                        | Invalid(_, es) -> es
+                        | _ -> []
+
+            res @ fres @ lres @ lfres @ spres @ rres, []
 
     let validateDynamicLocal (entities: struct (Entity * Lazy<'T>) list) =
         let shallow, deep = validateLocal entities
@@ -762,6 +962,11 @@ type ValidationManager<'T when 'T :> ComputedData>
             cancellationCheck.Value <- previous
 
     member _.ValidateLocal(entities: struct (Entity * Lazy<'T>) list) = validateLocal entities
+    /// Mark files whose workspace entity changed so the scripted-parameter
+    /// snapshot refreshes only those entries before the next validation.
+    member _.MarkScriptedParamsDirty(filepaths: string list) = markScriptedParamsDirty filepaths
+    /// Drop the whole scripted-parameter snapshot (e.g. after a full recompute).
+    member _.ClearScriptedParamsSnapshot() = clearScriptedParamsSnapshot ()
     member _.ValidateLocalCancellable(entities: struct (Entity * Lazy<'T>) list, shouldCancel: unit -> bool) =
         let previous = cancellationCheck.Value
         cancellationCheck.Value <- shouldCancel

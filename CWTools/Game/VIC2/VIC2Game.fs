@@ -142,6 +142,7 @@ type VIC2Game(setupSettings: VIC2Settings) =
           lookupValidators = []
           globalLookupValidators = commonValidationRules
           lookupFileValidators = []
+          scriptedParamsValidators = []
           useRules = true
           debugRulesOnly = false
           localisationValidators = [] }

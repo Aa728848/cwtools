@@ -190,6 +190,7 @@ type IRGame(setupSettings: IRSettings) =
           lookupValidators = []
           globalLookupValidators = commonValidationRules
           lookupFileValidators = []
+          scriptedParamsValidators = []
           useRules = true
           debugRulesOnly = false
           localisationValidators = [] }

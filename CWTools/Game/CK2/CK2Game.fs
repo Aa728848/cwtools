@@ -399,6 +399,7 @@ type CK2Game(setupSettings: CK2Settings) =
           lookupValidators = []
           globalLookupValidators = commonValidationRules
           lookupFileValidators = []
+          scriptedParamsValidators = []
           useRules = true
           debugRulesOnly = false
           localisationValidators = [] }

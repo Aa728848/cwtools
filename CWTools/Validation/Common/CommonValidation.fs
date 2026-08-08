@@ -622,50 +622,23 @@ module CommonValidation =
 
         loop false root
 
-    let valScriptedEffectParams<'T when 'T :> ComputedData> : CWTools.Games.LookupFileValidator<'T> =
+    let valScriptedEffectParams<'T when 'T :> ComputedData> (snap: ScriptedParamsSnapshot) : CWTools.Games.LookupFileValidator<'T> =
         (fun fileManager rulesValidator lu res es ->
-            let res = res.AllEntities()
-
-            let entityMap =
-                res |> Seq.map (fun struct (e, d) -> e.filepath, struct (e, d)) |> Map.ofSeq
-
-            let variablesInEntity (e: Entity) =
-                e.entity.Leaves
-                |> Seq.choose (fun leaf ->
-                    if leaf.Key.StartsWith("@", StringComparison.Ordinal)
-                       && not (leaf.Key.StartsWith("@[", StringComparison.Ordinal))
-                       && not (leaf.Key.StartsWith(@"@\[", StringComparison.Ordinal)) then
-                        Some(leaf.Key, leaf.Value.ToRawString())
-                    else
-                        None)
-                |> Seq.distinctBy fst
-                |> Map.ofSeq
+            let entityMap = snap.entitiesByFile
 
             let globalVarNames = lu.globalScriptedVariableNames |> Set.ofList
 
-            let globalVarValues =
-                res
-                |> Seq.map (fun struct (e, _) -> e)
-                |> Seq.filter (fun e ->
-                    e.logicalpath
-                        .Replace('\\', '/')
-                        .Contains("common/scripted_variables/", StringComparison.OrdinalIgnoreCase))
-                |> Seq.collect (variablesInEntity >> Map.toSeq)
-                |> Seq.distinctBy fst
-                |> Map.ofSeq
-
-            let fileVariableScopes =
-                entityMap
-                |> Map.map (fun _ struct (e, _) ->
-                    let values =
-                        variablesInEntity e
-                        |> Map.fold (fun acc key value -> Map.add key value acc) globalVarValues
-                    Set.union globalVarNames (values |> Map.toSeq |> Seq.map fst |> Set.ofSeq), values)
+            let globalVarValues = snap.globalVarValues
 
             let variableScopeForFile filename =
-                fileVariableScopes
-                |> Map.tryFind filename
-                |> Option.defaultValue (globalVarNames, globalVarValues)
+                match snap.fileLocalVariables |> Map.tryFind filename with
+                | Some localVars ->
+                    let names =
+                        Set.union globalVarNames (localVars |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
+                    let values =
+                        localVars |> Map.fold (fun acc key value -> Map.add key value acc) globalVarValues
+                    names, values
+                | None -> globalVarNames, globalVarValues
 
             let mergeVariableScopes (leftNames, leftValues) (rightNames, rightValues) =
                 let values =
@@ -677,16 +650,7 @@ module CommonValidation =
                 let _, callerVariableValues = variableScopeForFile pos.FileName
 
                 match entityMap |> Map.tryFind pos.FileName with
-                | Some struct (e, _) ->
-                    let rec findChild (node: Node) =
-                        if node.Position.Equals(pos) then
-                            Some node
-                        else
-                            match node.Nodes |> Seq.tryFind (fun n -> rangeContainsRange n.Position pos) with
-                            | Some c -> findChild c
-                            | None -> None
-
-                    findChild e.entity
+                | Some e -> ScriptedParamsSnapshot.findNodeInEntity e pos
                 | None -> None
                 //|> Option.map (fun s -> eprintfn "vsep %A %A" s.Key key; s)
                 |> Option.map (fun s ->
@@ -703,20 +667,6 @@ module CommonValidation =
                             else rawValue
                         "$" + l.Key + "$", resolvedValue))
 
-            let findSE (pos: range) =
-                match entityMap |> Map.tryFind pos.FileName with
-                | Some struct (e, _) ->
-                    let rec findChild (node: Node) =
-                        if node.Position.Equals pos then
-                            Some node
-                        else
-                            match node.Nodes |> Seq.tryFind (fun n -> rangeContainsRange n.Position pos) with
-                            | Some c -> findChild c
-                            | None -> None
-
-                    findChild e.entity
-                | None -> None
-
             match rulesValidator with
             | Some rv ->
                 let scriptedDefinitions =
@@ -729,7 +679,12 @@ module CommonValidation =
 
                 let allScriptedEffects =
                     scriptedDefinitions
-                    |> Array.map (fun (scriptedType, se) -> scriptedType, se.id, se.range.FileName, findSE se.range)
+                    |> Array.map (fun (scriptedType, se) ->
+                        let node =
+                            match scriptedType with
+                            | "scripted_effect" -> snap.scriptedEffectNodes |> Map.tryFind (se.id, se.range.FileName)
+                            | _ -> snap.scriptedTriggerNodes |> Map.tryFind (se.id, se.range.FileName)
+                        scriptedType, se.id, se.range.FileName, node)
 
                 let getRefsFromRefTypes (referencedtypes: Map<string, ReferenceDetails list>) =
                     //eprintfn "grfrt %A" referencedtypes
@@ -920,10 +875,8 @@ module CommonValidation =
                 <&!&> (fun (scriptedType, name, lp, node, refs) -> validateSE scriptedType name lp node refs)
             | _ -> OK)
 
-    let valScriptValueParams<'T when 'T :> ComputedData> : CWTools.Games.LookupFileValidator<'T> =
+    let valScriptValueParams<'T when 'T :> ComputedData> (snap: ScriptedParamsSnapshot) : CWTools.Games.LookupFileValidator<'T> =
         (fun fileManager rulesValidator lu res es ->
-            let res = res.AllEntities()
-
             let globalVarNames = lu.scriptedVariables |> List.map fst |> Set.ofList
 
             let globalVarValues =
@@ -931,32 +884,18 @@ module CommonValidation =
                 |> Seq.distinctBy fst
                 |> Map.ofSeq
 
-            let entityMap =
-                res |> Seq.map (fun struct (e, d) -> e.filepath, struct (e, d)) |> Map.ofSeq
+            let entityMap = snap.entitiesByFile
 
             let findParams (referenceDetails: ReferenceDetails) =
                 parseScriptValueCallParams referenceDetails
-
-            let findScriptValue (pos: range) =
-                match entityMap |> Map.tryFind pos.FileName with
-                | Some struct (e, _) ->
-                    let rec findChild (node: Node) =
-                        if node.Position.Equals pos then
-                            Some node
-                        else
-                            match node.Nodes |> Seq.tryFind (fun n -> rangeContainsRange n.Position pos) with
-                            | Some c -> findChild c
-                            | None -> None
-
-                    findChild e.entity
-                | None -> None
 
             match rulesValidator, lu.typeDefInfo |> Map.tryFind "script_value" with
             | Some rv, Some scriptValues ->
                 //                logInfo (sprintf "vsvpa %A" scriptValues)
                 let allScriptValues =
                     scriptValues
-                    |> Array.map (fun se -> se.id, se.range.FileName, findScriptValue se.range)
+                    |> Array.map (fun se ->
+                        se.id, se.range.FileName, snap.scriptValueNodes |> Map.tryFind (se.id, se.range.FileName))
 
                 let getRefsFromRefTypes (referencedtypes: Map<string, ReferenceDetails list>) =
                     //eprintfn "grfrt %A" referencedtypes

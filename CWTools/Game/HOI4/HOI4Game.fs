@@ -348,6 +348,7 @@ type HOI4Game(setupSettings: HOI4Settings) =
           lookupValidators = []
           globalLookupValidators = commonValidationRules
           lookupFileValidators = []
+          scriptedParamsValidators = []
           useRules = true
           debugRulesOnly = false
           localisationValidators = [] }

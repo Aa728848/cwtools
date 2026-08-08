@@ -2215,7 +2215,8 @@ type STLGame(setupSettings: StellarisSettings) =
           globalFileValidators = [ validateTechnologies, "tech2" ]
           lookupValidators = []
           globalLookupValidators = (validateEconomicCatAIBudget, "aibudget") :: commonValidationRules
-          lookupFileValidators =
+          lookupFileValidators = []
+          scriptedParamsValidators =
             [ valScriptedEffectParams, "scripted_effects"
               valScriptValueParams, "script_values" ]
           useRules =

@@ -1903,7 +1903,73 @@ country_event = {
                   "the staged enum should remove parameters no longer present in resources"
               Expect.isTrue
                   (stl.CommitScriptedTypes removal.Value)
-                  "commit should install the enum after a scripted parameter is removed" ]
+                  "commit should install the enum after a scripted parameter is removed"
+
+          testWithCapturedLogs "snapshot refreshes per file after definition edits" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripteddefaults"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let effectFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_effects", "test.txt"))
+              let eventFile = Path.GetFullPath(Path.Combine(folder, "events", "test.txt"))
+
+              let callSiteErrors (errors: CWError list) =
+                  errors
+                  |> List.filter (fun e ->
+                      e.message.StartsWith("This call of scripted effect", StringComparison.Ordinal)
+                      && e.message.Contains("scripted_effect_default_param_validation"))
+
+              // First pass builds the whole-workspace snapshot; the definition expands cleanly.
+              let baseline =
+                  stl.ValidateFilesLocalCancellable([ eventFile ], (fun () -> false))
+                  |> Option.defaultValue []
+              Expect.isEmpty (callSiteErrors baseline) "baseline definition must expand cleanly"
+
+              // Break the definition body; the call site in the event file is unchanged.
+              let brokenDefinition =
+                  (File.ReadAllText effectFile).Replace(
+                      "set_country_flag = $dynamic|no$",
+                      "set_country_flag = @undefined_var",
+                      System.StringComparison.Ordinal
+                  )
+              Expect.isTrue
+                  (brokenDefinition.Contains("set_country_flag = @undefined_var"))
+                  "broken definition text must be staged"
+              stl.UpdateFile false effectFile (Some brokenDefinition) |> ignore
+              let staged = stl.PrepareScriptedTypes([ effectFile ], false)
+              Expect.isSome staged "prepare should stage the broken definition"
+              Expect.isTrue (stl.CommitScriptedTypes staged.Value) "commit should publish the broken definition"
+
+              // Only the definition file changed; the snapshot must pick up the new
+              // body for the already-referenced call site.
+              let afterBreak =
+                  stl.ValidateFilesLocalCancellable([ eventFile ], (fun () -> false))
+                  |> Option.defaultValue []
+              Expect.isNonEmpty
+                  (callSiteErrors afterBreak)
+                  "a refreshed snapshot must surface call-site expansion errors for edited definitions"
+
+              // Removing the definition removes its entries from the snapshot; the
+              // stale call site must no longer produce expansion errors.
+              stl.UpdateFile false effectFile (Some "") |> ignore
+              let removalStaged = stl.PrepareScriptedTypes([ effectFile ], false)
+              Expect.isSome removalStaged "prepare should stage the definition removal"
+              Expect.isTrue (stl.CommitScriptedTypes removalStaged.Value) "commit should publish the removal"
+              let afterRemoval =
+                  stl.ValidateFilesLocalCancellable([ eventFile ], (fun () -> false))
+                  |> Option.defaultValue []
+              Expect.isEmpty
+                  (callSiteErrors afterRemoval)
+                  "removing a definition must invalidate its snapshot entries" ]
 
 [<Tests>]
 let irSubfolderTests =

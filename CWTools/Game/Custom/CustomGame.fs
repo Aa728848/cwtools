@@ -105,6 +105,7 @@ type CustomGame(setupSettings: CustomSettings, gameFolderName: string) =
           lookupValidators = []
           globalLookupValidators = commonValidationRules
           lookupFileValidators = []
+          scriptedParamsValidators = []
           useRules = true
           debugRulesOnly = false
           localisationValidators = [] }
