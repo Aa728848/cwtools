@@ -45,26 +45,17 @@ module YAMLLocalisationParser =
     let comment = skipChar '#' >>. skipRestOfLine true .>> spaces <?> "comment"
 
     let private manyOption p =
-        Inline.Many(
-            firstElementParser = p,
-            elementParser = p,
-            stateFromFirstElement =
-                (fun (value: ValueOption<'a>) ->
-                    let list = new LinkedList<'a>()
+        // FParsec's Inline.Many only works when the compiler inlines the call;
+        // in FSI / dynamic contexts it throws "Dynamic invocation of Many is
+        // not supported". Use the regular combinator with equivalent semantics.
+        many p |>> fun (values: ValueOption<'a> list) ->
+            let list = LinkedList<'a>()
 
-                    if value.IsSome then
-                        list.AddLast(value.Value) |> ignore
+            for value in values do
+                if value.IsSome then
+                    list.AddLast(value.Value) |> ignore
 
-                    list),
-            foldState =
-                (fun (list: LinkedList<'a>) newValue ->
-                    if newValue.IsSome then
-                        list.AddLast(newValue.Value) |> ignore
-
-                    list),
-            resultFromState = id,
-            resultForEmptySequence = (fun () -> LinkedList<_>())
-        )
+            list
 
     let file =
         spaces
