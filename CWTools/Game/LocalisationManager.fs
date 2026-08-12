@@ -7,7 +7,6 @@ open CWTools.Common
 open CWTools.Localisation
 open CWTools.Process.Localisation
 open CWTools.Utilities.Utils
-open FSharp.Collections.ParallelSeq
 
 [<Sealed>]
 type LocalisationManager<'T when 'T :> ComputedData>
@@ -194,7 +193,9 @@ type LocalisationManager<'T when 'T :> ComputedData>
                 |> List.choose (function
                     | FileWithContentResource(_, e) -> Some e
                     | _ -> None)
-                |> PSeq.choose parseLocFile
+                // Keep API creation deterministic; parallel enumeration can
+                // surface platform-dependent parser failures during startup.
+                |> Seq.choose parseLocFile
                 |> Seq.collect id
 
             allLocs |> Map.ofSeq
