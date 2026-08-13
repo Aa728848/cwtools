@@ -51,6 +51,11 @@
         <Compile Include="Process/Scopes/VIC2Scopes.fs"/>
         <Compile Include="Rules/RulesParserConstants.fs"/>
         <Compile Include="Rules/RulesTypes.fs"/>
+        <Compile Include="Rules/CwtLanguageTypes.fs"/>
+        <Compile Include="Rules/CwtLanguageSchema.fs"/>
+        <Compile Include="Rules/CwtLanguageService.fs"/>
+        <Compile Include="Rules/CwtProjectIndex.fs"/>
+        <Compile Include="Rules/CwtActivation.fs"/>
         <Compile Include="Rules/RulesParser.fs"/>
         <Compile Include="Rules\RulesWrapper.fs"/>
         <Compile Include="Parser/UtilityParser.fs"/>

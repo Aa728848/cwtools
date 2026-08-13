@@ -29,7 +29,11 @@ module private RulesParserImpl =
         | "info" -> Severity.Information
         | "information" -> Severity.Information
         | "hint" -> Severity.Hint
-        | s -> failwithf $"Invalid severity %s{s}"
+        // Editor input is untrusted and often incomplete: an unknown severity
+        // must not crash the parse (handoff doc §3.3). Log and fall back.
+        | s ->
+            logWarning $"Invalid severity option '%s{s}' ignored; falling back to warning"
+            Severity.Warning
 
     let defaultOptions = Options.DefaultOptions
 
@@ -748,7 +752,10 @@ module private RulesParserImpl =
                 match getSettingFromString x "subtype" with
                 | Some st when st.StartsWith '!' -> SubtypeRule(st.Substring(1), false, innerRules)
                 | Some st -> SubtypeRule(st, true, innerRules)
-                | None -> failwith $"Invalid subtype string %s{x}"
+                | None ->
+                    // Malformed subtype key (e.g. `subtype[]`): degrade to a
+                    // plain node rule instead of throwing (handoff doc §3.3).
+                    NodeRule(processKey parseScope anyScope scopeGroup (x.Trim('"')), innerRules)
             | _ when node.KeyPrefixId.IsSome && node.ValuePrefixId.IsSome -> NodeRule(JominiGuiField, innerRules)
             | x -> NodeRule(processKey parseScope anyScope scopeGroup (x.Trim('"')), innerRules)
 
@@ -2154,20 +2161,57 @@ module RulesParser =
             ValueType.Int(RulesParserConstants.IntFieldDefaultMinimum, RulesParserConstants.IntFieldDefaultMaximum)
         )
 
-    let parseConfigWithMetadata parseScope allScopes anyScope scopeGroup filename fileString =
-        //log "parse"
+    /// Structured single-file parse error (handoff doc §3.3): lets callers
+    /// distinguish a legitimate empty file from a parse failure.
+    type ConfigParseError =
+        { message: string
+          position: pos }
+
+    /// Structured single-file parse result. `parseError` is Some exactly when
+    /// the file failed to parse; the model fields are then empty.
+    type ConfigParseResult =
+        { rules: RootRule list
+          types: TypeDefinition list
+          enums: EnumDefinition list
+          complexenums: ComplexEnumDef list
+          values: (string * string list) list
+          metadata: ExtendedConfigMetadata
+          parseError: ConfigParseError option }
+
+    /// Diagnostic-rich single-file parse. Old behaviour is preserved by
+    /// parseConfigWithMetadata, which delegates here and drops the error.
+    let parseConfigWithMetadataDetailed parseScope allScopes anyScope scopeGroup filename fileString =
         let parsed = CKParser.parseString fileString filename
 
         match parsed with
-        | Failure(e, _, _) ->
+        | Failure(e, p, _) ->
             log $"config file %s{filename} failed with %s{e}"
-            ([], [], [], [], [], ExtendedConfigMetadata.empty)
+            let fp = p.Position
+            { rules = []
+              types = []
+              enums = []
+              complexenums = []
+              values = []
+              metadata = ExtendedConfigMetadata.empty
+              parseError = Some { message = e; position = mkPos (int fp.Line) (int fp.Column) } }
         | Success(s, _, _) ->
-            //log "parsed %A" s
             let root = simpleProcess.ProcessNode () "root" (mkZeroFile filename) s
-            //log "processConfig"
-            processConfig parseScope allScopes anyScope scopeGroup root
+            let rules, types, enums, complexenums, values, metadata =
+                processConfig parseScope allScopes anyScope scopeGroup root
 
+            { rules = rules
+              types = types
+              enums = enums
+              complexenums = complexenums
+              values = values
+              metadata = metadata
+              parseError = None }
+
+    let parseConfigWithMetadata parseScope allScopes anyScope scopeGroup filename fileString =
+        let result =
+            parseConfigWithMetadataDetailed parseScope allScopes anyScope scopeGroup filename fileString
+
+        result.rules, result.types, result.enums, result.complexenums, result.values, result.metadata
     let parseConfig parseScope allScopes anyScope scopeGroup filename fileString =
         let rules, types, enums, complexenums, values, _ =
             parseConfigWithMetadata parseScope allScopes anyScope scopeGroup filename fileString
