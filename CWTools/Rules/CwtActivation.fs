@@ -1,5 +1,7 @@
 namespace CWTools.CwtLanguage
 
+open CWTools.Common
+
 /// Candidate-rule activation state machine (handoff doc §4.6). Pure logic —
 /// the actual game-model swap happens under the game-state write lock in
 /// src/Main. Three states must never collapse into one boolean:
@@ -32,11 +34,15 @@ module CwtActivation =
                 hash <- hash * 1099511628211UL
         hash.ToString("x16")
 
-    /// Blocking diagnostic codes: presence of any of these in the candidate
-    /// snapshot prevents activation. Defaults to the Error-level set
-    /// (syntax, malformed expressions, ambiguous models).
+    /// Blocking diagnostic codes retained for callers that need to promote a
+    /// non-error diagnostic to a blocker. Every Error diagnostic blocks
+    /// activation independently of this set, so newly added error codes cannot
+    /// accidentally pass the activation gate.
     let defaultBlockingCodes =
         set [ "CWT001"; "CWT201"; "CWT113"; "CWT302"; "CWT401" ]
+
+    let private isBlockingDiagnostic (blockingCodes: Set<string>) (diagnostic: CwtDiagnostic) =
+        diagnostic.severity = Severity.Error || blockingCodes.Contains diagnostic.code
 
     /// True when every parsed document carries no blocking diagnostic and no
     /// file failed to parse (parse failures produce no document and mean the
@@ -46,11 +52,11 @@ module CwtActivation =
         && (snapshot.diagnosticsByFile
             |> Map.toSeq
             |> Seq.collect snd
-            |> Seq.forall (fun d -> not (blockingCodes.Contains d.code)))
+            |> Seq.forall (isBlockingDiagnostic blockingCodes >> not))
         && (snapshot.semanticDiagnosticsByFile
             |> Map.toSeq
             |> Seq.collect snd
-            |> Seq.forall (fun d -> not (blockingCodes.Contains d.code)))
+            |> Seq.forall (isBlockingDiagnostic blockingCodes >> not))
 
     /// Decides whether the candidate snapshot may become the active rules
     /// model. `ruleFiles` is the overlay-merged rule file list the game model
@@ -71,14 +77,14 @@ module CwtActivation =
                     @ (snapshot.diagnosticsByFile
                        |> Map.toSeq
                        |> Seq.collect snd
-                       |> Seq.filter (fun d -> defaultBlockingCodes.Contains d.code)
+                       |> Seq.filter (isBlockingDiagnostic defaultBlockingCodes)
                        |> Seq.map (fun d -> d.code)
                        |> Seq.distinct
                        |> Seq.toList)
                     @ (snapshot.semanticDiagnosticsByFile
                        |> Map.toSeq
                        |> Seq.collect snd
-                       |> Seq.filter (fun d -> defaultBlockingCodes.Contains d.code)
+                       |> Seq.filter (isBlockingDiagnostic defaultBlockingCodes)
                        |> Seq.map (fun d -> d.code)
                        |> Seq.distinct
                        |> Seq.toList)
