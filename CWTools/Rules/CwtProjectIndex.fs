@@ -247,6 +247,7 @@ module CwtProjectIndex =
                                     not (k.StartsWith("alias[") || k.StartsWith("single_alias[")))
                                 |> List.distinct
                               references = CwtLanguageService.referencesInDocument filePath root
+                              completionArguments = CwtLanguageService.completionArgumentsInDocument root
                               injects = CwtLanguageService.injectReferencesInDocument filePath root }
 
                         Some(filePath, model))

@@ -57,6 +57,14 @@ type CwtCompletionItem =
       documentation: string option
       insertText: string option }
 
+/// A concrete argument observed in a project field expression, for example
+/// `variable` in `value[variable]`. These are completion evidence, not symbol
+/// declarations, so dynamic namespaces do not create false undefined-reference
+/// diagnostics.
+type CwtCompletionArgument =
+    { family: string
+      name: string }
+
 /// Single-file analysis result. `document` is present when the file parsed;
 /// `canContributeToProjectIndex` is false when a structural error prevents a
 /// trustworthy model; `canActivateRules` is reserved for Phase 4.
@@ -81,5 +89,8 @@ and CwtDocumentModel =
       rootBlockNames: string list
       /// Symbol references extracted from the document (Phase 3).
       references: CwtReference list
+      /// Concrete bracket arguments used to replace meta-schema placeholders
+      /// such as `enum[x]` and `value[x]` with project-relevant candidates.
+      completionArguments: CwtCompletionArgument list
       /// `## inject` targets: (sourcePath, memberPath, range).
       injects: (string * string * range) list }

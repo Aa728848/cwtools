@@ -41,14 +41,17 @@ module CwtLanguageService =
 
     // ------------------------------------------------------------ directives
 
-    /// Parses a comment line into a directive. The parser stores comment text
-    /// with leading `#`s collapsed to one (verified empirically), so options
-    /// are recognised by FORM, mirroring RulesParser's commentSetting: a
-    /// `name = value` comment is a directive; a bare comment is an option only
-    /// when it matches a known no-value directive (required/optional).
-    /// Free-form prose (e.g. `##Checks if ...`) stays unvalidated.
+    /// Parses a comment line into a directive. CKParser removes the first `#`:
+    /// a source `#` is plain text, source `##` starts with one `#` here, and
+    /// source `###` starts with two. Only the middle form is a rule option.
     let tryParseDirective (comment: string) =
-        let trimmed = comment.Trim().TrimStart('#').Trim()
+        let parserComment = comment.TrimStart()
+        let isDirective =
+            parserComment.StartsWith("#", System.StringComparison.Ordinal)
+            && not (parserComment.StartsWith("##", System.StringComparison.Ordinal))
+        let trimmed =
+            if isDirective then parserComment.Substring(1).Trim()
+            else ""
 
         if trimmed = "" then
             None
@@ -71,7 +74,12 @@ module CwtLanguageService =
                        |> Seq.forall (fun c -> System.Char.IsAsciiLetterLower c || c = '_')
 
                 if nameOk then
-                    Some(name, Some(trimmed.Substring(equalsIndex + 1).Trim()))
+                    let rawValue = trimmed.Substring(equalsIndex + 1).Trim()
+                    let inlineComment = rawValue.IndexOf(" #", System.StringComparison.Ordinal)
+                    let value =
+                        if inlineComment >= 0 then rawValue.Substring(0, inlineComment).TrimEnd()
+                        else rawValue
+                    Some(name, Some value)
                 else
                     None
 
@@ -136,11 +144,14 @@ module CwtLanguageService =
     /// Bracketed field-expression families whose arguments are validated.
     let private bracketedExpressions =
         set
-            [ "int"; "float"; "enum"; "complex_enum"; "value"; "value_set";
+            [ "int"; "float"; "value_field"; "int_value_field";
+              "variable_field"; "int_variable_field"; "variable_field_32"; "int_variable_field_32";
+              "enum"; "complex_enum"; "value"; "value_set";
               "dynamic_value"; "prefix_field"; "alias_name"; "alias_match_left";
               "single_alias_right"; "alias_keys_field"; "alias_params_field";
               "scope"; "scope_group"; "event_target"; "colour"; "color";
-              "filepath"; "filename"; "icon"; "$tags"; "$tags_condition" ]
+              "filepath"; "filename"; "icon"; "name_format"; "stellaris_name_format";
+              "$tags"; "$tags_condition" ]
 
     /// Declaration prefixes that appear as keys (skipped by field validation).
     let private declarationPrefixes =
@@ -172,7 +183,10 @@ module CwtLanguageService =
                 else
                     let args = t.Substring(bracketIdx + 1, t.Length - bracketIdx - 2)
                     if args = "" then MalformedKnown name
-                    elif name = "int" || name = "float" then
+                    elif name = "int" || name = "float"
+                         || name = "value_field" || name = "int_value_field"
+                         || name = "variable_field" || name = "int_variable_field"
+                         || name = "variable_field_32" || name = "int_variable_field_32" then
                         let bounds = args.Split("..")
                         let validBound s = s = "inf" || s = "-inf" || (s.Length > 0 && s |> Seq.forall (fun c -> System.Char.IsDigit c || c = '-' || c = '.'))
                         if bounds.Length = 2 && validBound bounds.[0] && validBound bounds.[1] then KnownField
@@ -245,7 +259,7 @@ module CwtLanguageService =
                             | Some(_, name) when name = "" ->
                                 diagnostics.Add(fieldDiag filePath "CWT113" Severity.Error "cwt.emptyDeclaration" [ "type" ] (rangeOf inner))
                             | _ -> ()
-                        | Some k when k.StartsWith("subtype[") -> ()
+                        | Some k when k.StartsWith("subtype[") || k = "localisation" -> ()
                         | Some _ ->
                             diagnostics.Add(fieldDiag filePath "CWT110" Severity.Warning "cwt.invalidTypesDeclaration" [] (rangeOf inner))
                         | None -> ()
@@ -288,27 +302,30 @@ module CwtLanguageService =
             for c in childNodes clause do
                 match c with
                 | NodeC n -> walk n
+                | ValueClauseC vc -> walk vc
                 | LeafC l ->
-                    let keyVerdict = classifyFieldExpression l.Key
+                    let keyVerdict =
+                        if l.KeyId.quoted then Literal
+                        else classifyFieldExpression l.Key
                     // ValueText strips surrounding quotes, so quoted literals
                     // must be detected on the raw value string.
                     let valueVerdict =
                         if l.Value.ToString().StartsWith("\"") then Literal
                         else classifyFieldExpression l.ValueText
-                    let diagFor verdict =
+                    let diagFor token verdict =
                         match verdict with
                         | UnknownStructured ->
-                            Some(fieldDiag filePath "CWT200" Severity.Warning "cwt.unknownFieldExpression" [ l.ValueText ] l.Position)
+                            Some(fieldDiag filePath "CWT200" Severity.Warning "cwt.unknownFieldExpression" [ token ] l.Position)
                         | MalformedKnown name ->
-                            Some(fieldDiag filePath "CWT201" Severity.Error "cwt.illegalFieldExpression" [ name; l.ValueText ] l.Position)
+                            Some(fieldDiag filePath "CWT201" Severity.Error "cwt.illegalFieldExpression" [ name; token ] l.Position)
                         | _ -> None
                     match valueVerdict with
                     | UnknownStructured | MalformedKnown _ ->
-                        diagFor valueVerdict |> Option.iter diagnostics.Add
+                        diagFor l.ValueText valueVerdict |> Option.iter diagnostics.Add
                     | _ ->
                         match keyVerdict with
                         | UnknownStructured | MalformedKnown _ ->
-                            diagFor keyVerdict |> Option.iter diagnostics.Add
+                            diagFor l.Key keyVerdict |> Option.iter diagnostics.Add
                         | _ -> ()
                 | CommentC cm ->
                     diagnostics.AddRange(validateDirective filePath cm.Comment cm.Position)
@@ -535,10 +552,52 @@ module CwtLanguageService =
                         // ValueText strips quotes; detect quoted values on the raw string.
                         if not (l.Value.ToString().StartsWith("\"")) then
                             references.AddRange(referenceFromToken filePath l.ValueText l.Position)
+                | ValueClauseC vc -> walk vc
                 | _ -> ()
 
         walk root
         references |> Seq.toList
+
+    /// Concrete arguments used by bracketed field expressions. Unlike
+    /// references, these include open-ended dynamic namespaces such as
+    /// `value[variable]` and alias groups; they are completion evidence only.
+    let completionArgumentsInDocument (root: Node) : CwtCompletionArgument list =
+        let supportedFamilies =
+            set
+                [ "enum"; "complex_enum"; "value"; "value_set"; "dynamic_value";
+                  "alias_name"; "alias_match_left"; "alias_keys_field"; "alias_params_field";
+                  "single_alias_right"; "scope"; "scope_group"; "event_target";
+                  "name_format"; "stellaris_name_format"; "$tags"; "$tags_condition" ]
+        let arguments = ResizeArray<CwtCompletionArgument>()
+
+        let addToken (token: string) =
+            let t = token.Trim()
+            let bracketIdx = t.IndexOf('[')
+            if bracketIdx > 0 && t.EndsWith("]", System.StringComparison.Ordinal) then
+                let family = t.Substring(0, bracketIdx)
+                let name = t.Substring(bracketIdx + 1, t.Length - bracketIdx - 2).Trim()
+                if supportedFamilies.Contains family && name <> "" then
+                    arguments.Add({ family = family; name = name })
+
+        let rec walk (clause: IClause) =
+            for child in childNodes clause do
+                match child with
+                | NodeC n ->
+                    addToken n.Key
+                    walk n
+                | ValueClauseC vc -> walk vc
+                | LeafC l ->
+                    if not l.KeyId.quoted then addToken l.Key
+                    if not l.ValueId.quoted then addToken l.ValueText
+                | LeafValueC lv ->
+                    if not lv.ValueId.quoted then addToken lv.ValueText
+                | _ -> ()
+
+        walk root
+        arguments
+        |> Seq.distinct
+        |> Seq.sortBy (fun argument -> argument.family, argument.name)
+        |> Seq.toList
 
     /// `## inject` targets referenced by a document:
     /// (sourcePath, memberPath, range) triples.
@@ -549,6 +608,7 @@ module CwtLanguageService =
             for c in childNodes clause do
                 match c with
                 | NodeC n -> walk n
+                | ValueClauseC vc -> walk vc
                 | CommentC cm ->
                     match tryParseDirective cm.Comment with
                     | Some("inject", Some value) ->
@@ -583,6 +643,7 @@ module CwtLanguageService =
                       symbols = collectSymbols filePath root
                       rootBlockNames = rootBlockNamesOf root
                       references = referencesInDocument filePath root
+                      completionArguments = completionArgumentsInDocument root
                       injects = injectReferencesInDocument filePath root }
               diagnostics = analyzeRoot filePath root
               canContributeToProjectIndex = true
@@ -634,13 +695,66 @@ module CwtLanguageService =
         | "scope_group" -> Some CwtSymbolKind.CwtScopeGroup
         | _ -> None
 
-    /// completeAt with cross-file symbols merged into bracket completion
-    /// (Phase 3).
-    let completeAtWithProject
+    let private placeholderCompletionItem (field: CwtFieldExpression) =
+        if field.pattern = "<type>" then
+            completionItem "<type…>" "FieldExpression" (Some field.description) (Some field.description) (Some "<${1:type}>")
+        elif field.pattern.EndsWith("[x]", System.StringComparison.Ordinal) then
+            let family = field.pattern.Substring(0, field.pattern.Length - 3)
+            completionItem (family + "[…]") "FieldExpression" (Some field.description) (Some field.description) (Some(family + "[${1:name}]"))
+        else
+            completionItem field.pattern "FieldExpression" (Some field.description) (Some field.description) None
+
+    let private expressionDescription family =
+        CwtMetaSchema.fieldExpressions
+        |> List.tryFind (fun field ->
+            field.pattern = family || field.pattern.StartsWith(family + "[", System.StringComparison.Ordinal))
+        |> Option.map (fun field -> field.description)
+
+    let private aliasGroup (name: string) =
+        let separator = name.IndexOf(':')
+        if separator > 0 then name.Substring(0, separator) else name
+
+    let private concreteExpressionItems
+        (symbols: CwtSymbol list)
+        (arguments: CwtCompletionArgument list)
+        =
+        let mk family name =
+            let label =
+                if family = "type" then $"<%s{name}>"
+                else $"%s{family}[%s{name}]"
+            let description = expressionDescription family
+            completionItem label "FieldExpression" description description None
+
+        let fromSymbols =
+            symbols
+            |> List.collect (fun symbol ->
+                match symbol.kind with
+                | CwtSymbolKind.CwtType -> [ mk "type" symbol.name ]
+                | CwtSymbolKind.CwtEnum -> [ mk "enum" symbol.name ]
+                | CwtSymbolKind.CwtComplexEnum -> [ mk "complex_enum" symbol.name ]
+                | CwtSymbolKind.CwtValueSet ->
+                    [ mk "value" symbol.name; mk "value_set" symbol.name; mk "dynamic_value" symbol.name ]
+                | CwtSymbolKind.CwtAlias ->
+                    let group = aliasGroup symbol.name
+                    [ mk "alias_name" group; mk "alias_match_left" group
+                      mk "alias_keys_field" group; mk "alias_params_field" group ]
+                | CwtSymbolKind.CwtSingleAlias -> [ mk "single_alias_right" symbol.name ]
+                | CwtSymbolKind.CwtScope -> [ mk "scope" symbol.name; mk "event_target" symbol.name ]
+                | CwtSymbolKind.CwtScopeGroup -> [ mk "scope_group" symbol.name ]
+                | _ -> [])
+
+        let fromArguments = arguments |> List.map (fun argument -> mk argument.family argument.name)
+        fromSymbols @ fromArguments
+        |> List.distinctBy (fun item -> item.label)
+        |> List.sortBy (fun item -> item.label)
+
+    /// Completion with cross-file declarations and observed dynamic arguments.
+    let completeAtWithProjectContext
         (filePath: string)
         (text: string)
         (position: pos)
         (projectSymbols: CwtSymbol list option)
+        (projectArguments: CwtCompletionArgument list option)
         : CwtCompletionItem list =
         try
             let lineIdx = max 0 (position.Line - 1)
@@ -670,6 +784,14 @@ module CwtLanguageService =
                 |> List.filter (fun item -> item.label.StartsWith(typed, System.StringComparison.OrdinalIgnoreCase))
                 |> List.sortBy (fun item -> item.label)
 
+            let localSymbols, localArguments =
+                match parseFile filePath text with
+                | ParseOk root -> collectSymbols filePath root, completionArgumentsInDocument root
+                | ParseError _ -> [], []
+            let allSymbols = localSymbols @ (projectSymbols |> Option.defaultValue []) |> List.distinct
+            let allArguments = localArguments @ (projectArguments |> Option.defaultValue []) |> List.distinct
+            let concreteItems = concreteExpressionItems allSymbols allArguments
+
             if inComment then
                 // `## name` context: offer directive names.
                 let m = System.Text.RegularExpressions.Regex.Match(trimmed, @"^#+\s*([a-z_]*)$")
@@ -697,10 +819,12 @@ module CwtLanguageService =
                         |> Seq.takeWhile (fun c -> System.Char.IsAsciiLetterLower c || c = '_' || c = '$' || c = '<' || c = '[')
                         |> System.String.Concat
                     CwtMetaSchema.fieldExpressions
-                    |> List.map (fun fe ->
-                        completionItem fe.pattern "FieldExpression" (Some fe.description) (Some fe.description) None)
+                    |> List.map placeholderCompletionItem
+                    |> List.append concreteItems
                     |> List.filter (fun item -> item.label.StartsWith(typedField, System.StringComparison.OrdinalIgnoreCase))
+                    |> List.distinctBy (fun item -> item.label)
                     |> List.sortBy (fun item -> item.label)
+                    |> List.truncate 2000
                 else
                     // Inside a declaration bracket: local symbols of the kind.
                     let bracketMatch = System.Text.RegularExpressions.Regex.Match(linePrefix, @"\[([a-z_]*)$")
@@ -709,11 +833,7 @@ module CwtLanguageService =
                         match symbolKindForDeclaration declMatch.Groups.[1].Value with
                         | Some kind when not (trimmed.Contains("=")) ->
                             let typedSymbol = bracketMatch.Groups.[1].Value
-                            let localSymbols =
-                                match parseFile filePath text with
-                                | ParseOk root -> collectSymbols filePath root
-                                | ParseError _ -> []
-                            localSymbols @ (projectSymbols |> Option.defaultValue [])
+                            allSymbols
                             |> List.filter (fun s -> s.kind = kind)
                             |> List.distinctBy (fun s -> s.name)
                             |> List.map (fun s ->
@@ -724,8 +844,17 @@ module CwtLanguageService =
                     else []
         with _ -> []
 
+    /// Compatibility entry point for callers that only have declarations.
+    let completeAtWithProject
+        (filePath: string)
+        (text: string)
+        (position: pos)
+        (projectSymbols: CwtSymbol list option)
+        : CwtCompletionItem list =
+        completeAtWithProjectContext filePath text position projectSymbols None
+
     /// Completion at a document position. Works on raw text so it stays
     /// usable while the file does not parse (recovery contract); local-symbol
     /// completion additionally needs a parseable tree.
     let completeAt (filePath: string) (text: string) (position: pos) : CwtCompletionItem list =
-        completeAtWithProject filePath text position None
+        completeAtWithProjectContext filePath text position None None

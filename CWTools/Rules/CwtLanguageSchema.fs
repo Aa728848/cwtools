@@ -77,6 +77,7 @@ module CwtMetaSchema =
           { name = "error_if_only_match"; valueKind = "text"; description = "Report a custom error when only this rule matches."; support = Shared }
           { name = "type_prefix_from"; valueKind = "text"; description = "Derive type prefix context from another field."; support = Advanced }
           { name = "type_suffix_patterns"; valueKind = "list"; description = "Suffix-derived type completion candidates, e.g. { _desc _tooltip }."; support = Shared }
+          { name = "type_suffix_pattern"; valueKind = "text"; description = "Single suffix-derived type completion pattern."; support = Shared }
           { name = "file_extensions"; valueKind = "list"; description = "Restrict file completion extensions, e.g. { dds png }."; support = Shared }
           { name = "color_type"; valueKind = "text"; description = "Adjust generated colour_field rules, e.g. hsv360."; support = Shared }
           { name = "inject"; valueKind = "inject"; description = "Inject child rules from another rule file, e.g. common/foo.cwt@type/path."; support = Advanced }
@@ -84,8 +85,15 @@ module CwtMetaSchema =
           { name = "outgoingReferenceLabel"; valueKind = "text"; description = "Label outgoing reference relationships."; support = Advanced }
           { name = "required"; valueKind = "none"; description = "Mark a rule as required (legacy option used by type localisation rules)."; support = Advanced }
           { name = "optional"; valueKind = "none"; description = "Mark a rule as optional (legacy option used by type localisation rules)."; support = Advanced }
+          { name = "primary"; valueKind = "none"; description = "Mark the primary localisation field for a type."; support = Shared }
           { name = "type_key_filter"; valueKind = "text"; description = "Restrict type-key matching, e.g. type_key_filter = part."; support = Advanced }
+          { name = "type_key_regex"; valueKind = "text"; description = "Restrict type keys with a regular expression."; support = Advanced }
           { name = "display_name"; valueKind = "text"; description = "Display name used in completion/hover."; support = Shared }
+          { name = "abbreviation"; valueKind = "text"; description = "Short subtype label used in displays."; support = Shared }
+          { name = "starts_with"; valueKind = "text"; description = "Require a key prefix when discovering definitions."; support = Shared }
+          { name = "root_completion"; valueKind = "text"; description = "Choose the source for root completion, e.g. subtypes."; support = Shared }
+          { name = "graph_related_types"; valueKind = "list"; description = "Types related in dependency graph views."; support = Shared }
+          { name = "supported_scopes"; valueKind = "text"; description = "Scopes supported by an alias or modifier rule."; support = Shared }
           { name = "event_type"; valueKind = "text"; description = "Event type hint for on_action metadata."; support = Jomini }
           { name = "hint"; valueKind = "text"; description = "Short hint text for metadata blocks."; support = Jomini } ]
 
@@ -111,8 +119,17 @@ module CwtMetaSchema =
           { pattern = "value_set[x]"; description = "Value from a value set."; support = Shared }
           { pattern = "dynamic_value[x]"; description = "Dynamically expanded value."; support = Shared }
           { pattern = "value_field"; description = "Defined variable or number."; support = Shared }
+          { pattern = "value_field[x]"; description = "Defined variable or number with bounds."; support = Shared }
           { pattern = "int_value_field"; description = "Defined variable or integer."; support = Shared }
+          { pattern = "int_value_field[x]"; description = "Defined variable or integer with bounds."; support = Shared }
           { pattern = "variable_field"; description = "Script variable reference."; support = Shared }
+          { pattern = "variable_field[x]"; description = "Script variable reference with bounds."; support = Shared }
+          { pattern = "int_variable_field"; description = "Integer script variable reference."; support = Shared }
+          { pattern = "int_variable_field[x]"; description = "Integer script variable reference with bounds."; support = Shared }
+          { pattern = "variable_field_32"; description = "32-bit script variable reference."; support = Shared }
+          { pattern = "variable_field_32[x]"; description = "32-bit script variable reference with bounds."; support = Shared }
+          { pattern = "int_variable_field_32"; description = "32-bit integer script variable reference."; support = Shared }
+          { pattern = "int_variable_field_32[x]"; description = "32-bit integer script variable reference with bounds."; support = Shared }
           { pattern = "<type>"; description = "Reference to a defined type."; support = Shared }
           { pattern = "prefix<type>suffix"; description = "Type reference with prefix/suffix literals."; support = Shared }
           { pattern = "prefix_field[x]"; description = "Prefixed value reference, e.g. prefix_field[localisation]."; support = Shared }
@@ -143,6 +160,12 @@ module CwtMetaSchema =
           { pattern = "$shader_effect"; description = "Shader effect reference."; support = GameSpecific }
           { pattern = "$mesh_locator"; description = "Mesh locator reference."; support = GameSpecific }
           { pattern = "$technology_with_level"; description = "Technology with level."; support = GameSpecific }
+          { pattern = "name_format[x]"; description = "Name-format expression."; support = GameSpecific }
+          { pattern = "stellaris_name_format[x]"; description = "Stellaris name-format expression."; support = GameSpecific }
+          { pattern = "portrait_dna_field"; description = "Crusader Kings II portrait DNA."; support = GameSpecific }
+          { pattern = "portrait_properties_field"; description = "Crusader Kings II portrait properties."; support = GameSpecific }
+          { pattern = "ir_country_tag_field"; description = "Imperator country tag."; support = GameSpecific }
+          { pattern = "ir_family_name_field"; description = "Imperator family name."; support = GameSpecific }
           { pattern = "glob:pattern"; description = "Glob pattern."; support = Shared }
           { pattern = "glob.i:pattern"; description = "Case-insensitive glob pattern."; support = Shared }
           { pattern = "ant:pattern"; description = "Ant-style pattern."; support = Shared }
