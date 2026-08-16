@@ -101,6 +101,90 @@ let testc =
                       Expect.equal es.Length 1 $"Following lines are not expected to have an error %A{es}"
               | Failure(e, _, _) -> Expect.isTrue false e
 
+          testWithCapturedLogs "forbid_quoted_values inherits into aliased blocks"
+          <| fun () ->
+              let config =
+                  "## forbid_quoted_values = { from }\n\
+                  alias[effect:create_species] = {\n\
+                          ## cardinality = 0..1\n\
+                          name = scalar\n\
+                          ## cardinality = 0..1\n\
+                          traits = {\n\
+                              ## cardinality = 0..1\n\
+                              ideal_planet_class = scope[any]\n\
+                          }\n\
+                  }\n\
+                  test_event = {\n\
+                          ## cardinality = 0..1\n\
+                          effect = {\n\
+                              alias_name[effect] = alias_match_left[effect]\n\
+                          }\n\
+                  }"
+
+              let rules, _, _, _, _ =
+                  parseConfig
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      ""
+                      config
+
+              let typeRules =
+                  rules
+                  |> List.choose (function
+                      | TypeRule(_, rs) -> Some(rs)
+                      | _ -> None)
+                  |> Array.ofList
+
+              let service =
+                  RuleValidationService(
+                      RulesWrapper(rules |> List.toArray),
+                      [],
+                      FrozenDictionary.Empty,
+                      FrozenDictionary.Empty,
+                      FrozenDictionary.Empty,
+                      [||],
+                      FrozenSet.Empty,
+                      effectMap,
+                      effectMap,
+                      (scopeManager.ParseScope () "Any"),
+                      changeScope,
+                      defaultContext,
+                      STL STLLang.Default,
+                      processLocalisationLazy.Value,
+                      validateLocalisationLazy.Value
+                  )
+
+              let validate createSpeciesBody =
+                  match CKParser.parseString $"test_event = {{ effect = {{ create_species = {{ {createSpeciesBody} }} }} }}" "test" with
+                  | Success(r, _, _) ->
+                      let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+                      service.ApplyNodeRule(typeRules, node)
+                  | Failure(e, _, _) -> failtest e
+
+              match validate "name = \"from\"" with
+              | OK -> failtest "Quoted from in create_species should be reported"
+              | Invalid(_, es) ->
+                  Expect.equal es.Length 1 $"Only quoted from should be flagged %A{es}"
+                  let error = es |> List.head
+                  Expect.stringContains error.message "use from instead" "Should suggest removing the quotes"
+                  Expect.equal error.severity Severity.Error "Quoted from should be an error"
+
+              match validate "name = from" with
+              | OK -> ()
+              | Invalid(_, es) -> failtest $"Unquoted from should be valid %A{es}"
+
+              match validate "name = \"Local Name\"" with
+              | OK -> ()
+              | Invalid(_, es) -> failtest $"Other quoted values should stay valid %A{es}"
+
+              match validate "traits = { ideal_planet_class = \"from\" }" with
+              | OK -> failtest "Quoted from in a nested create_species rule should be reported"
+              | Invalid(_, es) ->
+                  Expect.equal es.Length 1 $"Only nested quoted from should be flagged %A{es}"
+                  Expect.stringContains (es |> List.head).message "use from instead" "Nested errors should suggest removing the quotes"
+
           testWithCapturedLogs "test error_unknown_keys reports unknown type keys"
           <| fun () ->
               let config =

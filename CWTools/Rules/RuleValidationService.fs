@@ -189,6 +189,44 @@ type RuleValidationService
 
     let checkQuotes (quoted: bool) (optionRequiredQuotes: bool) = quoted || (not optionRequiredQuotes)
 
+    let checkForbiddenQuotedValues (severity: Severity) (options: Options) (valueId: StringTokens) (value: IKeyPos) =
+        if options.forbiddenQuotedValues.IsEmpty || not valueId.quoted then
+            OK
+        else
+            let key = stringManager.GetLowerStringForIDs valueId
+
+            if options.forbiddenQuotedValues |> List.exists (fun v -> String.Equals(v, key, StringComparison.Ordinal)) then
+                let original = stringManager.GetStringForIDs valueId
+                let unquoted = original.Trim('"')
+
+                Invalid(
+                    Guid.NewGuid(),
+                    [ inv
+                        (ErrorCodes.CustomError
+                            $"Quoted value %s{original} is not allowed here; use %s{unquoted} instead"
+                            severity)
+                        value ]
+                )
+            else
+                OK
+
+    /// Apply a block-level `forbid_quoted_values` option to all nested rules so
+    /// every matching leaf/value inside the block is checked with the same list.
+    let rec inheritForbiddenQuotedValues (forbidden: string list) ((rule, options): NewRule) : NewRule =
+        let combined =
+            forbidden @ options.forbiddenQuotedValues
+            |> List.distinctBy (fun value -> value.ToLowerInvariant())
+
+        let options = { options with forbiddenQuotedValues = combined }
+
+        match rule with
+        | NodeRule(left, children) -> NodeRule(left, children |> Array.map (inheritForbiddenQuotedValues combined)), options
+        | ValueClauseRule children -> ValueClauseRule(children |> Array.map (inheritForbiddenQuotedValues combined)), options
+        | SubtypeRule(name, shouldMatch, children) ->
+            SubtypeRule(name, shouldMatch, children |> Array.map (inheritForbiddenQuotedValues combined)), options
+        | LeafRule _
+        | LeafValueRule _ -> rule, options
+
     let dynamicTypePrefixValues (prefixField: string) (clause: IClause) =
         let inline cleanPrefixValue (value: string) =
             let value = value.Trim('"')
@@ -776,6 +814,7 @@ type RuleValidationService
                       Guid.NewGuid(),
                       [ inv (ErrorCodes.CustomError "This value is expected to be quoted" Severity.Error) leafvalue ]
                   ))
+        <&&> checkForbiddenQuotedValues severity options leafvalue.ValueId leafvalue
 
     and applyLeafRule
         (parent: IClause)
@@ -816,6 +855,7 @@ type RuleValidationService
                               Guid.NewGuid(),
                               [ inv (ErrorCodes.CustomError "This value is expected to be quoted" Severity.Error) leaf ]
                           ))
+                <&&> checkForbiddenQuotedValues severity options leaf.ValueId leaf
                 <&&> (if options.errorIfOnlyMatch.IsSome then
                           let res =
                               checkFieldWithDynamicTypeOptions ctx options rightRule leaf.ValueId leaf parent severity
@@ -900,6 +940,13 @@ type RuleValidationService
                 false
             else
                 enforceCardinality
+
+        let childRules =
+            if options.forbiddenQuotedValues.IsEmpty then
+                rules
+            else
+                rules |> Array.map (inheritForbiddenQuotedValues options.forbiddenQuotedValues)
+
         let newErrors =
             (match options.requiredScopes with
              | [] -> OK
@@ -937,12 +984,12 @@ type RuleValidationService
                                     applyScopeContextOverride node
                                         (newCtx.scopes.PushScopeReset anyScope) }
 
-                         applyClauseField enforceCardinality options.severity newCtx rules node errors
+                         applyClauseField enforceCardinality options.severity newCtx childRules node errors
                      | NewScope(newScopes, _, _), _ ->
                          let newCtx =
                              { newCtx with
                                  scopes = applyScopeContextOverride node newScopes }
-                         applyClauseField enforceCardinality options.severity newCtx rules node errors
+                         applyClauseField enforceCardinality options.severity newCtx childRules node errors
                      | NotFound, _ ->
                          inv (ErrorCodes.ConfigRulesInvalidScopeCommand(key.ToString())) node
                          <&&&> errors
@@ -956,7 +1003,7 @@ type RuleValidationService
                                     applyScopeContextOverride node
                                         (newCtx.scopes.PushScopeReset anyScope) }
 
-                         applyClauseField enforceCardinality options.severity newCtx rules node errors
+                         applyClauseField enforceCardinality options.severity newCtx childRules node errors
                      | VarNotFound v, _ ->
                          inv (ErrorCodes.CustomError $"The variable %s{v} has not been set" Severity.Error) node
                          <&&&> errors
@@ -968,7 +1015,7 @@ type RuleValidationService
                          { newCtx with
                              scopes = applyScopeContextOverride node newCtx.scopes }
 
-                     applyClauseField enforceCardinality options.severity newCtx rules node errors
+                     applyClauseField enforceCardinality options.severity newCtx childRules node errors
 
         match newErrors, node.Trivia |> Option.bind (_.originalSource) with
         | OK, _ -> oldErrors
@@ -1079,7 +1126,13 @@ type RuleValidationService
                                    "")
                                valueclause ]
                      ))
-        <&&> applyClauseField enforceCardinality options.severity newCtx rules valueclause errors
+        <&&> (let childRules =
+                 if options.forbiddenQuotedValues.IsEmpty then
+                     rules
+                 else
+                     rules |> Array.map (inheritForbiddenQuotedValues options.forbiddenQuotedValues)
+
+             applyClauseField enforceCardinality options.severity newCtx childRules valueclause errors)
 
     let testSubtype (subtypes: SubTypeDefinition list) (node: IClause) =
         let results =

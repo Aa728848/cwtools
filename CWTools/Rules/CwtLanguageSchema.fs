@@ -75,6 +75,7 @@ module CwtMetaSchema =
           { name = "replace_scopes"; valueKind = "scope-map"; description = "Replace system scopes, e.g. { this = country root = country }."; support = Shared }
           { name = "completion_type"; valueKind = "type"; description = "Use completions from a specific type."; support = Shared }
           { name = "error_if_only_match"; valueKind = "text"; description = "Report a custom error when only this rule matches."; support = Shared }
+          { name = "forbid_quoted_values"; valueKind = "list"; description = "Values that must not be quoted inside the matching block."; support = Shared }
           { name = "type_prefix_from"; valueKind = "text"; description = "Derive type prefix context from another field."; support = Advanced }
           { name = "type_suffix_patterns"; valueKind = "list"; description = "Suffix-derived type completion candidates, e.g. { _desc _tooltip }."; support = Shared }
           { name = "type_suffix_pattern"; valueKind = "text"; description = "Single suffix-derived type completion pattern."; support = Shared }

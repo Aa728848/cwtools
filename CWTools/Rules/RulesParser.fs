@@ -418,6 +418,11 @@ module private RulesParserImpl =
             |> Option.map parseStringListSetting
             |> Option.defaultValue []
 
+        let forbiddenQuotedValues =
+            commentSetting "forbid_quoted_values"
+            |> Option.map parseStringListSetting
+            |> Option.defaultValue []
+
         let colorType =
             commentSetting "color_type"
             |> Option.map (fun v -> v.Trim().Trim('"').ToLowerInvariant())
@@ -441,6 +446,7 @@ module private RulesParserImpl =
           referenceDetails = referenceDetails
           keyRequiredQuotes = keyRequiredQuotes
           valueRequiredQuotes = valueRequiredQuotes
+          forbiddenQuotedValues = forbiddenQuotedValues
           typeHint = None
           completionType = completionType
           errorIfOnlyMatch = errorIfMatched
@@ -798,6 +804,7 @@ module private RulesParserImpl =
           referenceDetails = None
           keyRequiredQuotes = false
           valueRequiredQuotes = false
+          forbiddenQuotedValues = []
           typeHint = None
           completionType = None
           errorIfOnlyMatch = None
@@ -822,6 +829,7 @@ module private RulesParserImpl =
           referenceDetails = None
           keyRequiredQuotes = false
           valueRequiredQuotes = false
+          forbiddenQuotedValues = []
           typeHint = None
           completionType = None
           errorIfOnlyMatch = None

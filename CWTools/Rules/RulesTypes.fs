@@ -28,6 +28,7 @@ type Options =
       referenceDetails: (bool * string) option
       keyRequiredQuotes: bool
       valueRequiredQuotes: bool
+      forbiddenQuotedValues: string list
       typeHint: (string * bool) option
       completionType: string option
       errorIfOnlyMatch: string option
@@ -51,6 +52,7 @@ type Options =
           referenceDetails = None
           keyRequiredQuotes = false
           valueRequiredQuotes = false
+          forbiddenQuotedValues = []
           typeHint = None
           completionType = None
           errorIfOnlyMatch = None
