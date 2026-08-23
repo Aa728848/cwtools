@@ -1835,6 +1835,47 @@ let incrementalScriptedRefreshTests =
                   liveEffectsBefore
                   "detached scripted effects must never commit to the live lookup"
 
+          testWithCapturedLogs "detached overlay resolves localisation keys across candidate files" <| fun () ->
+              // Two languages so the default-language key set is validated for the
+              // non-default overlay language, matching CWTools' per-language rules.
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripted"
+              let configtext = configFilesFromDir folder
+              let settings =
+                  { emptyStellarisSettings folder with
+                      validation = { validateVanilla = false; experimental = true; langs = [| STL STLLang.English; STL STLLang.Chinese |] }
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let locFileEn = Path.GetFullPath(Path.Combine(folder, "localisation", "english", "overlay_l_english.yml"))
+              let locFileZh = Path.GetFullPath(Path.Combine(folder, "localisation", "simp_chinese", "overlay_l_simp_chinese.yml"))
+              let eventFile = Path.GetFullPath(Path.Combine(folder, "events", "overlay_loc.txt"))
+              let liveLocBefore = stl.AllLoadedLocalisation()
+              Expect.isTrue
+                  (liveLocBefore |> List.exists (fun entry -> entry.Contains("base_l_simp_chinese.yml", StringComparison.Ordinal)))
+                  (sprintf "fixture localisation must load: %A" (liveLocBefore |> List.truncate 20))
+              let locEn = "l_english:\n overlay_loc_1_title:0 \"Overlay Title\"\n"
+              let locZh = "l_simp_chinese:\n overlay_loc_1_title:0 \"Overlay Title\"\n"
+              let event = "namespace = overlay\ncountry_event = { id = overlay_loc_1 is_triggered_only = yes }\n"
+              let eventWithoutId = "namespace = overlay\ncountry_event = { is_triggered_only = yes }\n"
+              let eventFileWithoutId = Path.GetFullPath(Path.Combine(folder, "events", "overlay_loc_noid.txt"))
+              let missingOnly = stl.ValidateOverlayFilesCancellable([ eventFile, event; eventFileWithoutId, eventWithoutId ], (fun () -> false))
+              Expect.isSome missingOnly "the missing-key batch should complete"
+              Expect.isNonEmpty
+                  (missingOnly.Value |> List.filter (fun error -> error.message.Contains("overlay_loc_1_title", StringComparison.Ordinal) || error.message.Contains("_title", StringComparison.Ordinal)))
+                  (sprintf "detached type localisation must flag missing required keys: %A" (missingOnly.Value |> List.map (fun e -> e.code + " " + e.message + " @ " + e.range.FileName)))
+              let resolved = stl.ValidateOverlayFilesCancellable([ locFileEn, locEn; locFileZh, locZh; eventFile, event ], (fun () -> false))
+              Expect.isSome resolved "the localisation batch should complete"
+              Expect.isEmpty
+                  (resolved.Value |> List.filter (fun error -> error.message.Contains("overlay_loc_1_title", StringComparison.Ordinal)))
+                  (sprintf "sibling overlay localisation keys must satisfy the required event title: %A" (resolved.Value |> List.map _.message))
+              Expect.equal (stl.AllLoadedLocalisation()) liveLocBefore "overlay localisation must never enter the live catalog"
+              let cancelled = stl.ValidateOverlayFilesCancellable([ locFileEn, locEn; eventFile, event ], (fun () -> true))
+              Expect.isNone cancelled "a cancelled localisation batch must publish no partial result"
+
           testWithCapturedLogs "commit refreshes scripted parameter enums" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripteddefaults"
               let configtext = configFilesFromDir folder

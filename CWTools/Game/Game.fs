@@ -472,6 +472,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 None
             else
                 let entities = stagedFiles |> List.choose stagedEntity
+                let stagedResources = stagedFiles |> List.map (fun staged -> staged.resourceUpdate.parsedResource)
                 let entityFiles =
                     entities
                     |> Seq.map (fun struct (entity, _) -> normaliseIncrementalPath entity.filepath)
@@ -486,10 +487,14 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
                 if shouldCancel () then
                     None
-                elif entities.IsEmpty then
+                elif entities.IsEmpty && (stagedFiles |> List.forall (fun staged -> staged.kind <> LocalisationFile)) then
                     Some shaderErrors
                 else
-                    let service = rulesManager.PrepareOverlayValidationService entities
+                    let buildLocalisation (overlayResources: IResourceAPI<'T>) (detachedLookup: 'L) =
+                        LocalisationManager<'T>(
+                            overlayResources, localisationService, settings.validation.langs,
+                            detachedLookup, locFunctions >> fst, localisationExtension)
+                    let overlay = rulesManager.PrepareOverlayValidationService(entities, stagedResources, buildLocalisation)
                     if shouldCancel () then
                         None
                     else
@@ -497,7 +502,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                         let errors =
                             entities
                             |> List.collect (fun struct (entity, _) ->
-                                match service.RuleValidateEntityCancellable(entity, shouldCancel) with
+                                match overlay.ruleService.RuleValidateEntityCancellable(entity, shouldCancel) with
                                 | None ->
                                     cancelled <- true
                                     []
@@ -506,11 +511,46 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                                     | Invalid(_, diagnostics) ->
                                         diagnostics
                                         |> List.filter (fun error ->
-                                            error.code <> "CW100"
-                                            && entityFiles.Contains(normaliseIncrementalPath error.range.FileName))
+                                            entityFiles.Contains(normaliseIncrementalPath error.range.FileName))
                                     | _ -> [])
 
-                        if cancelled || shouldCancel () then None else Some(shaderErrors @ errors)
+                        if cancelled || shouldCancel () then
+                            None
+                        elif entities.IsEmpty then
+                            Some shaderErrors
+                        else
+                            // Request-local global/reference validation: the detached
+                            // ValidationManager sees the overlay resource snapshot,
+                            // detached lookup, detached localisation keys, and a fresh
+                            // ErrorCache; nothing writes live validation state.
+                            let globalServices: ValidationManagerServices<'T> =
+                                { resources = overlay.resources
+                                  lookup = overlay.lookup
+                                  ruleValidationService = Some overlay.ruleService
+                                  infoService = Some overlay.infoService
+                                  localisationKeys = (fun () -> overlay.localisation.LocalisationKeys())
+                                  fileManager = fileManager }
+                            let detachedValidation =
+                                ValidationManager<'T>(
+                                    validationSettings, globalServices, locFunctions >> snd,
+                                    defaultContext,
+                                    (if debugMode then noneContext else defaultContext),
+                                    ErrorCache())
+                            match detachedValidation.ValidateCancellable(true, entities, shouldCancel) with
+                            | None -> None
+                            | Some(shallowErrors, deepErrors) ->
+                                let typeLocalisationErrors =
+                                    if shouldCancel () then []
+                                    else
+                                        match detachedValidation.ValidateGlobalLocalisation() with
+                                        | Invalid(_, es) -> es
+                                        | _ -> []
+                                let globalErrors = shallowErrors @ deepErrors @ typeLocalisationErrors
+                                let globalErrors =
+                                    globalErrors
+                                    |> List.filter (fun error ->
+                                        entityFiles.Contains(normaliseIncrementalPath error.range.FileName))
+                                Some(shaderErrors @ errors @ globalErrors)
 
     let validateFileInteractiveCancellable (staged: StagedFileUpdate) (shouldCancel: unit -> bool) =
         if shouldCancel () then

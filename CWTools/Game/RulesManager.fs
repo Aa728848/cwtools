@@ -64,6 +64,15 @@ type RuleManagerSettings<'T, 'L when 'T :> ComputedData and 'L :> Lookup> =
                   -> Lang * Collections.Map<string, LocEntry>) *
               (LocEntry -> ScopeContext -> CWTools.Validation.ValidationResult)) }
 
+/// Request-local overlay validation context: every piece of state belongs to the
+/// request and is discarded after validation; nothing aliases live mutable state.
+type OverlayValidationContext<'T, 'L when 'T :> ComputedData and 'L :> Lookup> =
+    { ruleService: RuleValidationService
+      infoService: InfoService
+      resources: IResourceAPI<'T>
+      lookup: 'L
+      localisation: LocalisationManager<'T> }
+
 type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     (
         resources: IResourceAPI<'T>,
@@ -1800,7 +1809,10 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     /// Build request-local rule services against detached entities. The temporary
     /// resource API replaces live entities with the overlay as one immutable snapshot;
     /// neither the live lookup nor resource maps are installed or mutated.
-    member _.PrepareOverlayValidationService(overlayEntities: struct (Entity * Lazy<'T>) list) =
+    member _.PrepareOverlayValidationService(
+        overlayEntities: struct (Entity * Lazy<'T>) list,
+        overlayResourceInputs: Resource list,
+        buildLocalisation: IResourceAPI<'T> -> 'L -> LocalisationManager<'T>) =
         let overlayByPath =
             overlayEntities
             |> Seq.map (fun (struct (entity, _) as pair) -> normaliseFilePath entity.filepath, pair)
@@ -1811,6 +1823,13 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             |> Seq.filter (fun struct (entity, _) -> not (overlayByPath.ContainsKey(normaliseFilePath entity.filepath)))
             |> Seq.append overlayEntities
             |> Seq.toArray
+
+        let resourcePath = function
+            | EntityResource(_, entity) -> normaliseFilePath entity.filepath
+            | FileResource(_, file) -> normaliseFilePath file.filepath
+            | FileWithContentResource(_, file) -> normaliseFilePath file.filepath
+        let overlayResourcePaths = overlayResourceInputs |> Seq.map resourcePath |> Set.ofSeq
+        let allResources = resources.GetResources() |> List.filter (resourcePath >> overlayResourcePaths.Contains >> not) |> fun live -> live @ overlayResourceInputs
 
         let overlayFiles =
             seq {
@@ -1826,7 +1845,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 member _.UpdateFiles = fun _ -> readOnly ()
                 member _.UpdateFile = fun _ -> readOnly ()
                 member _.RemoveFile = fun _ -> readOnly ()
-                member _.GetResources = fun () -> resources.GetResources()
+                member _.GetResources = fun () -> allResources
                 member _.ValidatableFiles = fun () -> resources.ValidatableFiles()
                 member _.AllEntities = fun () -> allEntities :> seq<_>
                 member _.ValidatableEntities = fun () -> allEntities |> Array.toList
@@ -1836,21 +1855,35 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 // The refresh below forces request data where it consumes it. Do not
                 // prewarm live Lazy values from this detached request.
                 member _.ForceRulesDataGenerate() = ()
-                member _.GetInlineScriptCallers path = resources.GetInlineScriptCallers path
+                member _.GetInlineScriptCallers scriptName =
+                    let normalized = scriptName.Replace('\\', '/').Trim().TrimStart('/').ToLowerInvariant()
+                    let overlayCallers =
+                        overlayEntities
+                        |> List.choose (fun struct (entity, _) ->
+                            let rec hasCall (node: Node) =
+                                (node.Leaves |> Seq.exists (fun leaf -> leaf.Key.Equals("inline_script", StringComparison.OrdinalIgnoreCase) && leaf.ValueText.Replace('\\', '/').Trim().TrimStart('/').ToLowerInvariant() = normalized))
+                                || (node.Nodes |> Seq.exists hasCall)
+                            if hasCall entity.rawEntity then Some entity.filepath else None)
+                    List.append overlayCallers (resources.GetInlineScriptCallers scriptName) |> List.distinct
                 member _.RefreshInlineScriptCallers _ = readOnly ()
                 member _.GetFileNames = fun () -> overlayFiles :> seq<_>
                 member _.GetEntityByFilePath path = overlayByPath |> Map.tryFind (normaliseFilePath path)
                                                     |> Option.orElseWith (fun () -> resources.GetEntityByFilePath path) }
 
         let detachedLookup = lookup.ShallowClone() :?> 'L
+        let detachedLocalisation = buildLocalisation overlayResources detachedLookup
+        detachedLocalisation.UpdateAllLocalisation()
         let detachedManager: RulesManager<'T, 'L> =
             RulesManager<'T, 'L>(
-                overlayResources, detachedLookup, settings, localisation, embeddedSettings, languages, debugMode)
+                overlayResources, detachedLookup, settings, detachedLocalisation, embeddedSettings, languages, debugMode)
 
         settings.rulesSettings |> Option.iter (fun (rulesSettings: RulesSettings) -> detachedManager.LoadBaseConfig(rulesSettings))
         match detachedManager.PrepareRefreshConfig() with
         | Some(staged: StagedCacheRefresh) ->
             detachedLookup.ApplyFieldSnapshot staged.lookupSnapshot
+            // The staged snapshot may not carry a freshly computed validation index;
+            // rebuild it so overlay entities participate in global checks.
+            detachedLookup.typeDefInfoForValidation <- typeDefInfoForValidationFrom detachedLookup.typeDefInfo
             // Scripted definitions are ordinary types in the staged index. Add
             // request-local effect/trigger links before rebuilding the final rule service.
             let linksFor typeName effectType =
@@ -1879,7 +1912,11 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             |> Option.iter (fun rulesSettings -> detachedManager.LoadBaseConfig rulesSettings)
             detachedLookup.configRules <-
                 settings.loadConfigRulesHook detachedLookup.configRules detachedLookup embeddedSettings
-            detachedManager.BuildValidationServiceForCurrentLookup()
+            { ruleService = detachedManager.BuildValidationServiceForCurrentLookup()
+              infoService = staged.infoService :?> InfoService
+              resources = overlayResources
+              lookup = detachedLookup
+              localisation = detachedLocalisation }
         | None -> invalidOp "Unable to prepare detached overlay rules"
 
     member _.BuildValidationServiceForCurrentLookup() =

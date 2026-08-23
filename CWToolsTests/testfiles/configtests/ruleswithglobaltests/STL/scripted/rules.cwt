@@ -1,6 +1,11 @@
 types = {
     type[event] = {
         path = "game/events"
+        name_field = "id"
+        localisation = {
+            ## required
+            title = "$_title"
+        }
 
         ## type_key_filter = ship_event
 		## push_scope = ship
