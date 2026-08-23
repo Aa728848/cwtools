@@ -324,6 +324,7 @@ type IRGame(setupSettings: IRSettings) =
         member _.PrepareUpdateFileInteractive file text = game.PrepareUpdateFileInteractive file text
         member _.CommitUpdateFileInteractive staged = game.CommitUpdateFileInteractive staged
         member _.ValidateFileInteractive staged = game.ValidateFileInteractive staged
+        member _.ValidateOverlayFile(file, text) = game.ValidateOverlayFile file text
         member _.ValidateFile shallow file = game.ValidateFile shallow file
         member _.ValidateFiles files = game.ValidateFiles files
         member _.ValidateFilesLocalCancellable(files, shouldCancel) =

@@ -126,6 +126,20 @@ let onActionLivenessTests =
             (Object.ReferenceEquals(entityBeforePrepare, entityAfterPrepare))
             "Preparing an editor update must not mutate the live resource map"
 
+        let detachedErrors = stl.ValidateFileInteractive stagedInteractive
+
+        let entityAfterDetachedValidation =
+            stl.AllEntities()
+            |> Seq.find (fun struct (entity, _) -> entity.filepath = updatePath)
+            |> fun struct (entity, _) -> entity
+
+        Expect.isTrue
+            (Object.ReferenceEquals(entityBeforePrepare, entityAfterDetachedValidation))
+            "Validating a prepared update must not mutate the live resource map"
+        Expect.isTrue
+            (detachedErrors |> List.exists (fun e -> e.message.Contains "invalid_interactive_key"))
+            $"Detached validation should report current-entity CWT errors: %A{detachedErrors |> List.map _.message}"
+
         Expect.isTrue
             (stl.CommitUpdateFileInteractive stagedInteractive)
             "Prepared editor update should commit"

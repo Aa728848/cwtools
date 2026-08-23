@@ -105,9 +105,11 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     let mutable ruleValidationService: RuleValidationService option = None
     let mutable infoService: InfoService option = None
 
+    let computeEntityData = computeFunction (fun () -> this.InfoService)
+
     let resourceManager =
         ResourceManager<'T>(
-            computeFunction (fun () -> this.InfoService),
+            computeEntityData,
             computeUpdateFunction (fun () -> this.InfoService),
             encoding,
             fallbackencoding,
@@ -428,15 +430,32 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
         true
 
-    /// Validate the committed editor resource without updating cross-file or
-    /// deep-validation caches. Those caches are repopulated by save/deep lint.
+    let stagedEntity (staged: StagedFileUpdate) =
+        staged.resourceUpdate.parsedEntity
+        |> Option.map (fun entity ->
+            let data =
+                System.Lazy<_>((fun () -> computeEntityData entity), System.Threading.LazyThreadSafetyMode.PublicationOnly)
+            struct (entity, data))
+
+    /// Validate a prepared editor resource without committing it to the live
+    /// resource map or updating cross-file/deep-validation caches.
     let validateFileInteractive (staged: StagedFileUpdate) =
         match staged.kind with
         | LocalisationFile -> []
         | ShaderFile -> PdxShaderFeatures.validate this.Resources staged.filepath staged.fileText
         | EntityFile ->
-            match resourceManager.Api.GetEntityByFilePath staged.filepath with
+            match stagedEntity staged with
             | Some entity -> validationManager.ValidateInteractiveDetached [ entity ]
+            | None -> []
+
+    let validateOverlayFile filepath fileText =
+        let staged = prepareUpdateFileInteractive filepath (Some fileText)
+        match staged.kind with
+        | LocalisationFile -> []
+        | ShaderFile -> PdxShaderFeatures.validate this.Resources staged.filepath staged.fileText
+        | EntityFile ->
+            match stagedEntity staged with
+            | Some entity -> validationManager.ValidateInteractiveDetachedPure [ entity ]
             | None -> []
 
     let validateFileInteractiveCancellable (staged: StagedFileUpdate) (shouldCancel: unit -> bool) =
@@ -449,7 +468,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 let result = PdxShaderFeatures.validate this.Resources staged.filepath staged.fileText
                 if shouldCancel () then None else Some result
             | EntityFile ->
-                match resourceManager.Api.GetEntityByFilePath staged.filepath with
+                match stagedEntity staged with
                 | Some entity -> validationManager.ValidateInteractiveDetachedCancellable([ entity ], shouldCancel)
                 | None -> Some []
 
@@ -787,6 +806,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member _.PrepareUpdateFileInteractive file text = prepareUpdateFileInteractive file text
     member _.CommitUpdateFileInteractive staged = commitUpdateFileInteractive staged
     member _.ValidateFileInteractive staged = validateFileInteractive staged
+    member _.ValidateOverlayFile filepath fileText = validateOverlayFile filepath fileText
     member _.ValidateFileInteractiveCancellable staged shouldCancel =
         validateFileInteractiveCancellable staged shouldCancel
     member _.ValidateFile shallow file = validateFile shallow file

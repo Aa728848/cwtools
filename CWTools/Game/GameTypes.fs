@@ -200,6 +200,9 @@ type IGame =
     abstract CommitUpdateFileInteractive: StagedFileUpdate -> bool
     /// Validate the committed editor resource without mutating validation caches.
     abstract ValidateFileInteractive: StagedFileUpdate -> CWError list
+    /// Parse and validate candidate text against the current single-file rule catalog
+    /// without committing it to the live resource map or validation caches.
+    abstract ValidateOverlayFile: string * string -> CWError list
     abstract ValidateFile: bool -> string -> CWError list
     /// Deep-validate several files in one validation round so shared indexes are built once.
     abstract ValidateFiles: string list -> CWError list
