@@ -1801,6 +1801,11 @@ let incrementalScriptedRefreshTests =
                   errors
                   |> List.filter (fun error -> error.message.Contains("overlay_effect", StringComparison.Ordinal))
 
+              let isolatedReferenceErrors = stl.ValidateOverlayFile(eventFile, reference "overlay_effect")
+              Expect.isNonEmpty
+                  (unresolved isolatedReferenceErrors)
+                  "the live single-file service must not know the detached definition"
+
               let resolved =
                   stl.ValidateOverlayFilesCancellable(
                       [ effectFile, definition; eventFile, reference "overlay_effect" ],
