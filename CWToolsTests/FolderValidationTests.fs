@@ -1788,6 +1788,48 @@ let incrementalScriptedRefreshTests =
                   stl.ForceDynamicParameterDataForFiles [ triggerFile; triggerFile; triggerFile + ".missing" ]
               Expect.equal forced 1 "targeted prewarm should force each loaded file at most once"
 
+          testWithCapturedLogs "detached overlay resolves definitions across candidate files" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let effectFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_effects", "test.txt"))
+              let eventFile = Path.GetFullPath(Path.Combine(folder, "events", "test.txt"))
+              let liveTypesBefore = stl.Types()
+              let liveEffectsBefore = stl.ScriptedEffects() |> List.map (fun effect -> effect.Name.GetString())
+              let definition = "overlay_effect = { set_country_flag = yes }"
+              let reference name =
+                  $"namespace = overlay\ncountry_event = {{ is_triggered_only = yes option = {{ {name} = yes }} }}"
+              let unresolved errors =
+                  errors
+                  |> List.filter (fun error -> error.message.Contains("overlay_effect", StringComparison.Ordinal))
+
+              let resolved =
+                  stl.ValidateOverlayFilesCancellable(
+                      [ effectFile, definition; eventFile, reference "overlay_effect" ],
+                      (fun () -> false))
+              Expect.isSome resolved "the detached batch should complete"
+              Expect.isEmpty
+                  (unresolved resolved.Value)
+                  $"a sibling overlay definition must be visible to its reference: %A{resolved.Value |> List.map _.message}"
+
+              let missing =
+                  stl.ValidateOverlayFilesCancellable(
+                      [ effectFile, definition; eventFile, reference "missing_overlay_effect" ],
+                      (fun () -> false))
+              Expect.isSome missing "the unresolved detached batch should complete"
+              Expect.isNonEmpty
+                  (missing.Value |> List.filter (fun error -> error.message.Contains("missing_overlay_effect", StringComparison.Ordinal)))
+                  "an absent sibling definition must remain unresolved"
+
+              let cancelled =
+                  stl.ValidateOverlayFilesCancellable(
+                      [ effectFile, definition; eventFile, reference "overlay_effect" ],
+                      (fun () -> true))
+              Expect.isNone cancelled "an already cancelled detached batch must publish no partial result"
+              Expect.equal (stl.Types()) liveTypesBefore "detached types must never commit to the live lookup"
+              Expect.equal
+                  (stl.ScriptedEffects() |> List.map (fun effect -> effect.Name.GetString()))
+                  liveEffectsBefore
+                  "detached scripted effects must never commit to the live lookup"
+
           testWithCapturedLogs "commit refreshes scripted parameter enums" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripteddefaults"
               let configtext = configFilesFromDir folder

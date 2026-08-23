@@ -252,6 +252,8 @@ type CustomGame(setupSettings: CustomSettings, gameFolderName: string) =
         member _.CommitUpdateFileInteractive staged = game.CommitUpdateFileInteractive staged
         member _.ValidateFileInteractive staged = game.ValidateFileInteractive staged
         member _.ValidateOverlayFile(file, text) = game.ValidateOverlayFile file text
+        member _.ValidateOverlayFilesCancellable(files, shouldCancel) =
+            game.ValidateOverlayFilesCancellable files shouldCancel
         member _.ValidateFile shallow file = game.ValidateFile shallow file
         member _.ValidateFiles files = game.ValidateFiles files
         member _.ValidateFilesLocalCancellable(files, shouldCancel) =

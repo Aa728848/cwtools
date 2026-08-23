@@ -203,6 +203,10 @@ type IGame =
     /// Parse and validate candidate text against the current single-file rule catalog
     /// without committing it to the live resource map or validation caches.
     abstract ValidateOverlayFile: string * string -> CWError list
+    /// Parse and validate a detached multi-file snapshot. Every candidate is visible
+    /// to the other candidates, and cancellation discards the complete result.
+    abstract ValidateOverlayFilesCancellable:
+        (string * string) list * (unit -> bool) -> CWError list option
     abstract ValidateFile: bool -> string -> CWError list
     /// Deep-validate several files in one validation round so shared indexes are built once.
     abstract ValidateFiles: string list -> CWError list

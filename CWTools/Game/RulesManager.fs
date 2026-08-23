@@ -1797,6 +1797,97 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 staged.completionService :?> CompletionService
             )
 
+    /// Build request-local rule services against detached entities. The temporary
+    /// resource API replaces live entities with the overlay as one immutable snapshot;
+    /// neither the live lookup nor resource maps are installed or mutated.
+    member _.PrepareOverlayValidationService(overlayEntities: struct (Entity * Lazy<'T>) list) =
+        let overlayByPath =
+            overlayEntities
+            |> Seq.map (fun (struct (entity, _) as pair) -> normaliseFilePath entity.filepath, pair)
+            |> Map.ofSeq
+
+        let allEntities =
+            resources.AllEntities()
+            |> Seq.filter (fun struct (entity, _) -> not (overlayByPath.ContainsKey(normaliseFilePath entity.filepath)))
+            |> Seq.append overlayEntities
+            |> Seq.toArray
+
+        let overlayFiles =
+            seq {
+                yield! resources.GetFileNames()
+                yield! overlayEntities |> Seq.map (fun struct (entity, _) -> entity.filepath)
+            }
+            |> Seq.distinct
+            |> Seq.toArray
+
+        let readOnly () = invalidOp "Detached overlay resources are read-only"
+        let overlayResources =
+            { new IResourceAPI<'T> with
+                member _.UpdateFiles = fun _ -> readOnly ()
+                member _.UpdateFile = fun _ -> readOnly ()
+                member _.RemoveFile = fun _ -> readOnly ()
+                member _.GetResources = fun () -> resources.GetResources()
+                member _.ValidatableFiles = fun () -> resources.ValidatableFiles()
+                member _.AllEntities = fun () -> allEntities :> seq<_>
+                member _.ValidatableEntities = fun () -> allEntities |> Array.toList
+                member _.ForceRecompute() = readOnly ()
+                member _.ForceDynamicParameterData(_, _) = readOnly ()
+                member _.ForceDynamicParameterDataForFiles _ = readOnly ()
+                // The refresh below forces request data where it consumes it. Do not
+                // prewarm live Lazy values from this detached request.
+                member _.ForceRulesDataGenerate() = ()
+                member _.GetInlineScriptCallers path = resources.GetInlineScriptCallers path
+                member _.RefreshInlineScriptCallers _ = readOnly ()
+                member _.GetFileNames = fun () -> overlayFiles :> seq<_>
+                member _.GetEntityByFilePath path = overlayByPath |> Map.tryFind (normaliseFilePath path)
+                                                    |> Option.orElseWith (fun () -> resources.GetEntityByFilePath path) }
+
+        let detachedLookup = lookup.ShallowClone() :?> 'L
+        let detachedManager: RulesManager<'T, 'L> =
+            RulesManager<'T, 'L>(
+                overlayResources, detachedLookup, settings, localisation, embeddedSettings, languages, debugMode)
+
+        settings.rulesSettings |> Option.iter (fun (rulesSettings: RulesSettings) -> detachedManager.LoadBaseConfig(rulesSettings))
+        match detachedManager.PrepareRefreshConfig() with
+        | Some(staged: StagedCacheRefresh) ->
+            detachedLookup.ApplyFieldSnapshot staged.lookupSnapshot
+            // Scripted definitions are ordinary types in the staged index. Add
+            // request-local effect/trigger links before rebuilding the final rule service.
+            let linksFor typeName effectType =
+                detachedLookup.typeDefInfo
+                |> Map.tryFind typeName
+                |> Option.defaultValue [||]
+                |> Array.map (fun info ->
+                    ScriptedEffect(
+                        CWTools.Utilities.StringResource.stringManager.InternIdentifierToken info.id,
+                        settings.allScopes, effectType, "", [], [], [], [])
+                    :> Effect)
+                |> Array.toList
+            let scriptedEffects = linksFor "scripted_effect" EffectType.Effect
+            let scriptedTriggers = linksFor "scripted_trigger" EffectType.Trigger
+            detachedLookup.onlyScriptedEffects <- scriptedEffects
+            detachedLookup.onlyScriptedTriggers <- scriptedTriggers
+            detachedLookup.allCoreLinks <-
+                detachedLookup.allCoreLinks
+                |> List.filter (fun link ->
+                    not (detachedLookup.onlyScriptedEffects |> List.exists (fun candidate -> candidate.Name = link.Name))
+                    && not (detachedLookup.onlyScriptedTriggers |> List.exists (fun candidate -> candidate.Name = link.Name)))
+                |> fun core -> core @ scriptedEffects @ scriptedTriggers
+            // Reload the unexpanded source rules so scripted type placeholders are
+            // expanded from this request's definitions rather than the live catalog.
+            settings.rulesSettings
+            |> Option.iter (fun rulesSettings -> detachedManager.LoadBaseConfig rulesSettings)
+            detachedLookup.configRules <-
+                settings.loadConfigRulesHook detachedLookup.configRules detachedLookup embeddedSettings
+            detachedManager.BuildValidationServiceForCurrentLookup()
+        | None -> invalidOp "Unable to prepare detached overlay rules"
+
+    member _.BuildValidationServiceForCurrentLookup() =
+        let typeMap = typeMapFromTypeDefInfo tempTypeMap lookup.typeDefInfo
+        let rulesWrapper = rulesWrapperFor lookup.configRules
+        let rules, _, _ = buildServices rulesWrapper typeMap (currentLoc ()) (currentFiles ())
+        rules
+
     member _.LoadBaseConfig(rulesSettings) = loadBaseConfig rulesSettings
     member _.RefreshConfig() =
         let result = refreshConfig ()

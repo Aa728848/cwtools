@@ -11,6 +11,7 @@ open CWTools.Utilities.Utils
 open System.IO
 open System.Collections.Generic
 open CWTools.Rules
+open CWTools.Validation
 
 
 
@@ -458,6 +459,59 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             | Some entity -> validationManager.ValidateInteractiveDetachedPure [ entity ]
             | None -> []
 
+    let validateOverlayFilesCancellable (files: (string * string) list) (shouldCancel: unit -> bool) =
+        if shouldCancel () then
+            None
+        else
+            let stagedFiles =
+                files
+                |> List.distinctBy (fst >> normaliseIncrementalPath)
+                |> List.map (fun (filepath, text) -> prepareUpdateFileInteractive filepath (Some text))
+
+            if shouldCancel () then
+                None
+            else
+                let entities = stagedFiles |> List.choose stagedEntity
+                let entityFiles =
+                    entities
+                    |> Seq.map (fun struct (entity, _) -> normaliseIncrementalPath entity.filepath)
+                    |> Set.ofSeq
+
+                let shaderErrors =
+                    stagedFiles
+                    |> List.collect (fun staged ->
+                        match staged.kind with
+                        | ShaderFile -> PdxShaderFeatures.validate this.Resources staged.filepath staged.fileText
+                        | _ -> [])
+
+                if shouldCancel () then
+                    None
+                elif entities.IsEmpty then
+                    Some shaderErrors
+                else
+                    let service = rulesManager.PrepareOverlayValidationService entities
+                    if shouldCancel () then
+                        None
+                    else
+                        let mutable cancelled = false
+                        let errors =
+                            entities
+                            |> List.collect (fun struct (entity, _) ->
+                                match service.RuleValidateEntityCancellable(entity, shouldCancel) with
+                                | None ->
+                                    cancelled <- true
+                                    []
+                                | Some result ->
+                                    match result with
+                                    | Invalid(_, diagnostics) ->
+                                        diagnostics
+                                        |> List.filter (fun error ->
+                                            error.code <> "CW100"
+                                            && entityFiles.Contains(normaliseIncrementalPath error.range.FileName))
+                                    | _ -> [])
+
+                        if cancelled || shouldCancel () then None else Some(shaderErrors @ errors)
+
     let validateFileInteractiveCancellable (staged: StagedFileUpdate) (shouldCancel: unit -> bool) =
         if shouldCancel () then
             None
@@ -807,6 +861,8 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member _.CommitUpdateFileInteractive staged = commitUpdateFileInteractive staged
     member _.ValidateFileInteractive staged = validateFileInteractive staged
     member _.ValidateOverlayFile filepath fileText = validateOverlayFile filepath fileText
+    member _.ValidateOverlayFilesCancellable files shouldCancel =
+        validateOverlayFilesCancellable files shouldCancel
     member _.ValidateFileInteractiveCancellable staged shouldCancel =
         validateFileInteractiveCancellable staged shouldCancel
     member _.ValidateFile shallow file = validateFile shallow file
