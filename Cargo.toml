@@ -8,6 +8,8 @@ members = [
     "crates/cwtools-script-syntax",
     "crates/cwtools-cwt-syntax",
     "crates/cwtools-rule-ir",
+    "crates/cwtools-cwt-service",
+    "crates/cwtools-cwt-project",
     "crates/cwtools-domain",
     "crates/cwtools-process",
     "crates/cwtools-scopes",

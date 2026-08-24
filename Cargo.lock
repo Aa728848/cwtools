@@ -12,6 +12,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "cwtools-cwt-project"
+version = "0.1.0"
+dependencies = [
+ "cwtools-cwt-service",
+ "cwtools-rule-ir",
+]
+
+[[package]]
+name = "cwtools-cwt-service"
+version = "0.1.0"
+dependencies = [
+ "cwtools-cwt-syntax",
+ "cwtools-rule-ir",
+]
+
+[[package]]
 name = "cwtools-cwt-syntax"
 version = "0.1.0"
 dependencies = [

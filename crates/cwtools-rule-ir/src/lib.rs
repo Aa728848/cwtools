@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
-#![allow(clippy::struct_excessive_bools, clippy::semicolon_if_nothing_returned)]
+#![allow(
+    clippy::struct_excessive_bools,
+    clippy::semicolon_if_nothing_returned,
+    clippy::too_many_lines
+)]
 
 use cwtools_cwt_syntax::{ByteRange, CstNode, parse_cwt};
 use std::collections::BTreeMap;
@@ -198,17 +202,34 @@ pub struct EnumDefinition {
     pub values: Vec<String>,
     pub values_with_range: Vec<(String, Option<ByteRange>)>,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct ComplexEnumDef {
     pub name: String,
     pub description: String,
     pub path: Option<String>,
     pub start_from_root: bool,
     pub opaque: String,
+    /// The optional name tree, retained as parsed rules rather than flattened text.
+    pub name_tree: Option<Vec<NewRule>>,
+    /// Range of the complete `complex_enum` assignment in the source.
+    pub range: Option<ByteRange>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct MetadataEntry {
+    pub values: Vec<String>,
+    pub value_ranges: Vec<ByteRange>,
+    pub range: Option<ByteRange>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ExtendedMetadata {
     pub sections: BTreeMap<String, BTreeMap<String, String>>,
+    pub priorities: Vec<MetadataEntry>,
+    pub override_modes_info: BTreeMap<String, MetadataEntry>,
+    pub system_scopes: BTreeMap<String, MetadataEntry>,
+    pub locales: BTreeMap<String, MetadataEntry>,
+    pub database_object_types: BTreeMap<String, MetadataEntry>,
+    pub on_actions: BTreeMap<String, MetadataEntry>,
+    pub raw_ranges: BTreeMap<String, Vec<ByteRange>>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Document {
@@ -217,6 +238,7 @@ pub struct Document {
     pub types: Vec<TypeDefinition>,
     pub enums: Vec<EnumDefinition>,
     pub complex_enums: Vec<ComplexEnumDef>,
+    pub metadata: ExtendedMetadata,
     pub values: Vec<NewField>,
     pub directives: BTreeMap<usize, Options>,
     pub comments: Vec<String>,
@@ -473,6 +495,52 @@ fn prop(clause: &CstNode, name: &str) -> Option<String> {
     }
     None
 }
+fn bare_values(clause: &CstNode) -> Vec<(String, Option<ByteRange>)> {
+    match clause {
+        CstNode::Clause { children, .. } => children
+            .iter()
+            .filter_map(|n| match n {
+                CstNode::Bare { token } => Some((token.value.clone(), Some(token.range))),
+                CstNode::Assignment { key: k, range, .. } => Some((key(k), Some(*range))),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    }
+}
+
+fn complex_enum(name: &str, clause: &CstNode, range: Option<ByteRange>) -> ComplexEnumDef {
+    let name_tree = if let CstNode::Clause { children, .. } = clause {
+        children.iter().find_map(|n| match n {
+            CstNode::Assignment { key: k, value, .. } if key(k) == "name" => {
+                if let CstNode::Clause { children, .. } = value.as_ref() {
+                    let mut pending = Vec::new();
+                    Some(
+                        comments_children(children, &mut pending)
+                            .into_iter()
+                            .filter_map(|(c, n)| make_rule(n, c).map(|(_, r)| r))
+                            .collect(),
+                    )
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+    } else {
+        None
+    };
+    ComplexEnumDef {
+        name: name.to_owned(),
+        description: prop(clause, "description").unwrap_or_default(),
+        path: prop(clause, "path"),
+        start_from_root: prop(clause, "start_from_root").is_some_and(|x| x == "yes" || x == "true"),
+        opaque: text(clause),
+        name_tree,
+        range,
+    }
+}
+
 fn type_def(name: &str, clause: &CstNode) -> TypeDefinition {
     let mut t = TypeDefinition {
         name: name.to_owned(),
@@ -485,14 +553,32 @@ fn type_def(name: &str, clause: &CstNode) -> TypeDefinition {
     t.unique = prop(clause, "unique").is_some_and(|x| x == "true");
     t.warning_only = prop(clause, "warning_only").is_some_and(|x| x == "true");
     if let CstNode::Clause { children, .. } = clause {
-        let mut p = Vec::new();
-        for (c, n) in comments_children(children, &mut p) {
-            if let Some((k, r)) = make_rule(n, c) {
-                t.subtypes.push(SubtypeDefinition {
-                    name: k,
-                    rules: vec![r],
-                    ..Default::default()
-                })
+        // Only explicit subtype[...] assignments define subtypes. Ordinary
+        // properties belong to the type itself and must never be reclassified.
+        for n in children {
+            if let CstNode::Assignment { key: k, value, .. } = n {
+                let k = key(k);
+                if let Some(subtype) = k.strip_prefix("subtype[").and_then(|x| x.strip_suffix(']'))
+                {
+                    if let CstNode::Clause { .. } = value.as_ref() {
+                        let mut s = SubtypeDefinition {
+                            name: subtype.to_owned(),
+                            ..Default::default()
+                        };
+                        if let CstNode::Clause {
+                            children: subchildren,
+                            ..
+                        } = value.as_ref()
+                        {
+                            let mut pending = Vec::new();
+                            s.rules = comments_children(subchildren, &mut pending)
+                                .into_iter()
+                                .filter_map(|(c, x)| make_rule(x, c).map(|(_, r)| r))
+                                .collect();
+                        }
+                        t.subtypes.push(s);
+                    }
+                }
             }
         }
     }
@@ -510,6 +596,7 @@ pub fn parse_document(file: &str, source: &str) -> Result<Document, Vec<String>>
         types: vec![],
         enums: vec![],
         complex_enums: vec![],
+        metadata: ExtendedMetadata::default(),
         values: vec![],
         directives: BTreeMap::new(),
         comments: vec![],
@@ -525,7 +612,45 @@ pub fn parse_document(file: &str, source: &str) -> Result<Document, Vec<String>>
             }
             CstNode::Assignment { key: k, value, .. } => {
                 let name = key(k);
-                if name == "types" {
+                if name == "enums" {
+                    if let CstNode::Clause { children, .. } = value.as_ref() {
+                        for x in children {
+                            if let CstNode::Assignment {
+                                key: ek,
+                                value: ev,
+                                range,
+                                ..
+                            } = x
+                            {
+                                let n = key(ek);
+                                if let Some(en) =
+                                    n.strip_prefix("enum[").and_then(|x| x.strip_suffix(']'))
+                                {
+                                    let pairs = bare_values(ev);
+                                    d.enums.push(EnumDefinition {
+                                        key: en.to_owned(),
+                                        description: String::new(),
+                                        values: pairs.iter().map(|x| x.0.clone()).collect(),
+                                        values_with_range: pairs,
+                                    });
+                                } else if let Some(en) = n
+                                    .strip_prefix("complex_enum[")
+                                    .and_then(|x| x.strip_suffix(']'))
+                                {
+                                    d.complex_enums.push(complex_enum(en, ev, Some(*range)));
+                                }
+                            }
+                        }
+                    }
+                } else if name == "values" {
+                    if let CstNode::Clause { children, .. } = value.as_ref() {
+                        for x in children {
+                            if let CstNode::Assignment { value: ev, .. } = x {
+                                d.values.push(field(ev));
+                            }
+                        }
+                    }
+                } else if name == "types" {
                     if let CstNode::Clause { children, .. } = value.as_ref() {
                         for x in children {
                             if let CstNode::Assignment {
