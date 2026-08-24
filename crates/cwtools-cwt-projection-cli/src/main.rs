@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 use cwtools_cwt_service::{
-    AnalysisResult, CompletionArgument, Diagnostic, Reference, Symbol, analyze_document,
+    AnalysisResult, CompletionArgument, Diagnostic, Range, Reference, Symbol, analyze_document,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
@@ -28,21 +28,47 @@ struct FileOutput {
     completion_arguments: Vec<WireCompletion>,
 }
 #[derive(Debug, Serialize)]
+struct WireRange {
+    #[serde(rename = "startLine")]
+    start_line: u32,
+    #[serde(rename = "startColumn")]
+    start_column: u32,
+    #[serde(rename = "endLine")]
+    end_line: u32,
+    #[serde(rename = "endColumn")]
+    end_column: u32,
+}
+#[derive(Debug, Serialize)]
 struct WireDiagnostic {
     phase: String,
     code: String,
     #[serde(rename = "messageKey")]
     message_key: String,
+    #[serde(flatten)]
+    range: WireRange,
 }
 #[derive(Debug, Serialize)]
 struct WireSymbol {
     kind: String,
     name: String,
+    #[serde(flatten)]
+    range: WireRange,
 }
 #[derive(Debug, Serialize)]
 struct WireReference {
     kind: String,
     name: String,
+    #[serde(flatten)]
+    range: WireRange,
+}
+
+fn wire_range(range: &Range) -> WireRange {
+    WireRange {
+        start_line: range.start.line,
+        start_column: range.start.character,
+        end_line: range.end.line,
+        end_column: range.end.character,
+    }
 }
 #[derive(Debug, Serialize)]
 struct WireCompletion {
@@ -55,6 +81,7 @@ fn diagnostic(d: &Diagnostic) -> WireDiagnostic {
         phase: d.phase.clone(),
         code: d.code.clone(),
         message_key: d.message_key.clone(),
+        range: wire_range(&d.range),
     }
 }
 fn kind_name(kind: cwtools_cwt_service::SymbolKind) -> String {
@@ -75,12 +102,14 @@ fn symbol(s: &Symbol) -> WireSymbol {
     WireSymbol {
         kind: kind_name(s.kind),
         name: s.name.clone(),
+        range: wire_range(&s.range),
     }
 }
 fn reference(r: &Reference) -> WireReference {
     WireReference {
         kind: kind_name(r.kind),
         name: r.name.clone(),
+        range: wire_range(&r.range),
     }
 }
 fn completion(c: &CompletionArgument) -> WireCompletion {
@@ -170,5 +199,29 @@ mod tests {
                     .iter()
                     .all(|c| !c.name.is_empty())
         );
+    }
+    #[test]
+    fn unicode_ranges_are_utf16() {
+        let o = parse(
+            r#"{"files":[{"path":"a.cwt","text":"😀 = scalar\ntype[名] = {}\nrule = <名>"}]}"#,
+        );
+        let s = o.files[0].symbols.iter().find(|s| s.name == "名").unwrap();
+        assert_eq!((s.range.start_line, s.range.start_column), (1, 0));
+        let r = o.files[0]
+            .references
+            .iter()
+            .find(|r| r.name == "名")
+            .unwrap();
+        assert_eq!((r.range.start_line, r.range.start_column), (2, 0));
+    }
+    #[test]
+    fn diagnostic_unicode_range_is_utf16() {
+        let o = parse(r#"{"files":[{"path":"a.cwt","text":"😀 = scalar\n## not_real = x"}]}"#);
+        let d = o.files[0]
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "CWT101")
+            .unwrap();
+        assert_eq!((d.range.start_line, d.range.start_column), (1, 0));
     }
 }

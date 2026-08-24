@@ -23,6 +23,8 @@ pub const DEFAULT_MAX_SIZE: u64 = 5 * 1024 * 1024;
 pub struct Diagnostic {
     pub code: String,
     pub message: String,
+    pub message_key: String,
+    pub phase: String,
     pub file: String,
     pub error: bool,
     pub blocking: bool,
@@ -90,10 +92,21 @@ pub fn ordered_content_hash(docs: &[ProjectDocument]) -> u64 {
         x
     })
 }
+fn message_key(code: &str) -> &'static str {
+    match code {
+        "CWT001" => "cwt.syntaxError",
+        "CWT301" => "cwt.undefinedReference",
+        "CWT302" => "cwt.duplicateType",
+        "CWT401" => "cwt.injectCycle",
+        _ => "cwt.unknown",
+    }
+}
 fn diag(file: &str, code: &str, message: String, error: bool, blocking: bool) -> Diagnostic {
     Diagnostic {
         code: code.into(),
         message,
+        message_key: message_key(code).into(),
+        phase: "semantic".into(),
         file: file.into(),
         error,
         blocking,
@@ -104,6 +117,8 @@ fn service_diag(file: &str, d: &cwtools_cwt_service::Diagnostic) -> Diagnostic {
     Diagnostic {
         code: d.code.clone(),
         message: format!("{} {:?}", d.message_key, d.args),
+        message_key: d.message_key.clone(),
+        phase: d.phase.clone(),
         file: file.into(),
         error,
         blocking: error || d.code == "CWT101",

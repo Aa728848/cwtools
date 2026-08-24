@@ -85,6 +85,7 @@ pub struct AnalysisResult {
 
 impl Position {
     fn at(source: &str, byte: usize) -> Self {
+        let beyond_eof = byte.saturating_sub(source.len()) as u32;
         let p = &source[..byte.min(source.len())];
         Self {
             line: p.bytes().filter(|b| *b == b'\n').count() as u32,
@@ -92,7 +93,8 @@ impl Position {
                 .rsplit_once('\n')
                 .map_or(p, |(_, x)| x)
                 .encode_utf16()
-                .count() as u32,
+                .count() as u32
+                + beyond_eof,
         }
     }
 }
@@ -155,14 +157,19 @@ fn add_completion(model: &mut DocumentModel, family: &str, name: &str, kind: Sym
 
 fn add_node(node: &CstNode, source: &str, model: &mut DocumentModel, top_block: Option<&str>) {
     match node {
-        CstNode::Assignment { key, value, .. } => {
-            if let Some((name, key_range)) = bare(key) {
+        CstNode::Assignment {
+            key,
+            value,
+            range: assignment_range,
+            ..
+        } => {
+            if let Some((name, _key_range)) = bare(key) {
                 if let Some((family, argument, kind)) = declaration(name) {
                     if kind != SymbolKind::Scope {
                         model.symbols.push(Symbol {
                             name: argument.to_owned(),
                             kind,
-                            range: range(source, key_range),
+                            range: range(source, *assignment_range),
                             detail: Some(family.to_owned()),
                         });
                     }
@@ -173,11 +180,11 @@ fn add_node(node: &CstNode, source: &str, model: &mut DocumentModel, top_block: 
                         add_completion(model, family, argument, kind);
                     }
                 } else if top_block == Some("links") {
-                    if let Some((child, child_range)) = bare(key) {
+                    if let Some((child, _child_range)) = bare(key) {
                         model.symbols.push(Symbol {
                             name: child.to_owned(),
                             kind: SymbolKind::Link,
-                            range: range(source, child_range),
+                            range: range(source, *assignment_range),
                             detail: Some("links".into()),
                         });
                     }
@@ -185,11 +192,11 @@ fn add_node(node: &CstNode, source: &str, model: &mut DocumentModel, top_block: 
                     model.symbols.push(Symbol {
                         name: name.trim_matches('"').to_owned(),
                         kind: SymbolKind::ModifierCategory,
-                        range: range(source, key_range),
+                        range: range(source, *assignment_range),
                         detail: Some("modifier_categories".into()),
                     });
                 }
-                scan_value_refs(value, source, model);
+                scan_value_refs(value, source, model, Some(*assignment_range));
             }
             let nested_top = match bare(key).map(|(x, _)| x) {
                 Some(name @ ("links" | "modifier_categories")) => Some(name),
@@ -212,7 +219,12 @@ fn add_node(node: &CstNode, source: &str, model: &mut DocumentModel, top_block: 
     }
 }
 
-fn scan_value_refs(node: &CstNode, source: &str, model: &mut DocumentModel) {
+fn scan_value_refs(
+    node: &CstNode,
+    source: &str,
+    model: &mut DocumentModel,
+    enclosing_range: Option<ByteRange>,
+) {
     match node {
         CstNode::Bare { token } => {
             let text = token.value.trim_matches('"');
@@ -249,16 +261,18 @@ fn scan_value_refs(node: &CstNode, source: &str, model: &mut DocumentModel) {
                 model.references.push(Reference {
                     name: name.to_owned(),
                     kind,
-                    range: range(source, token.range),
+                    range: range(source, enclosing_range.unwrap_or(token.range)),
                 });
             }
         }
         CstNode::Clause { children, .. } => {
             for child in children {
-                scan_value_refs(child, source, model);
+                scan_value_refs(child, source, model, enclosing_range);
             }
         }
-        CstNode::Assignment { value, .. } => scan_value_refs(value, source, model),
+        CstNode::Assignment { value, range, .. } => {
+            scan_value_refs(value, source, model, Some(*range))
+        }
         _ => {}
     }
 }
@@ -272,9 +286,14 @@ pub fn analyze_document(source: &str) -> AnalysisResult {
         model: DocumentModel::default(),
     };
     for e in parsed.diagnostics {
+        let offset = if e.message.contains("unclosed clause") {
+            source.len().saturating_add(1)
+        } else {
+            e.offset
+        };
         let r = ByteRange {
-            start: e.offset,
-            end: e.offset,
+            start: offset,
+            end: offset,
         };
         result.diagnostics.push(diagnostic(
             source,
@@ -315,6 +334,7 @@ pub fn analyze_document(source: &str) -> AnalysisResult {
             }
         }
         add_node(root, source, &mut result.model, None);
+        scan_semantic_nodes(root, source, &mut result);
     }
     scan_directives(source, &mut result);
     scan_injects(source, &mut result);
@@ -327,6 +347,15 @@ pub fn analyze_document(source: &str) -> AnalysisResult {
             .cmp(&b.range.start.line)
             .then(a.name.cmp(&b.name))
     });
+    result.diagnostics.sort_by(|a, b| {
+        a.code
+            .cmp(&b.code)
+            .then(a.range.start.line.cmp(&b.range.start.line))
+            .then(a.range.start.character.cmp(&b.range.start.character))
+    });
+    result
+        .diagnostics
+        .dedup_by(|a, b| a.code == b.code && a.message_key == b.message_key && a.range == b.range);
     result
         .model
         .references
@@ -351,45 +380,303 @@ pub fn analyze_document(source: &str) -> AnalysisResult {
         .dedup_by(|a, b| a.label == b.label && a.detail == b.detail && a.kind == b.kind);
     result
 }
+#[allow(clippy::too_many_lines)]
+fn scan_semantic_nodes(node: &CstNode, source: &str, result: &mut AnalysisResult) {
+    match node {
+        CstNode::Assignment {
+            key,
+            value,
+            range: assignment_range,
+            ..
+        } => {
+            if let Some((name, key_range)) = bare(key) {
+                if let Some((family, argument, _)) = declaration(name) {
+                    if argument.is_empty() {
+                        result.diagnostics.push(diagnostic(
+                            source,
+                            "CWT113",
+                            "cwt.emptyDeclaration",
+                            *assignment_range,
+                            vec![family.into()],
+                            DiagnosticSeverity::Error,
+                            "expression",
+                        ));
+                    }
+                }
+                if let CstNode::Bare { token } = value.as_ref() {
+                    let text = token.value.as_str();
+                    if let Some(open) = text.find('[') {
+                        let family = &text[..open];
+                        if declaration(name).is_none() {
+                            let known = [
+                                "int",
+                                "float",
+                                "value_field",
+                                "int_value_field",
+                                "variable_field",
+                                "int_variable_field",
+                                "variable_field_32",
+                                "int_variable_field_32",
+                                "enum",
+                                "complex_enum",
+                                "value",
+                                "value_set",
+                                "dynamic_value",
+                                "prefix_field",
+                                "alias_name",
+                                "alias_match_left",
+                                "alias_keys_field",
+                                "alias_params_field",
+                                "single_alias_right",
+                                "scope",
+                                "scope_group",
+                                "event_target",
+                                "colour",
+                                "color",
+                                "filepath",
+                                "filename",
+                                "icon",
+                                "name_format",
+                                "stellaris_name_format",
+                            ];
+                            let valid = text.ends_with(']')
+                                && text.len() > open + 2
+                                && (!matches!(
+                                    family,
+                                    "int"
+                                        | "float"
+                                        | "value_field"
+                                        | "int_value_field"
+                                        | "variable_field"
+                                        | "int_variable_field"
+                                        | "variable_field_32"
+                                        | "int_variable_field_32"
+                                ) || text[open + 1..text.len() - 1].contains(".."));
+                            if known.contains(&family) && !valid {
+                                result.diagnostics.push(diagnostic(
+                                    source,
+                                    "CWT201",
+                                    "cwt.illegalFieldExpression",
+                                    *assignment_range,
+                                    vec![family.into(), text.into()],
+                                    DiagnosticSeverity::Error,
+                                    "expression",
+                                ));
+                            } else if !known.contains(&family) {
+                                result.diagnostics.push(diagnostic(
+                                    source,
+                                    "CWT200",
+                                    "cwt.unknownFieldExpression",
+                                    *assignment_range,
+                                    vec![text.into()],
+                                    DiagnosticSeverity::Warning,
+                                    "expression",
+                                ));
+                            }
+                        }
+                    }
+                }
+                if let CstNode::Clause { children, .. } = value.as_ref() {
+                    if matches!(name, "types" | "enums" | "values") {
+                        for child in children {
+                            if let CstNode::Assignment {
+                                key: child_key,
+                                range: child_range,
+                                ..
+                            } = child
+                            {
+                                let child_name = bare(child_key).map_or("", |(x, _)| x);
+                                let expected = match name {
+                                    "types" => ["type"].as_slice(),
+                                    "enums" => ["enum", "complex_enum"].as_slice(),
+                                    _ => ["value"].as_slice(),
+                                };
+                                if let Some((cf, arg, _)) = declaration(child_name) {
+                                    if arg.is_empty() {
+                                        result.diagnostics.push(diagnostic(
+                                            source,
+                                            "CWT113",
+                                            "cwt.emptyDeclaration",
+                                            *child_range,
+                                            vec![cf.into()],
+                                            DiagnosticSeverity::Error,
+                                            "expression",
+                                        ));
+                                    }
+                                    if !expected.contains(&cf) {
+                                        result.diagnostics.push(diagnostic(
+                                            source,
+                                            match name {
+                                                "types" => "CWT110",
+                                                "enums" => "CWT111",
+                                                _ => "CWT112",
+                                            },
+                                            match name {
+                                                "types" => "cwt.invalidTypesDeclaration",
+                                                "enums" => "cwt.invalidEnumsDeclaration",
+                                                _ => "cwt.invalidValuesDeclaration",
+                                            },
+                                            *child_range,
+                                            vec![],
+                                            DiagnosticSeverity::Warning,
+                                            "expression",
+                                        ));
+                                    }
+                                } else if !child_name.is_empty() {
+                                    result.diagnostics.push(diagnostic(
+                                        source,
+                                        match name {
+                                            "types" => "CWT110",
+                                            "enums" => "CWT111",
+                                            _ => "CWT112",
+                                        },
+                                        match name {
+                                            "types" => "cwt.invalidTypesDeclaration",
+                                            "enums" => "cwt.invalidEnumsDeclaration",
+                                            _ => "cwt.invalidValuesDeclaration",
+                                        },
+                                        *child_range,
+                                        vec![],
+                                        DiagnosticSeverity::Warning,
+                                        "expression",
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    for child in children {
+                        scan_semantic_nodes(child, source, result);
+                    }
+                } else {
+                    scan_semantic_nodes(value, source, result);
+                }
+                let _ = key_range;
+            }
+        }
+        CstNode::Clause { children, .. } => {
+            for child in children {
+                scan_semantic_nodes(child, source, result);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[allow(clippy::too_many_lines, clippy::if_not_else)]
 fn scan_directives(source: &str, result: &mut AnalysisResult) {
-    for (line, text) in source.lines().enumerate() {
-        let t = text.trim();
+    let mut offset = 0usize;
+    for line in source.split_inclusive('\n') {
+        let content = line
+            .strip_suffix('\n')
+            .unwrap_or(line)
+            .strip_suffix('\r')
+            .unwrap_or(line.strip_suffix('\n').unwrap_or(line));
+        let t = content.trim();
         if t.starts_with("##") {
-            let body = t.trim_start_matches('#').trim();
-            if let Some((name, _value)) = body.split_once('=') {
-                let name = name.trim();
-                let known = [
-                    "cardinality",
-                    "severity",
-                    "description",
-                    "scope",
-                    "comparison",
-                    "inject",
-                    "required",
-                    "push_scope",
-                    "replace_scope",
-                    "file_extensions",
-                    "forbid_quoted_values",
-                ];
-                if !known.contains(&name) {
-                    let start: usize = source.lines().take(line).map(|x| x.len() + 1).sum();
+            let hash = content.find("##").unwrap_or(0);
+            let body = content[hash + 2..].trim();
+            let comment_range = ByteRange {
+                start: offset + hash,
+                end: offset + line.len(),
+            };
+            let (name, value, eq_pos) = if let Some(eq) = body.find('=') {
+                (body[..eq].trim(), Some(body[eq + 1..].trim()), Some(eq))
+            } else {
+                (body.trim(), None, None)
+            };
+            let known = [
+                "cardinality",
+                "severity",
+                "description",
+                "scope",
+                "comparison",
+                "inject",
+                "required",
+                "push_scope",
+                "replace_scope",
+                "file_extensions",
+                "forbid_quoted_values",
+            ];
+            if !known.contains(&name) {
+                result.diagnostics.push(diagnostic(
+                    source,
+                    "CWT101",
+                    "cwt.unknownDirective",
+                    comment_range,
+                    vec![name.into()],
+                    DiagnosticSeverity::Warning,
+                    "structure",
+                ));
+            } else {
+                let value = value.filter(|v| !v.is_empty());
+                if value.is_none()
+                    && matches!(
+                        name,
+                        "cardinality"
+                            | "severity"
+                            | "scope"
+                            | "comparison"
+                            | "inject"
+                            | "push_scope"
+                            | "replace_scope"
+                            | "file_extensions"
+                    )
+                {
                     result.diagnostics.push(diagnostic(
                         source,
-                        "CWT101",
-                        "cwt.unknownDirective",
-                        ByteRange {
-                            start,
-                            end: start + text.len(),
-                        },
+                        "CWT104",
+                        "cwt.directiveMissingValue",
+                        comment_range,
                         vec![name.into()],
                         DiagnosticSeverity::Warning,
                         "structure",
                     ));
+                } else if let Some(v) = value {
+                    let val_start = offset
+                        + hash
+                        + 2
+                        + eq_pos.unwrap_or(0)
+                        + 1
+                        + body[eq_pos.unwrap_or(0) + 1..].len()
+                        - body[eq_pos.unwrap_or(0) + 1..].trim_start().len();
+                    let vr = ByteRange {
+                        start: val_start,
+                        end: val_start + v.len(),
+                    };
+                    if name == "required" {
+                        result.diagnostics.push(diagnostic(
+                            source,
+                            "CWT104",
+                            "cwt.directiveValueNotAllowed",
+                            vr,
+                            vec![name.into()],
+                            DiagnosticSeverity::Warning,
+                            "structure",
+                        ));
+                    } else if name == "cardinality"
+                        && !(v.split_once("..").is_some_and(|(a, b)| {
+                            !a.is_empty()
+                                && !b.is_empty()
+                                && [a, b]
+                                    .iter()
+                                    .all(|x| *x == "inf" || x.chars().all(|c| c.is_ascii_digit()))
+                        }))
+                    {
+                        result.diagnostics.push(diagnostic(
+                            source,
+                            "CWT102",
+                            "cwt.illegalDirectiveValue",
+                            vr,
+                            vec![name.into(), v.into()],
+                            DiagnosticSeverity::Error,
+                            "structure",
+                        ));
+                    }
                 }
             }
         } else if t.starts_with('@') {
             let name = t.split_whitespace().next().unwrap_or(t);
-            let start: usize = source.lines().take(line).map(|x| x.len() + 1).sum();
+            let start = offset + content.find('@').unwrap_or(0);
             let allowed = ["@include", "@replace", "@hide", "@clear", "@trigger"];
             if !allowed.contains(&name) {
                 result.diagnostics.push(diagnostic(
@@ -408,16 +695,13 @@ fn scan_directives(source: &str, result: &mut AnalysisResult) {
             result.model.symbols.push(Symbol {
                 name: name.into(),
                 kind: SymbolKind::Directive,
-                range: Range {
-                    start: Position {
-                        line: line as u32,
-                        character: 0,
+                range: range(
+                    source,
+                    ByteRange {
+                        start,
+                        end: start + name.len(),
                     },
-                    end: Position {
-                        line: line as u32,
-                        character: name.encode_utf16().count() as u32,
-                    },
-                },
+                ),
                 detail: None,
             });
             if t.split_whitespace().count() < 2 {
@@ -435,6 +719,7 @@ fn scan_directives(source: &str, result: &mut AnalysisResult) {
                 ));
             }
         }
+        offset += line.len();
     }
 }
 fn scan_injects(source: &str, result: &mut AnalysisResult) {
@@ -678,7 +963,8 @@ enum[z] = { c }",
     #[test]
     fn real_fixture_files_parse() {
         for fixture in [LINKS, SCOPES, MODIFIERS] {
-            assert!(analyze_document(fixture).diagnostics.is_empty());
+            let diagnostics = analyze_document(fixture).diagnostics;
+            assert!(diagnostics.is_empty(), "{diagnostics:#?}");
         }
     }
 
