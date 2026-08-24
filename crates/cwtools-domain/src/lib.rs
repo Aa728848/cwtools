@@ -35,6 +35,11 @@ pub enum Value {
         typed: TypedValue,
     },
     Clause(Vec<Item>),
+    Colour {
+        typed: TypedValue,
+        range: ByteRange,
+        raw: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,7 +114,10 @@ fn convert_item(node: &CstNode) -> Option<Item> {
             raw: token.raw.clone(),
             range: token.range,
         }),
-        CstNode::Clause { .. } | CstNode::Trivia { .. } | CstNode::Error { .. } => None,
+        CstNode::Clause { .. }
+        | CstNode::ColourLiteral { .. }
+        | CstNode::Trivia { .. }
+        | CstNode::Error { .. } => None,
     }
 }
 
@@ -122,6 +130,11 @@ fn key_text(node: &CstNode) -> String {
 
 fn convert_value(node: &CstNode) -> Value {
     match node {
+        CstNode::ColourLiteral { typed, range, raw } => Value::Colour {
+            typed: typed.as_ref().clone(),
+            range: *range,
+            raw: raw.clone(),
+        },
         CstNode::Clause { children, .. } => Value::Clause(convert_items(children)),
         CstNode::Bare { token } => {
             let quoted = matches!(token.kind, TokenKind::QuotedString);
@@ -253,6 +266,15 @@ mod tests {
         let edit = replace_assignment_value(src, a, "2".into()).unwrap();
         let updated = apply_edits(src, &[edit]).unwrap();
         assert!(parse(&updated).is_ok());
+    }
+
+    #[test]
+    fn colour_literal_is_typed_domain_value() {
+        let cst = parse("colour = rgb { 1 2 3 }").unwrap();
+        let document = Document::from_cst(&cst);
+        assert!(
+            matches!(&document.children[0], Item::Assignment { value: Value::Colour { typed: TypedValue::Rgb(values), .. }, .. } if values == &[1, 2, 3])
+        );
     }
 
     #[test]

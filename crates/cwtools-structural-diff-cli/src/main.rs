@@ -43,6 +43,9 @@ fn node(value: &CstNode) -> Value {
         CstNode::Trivia { token } | CstNode::Error { token } => {
             json!({ "kind": "unknown", "raw": token.raw })
         }
+        CstNode::ColourLiteral { typed, .. } => {
+            json!({ "kind": "bare", "value": typed_projection(typed.as_ref()) })
+        }
     }
 }
 
@@ -52,12 +55,28 @@ fn key_value(value: &CstNode) -> String {
         _ => String::new(),
     }
 }
+fn typed_projection(value: &TypedValue) -> Value {
+    match value {
+        TypedValue::Rgb(values) => {
+            json!({ "kind": "rgb", "raw": values.iter().map(i64::to_string).collect::<Vec<_>>().join(" "), "children": [] })
+        }
+        TypedValue::Hsv {
+            components,
+            degrees,
+        } => {
+            json!({ "kind": if *degrees { "hsv360" } else { "hsv" }, "raw": components.join(" "), "children": [] })
+        }
+        _ => json!({ "kind": "unknown", "raw": "", "children": [] }),
+    }
+}
+
 fn value_projection(value: &CstNode) -> Value {
     match value {
         CstNode::Bare { token } => scalar(token),
         CstNode::Clause { children, .. } => {
             json!({ "kind": "clause", "raw": "", "children": children.iter().map(node).collect::<Vec<_>>() })
         }
+        CstNode::ColourLiteral { typed, .. } => typed_projection(typed.as_ref()),
         other => node(other),
     }
 }

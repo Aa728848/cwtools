@@ -299,6 +299,11 @@ pub enum CstNode {
     Error {
         token: Token,
     },
+    ColourLiteral {
+        raw: String,
+        typed: Box<TypedValue>,
+        range: ByteRange,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cst {
@@ -418,6 +423,73 @@ impl<'a> Parser<'a> {
             }
         }
     }
+    fn colour_literal(&mut self) -> Option<Box<CstNode>> {
+        let head = self.peek().clone();
+        let lower = head.value.to_ascii_lowercase();
+        if lower != "rgb" && lower != "hsv" {
+            return None;
+        }
+        self.take();
+        let mut qualifier = None;
+        if lower == "hsv" && self.peek().value == "360" {
+            qualifier = Some(self.take());
+        }
+        if !matches!(self.peek().kind, TokenKind::LBrace) {
+            self.errors
+                .push(error(self.src, "invalid colour literal", head.range.start));
+            return None;
+        }
+        let open = self.take();
+        let mut components = Vec::new();
+        while !matches!(self.peek().kind, TokenKind::RBrace | TokenKind::Eof) {
+            components.push(self.take());
+        }
+        let close = if matches!(self.peek().kind, TokenKind::RBrace) {
+            Some(self.take())
+        } else {
+            None
+        };
+        let valid_count = (3..=4).contains(&components.len());
+        let valid_types = if lower == "rgb" {
+            components.iter().all(|t| t.value.parse::<i64>().is_ok())
+        } else {
+            components
+                .iter()
+                .all(|token| token.value.parse::<f64>().is_ok())
+        };
+        if close.is_none() || !valid_count || !valid_types {
+            self.errors.push(error(
+                self.src,
+                "invalid colour components",
+                head.range.start,
+            ));
+        }
+        let typed = if lower == "rgb" {
+            TypedValue::Rgb(
+                components
+                    .iter()
+                    .filter_map(|t| t.value.parse().ok())
+                    .collect(),
+            )
+        } else {
+            TypedValue::Hsv {
+                components: components.iter().map(|t| t.value.clone()).collect(),
+                degrees: qualifier.is_some(),
+            }
+        };
+        let end = close
+            .as_ref()
+            .map_or(open.range.end, |token| token.range.end);
+        Some(Box::new(CstNode::ColourLiteral {
+            raw: self.src[head.range.start..end].to_owned(),
+            typed: Box::new(typed),
+            range: ByteRange {
+                start: head.range.start,
+                end,
+            },
+        }))
+    }
+
     fn nodes(&mut self, in_clause: bool) -> Vec<CstNode> {
         let mut v = Vec::new();
         loop {
@@ -496,6 +568,22 @@ impl<'a> Parser<'a> {
                         range: ByteRange {
                             start: key_start,
                             end: at,
+                        },
+                    });
+                    continue;
+                }
+                if let Some(colour) = self.colour_literal() {
+                    let end = match colour.as_ref() {
+                        CstNode::ColourLiteral { range, .. } => range.end,
+                        _ => unreachable!(),
+                    };
+                    v.push(CstNode::Assignment {
+                        key: Box::new(CstNode::Bare { token: key }),
+                        operator: op,
+                        value: colour,
+                        range: ByteRange {
+                            start: key_start,
+                            end,
                         },
                     });
                     continue;
@@ -599,6 +687,10 @@ fn print_nodes(ns: &[CstNode], depth: usize, out: &mut String) {
                 out.push(' ');
                 print_nodes(std::slice::from_ref(value), depth, out);
                 out.push('\n')
+            }
+            CstNode::ColourLiteral { raw, .. } => {
+                out.push_str(raw);
+                out.push(' ');
             }
             CstNode::Clause { children, .. } => {
                 out.push_str("{\n");
@@ -784,6 +876,10 @@ fn print_canonical_nodes(nodes: &[CstNode], depth: usize, output: &mut String) {
                 output.push_str(&"\t".repeat(depth));
                 output.push_str("}\n");
             }
+            CstNode::ColourLiteral { raw, .. } => {
+                output.push_str(raw);
+                output.push('\n');
+            }
         }
     }
 }
@@ -794,6 +890,7 @@ fn render_node_inline(node: &CstNode) -> String {
         | CstNode::Error { token }
         | CstNode::Comment { token }
         | CstNode::Trivia { token } => render_token(token),
+        CstNode::ColourLiteral { raw, .. } => raw.clone(),
         CstNode::Clause { .. } | CstNode::Assignment { .. } => String::new(),
     }
 }
@@ -969,6 +1066,18 @@ mod tests {
             })
         );
         assert_eq!(classify_colour_literal("rgb { 1 2 }"), None);
+    }
+
+    #[test]
+    fn colour_literals_are_assignment_values() {
+        let source =
+            "a = rgb { 1 2 3 } b = RGB { 1 2 3 4 } c = HSV { 0.1 0.2 0.3 } d = hsv 360 { 1 2 3 4 }";
+        let parsed = parse(source).unwrap();
+        assert_eq!(parsed.roots.len(), 4);
+        assert!(parsed.roots.iter().all(|node| matches!(node, CstNode::Assignment { value, .. } if matches!(value.as_ref(), CstNode::ColourLiteral { .. }))));
+        assert_eq!(parse(&print_canonical(&parsed)).unwrap().roots.len(), 4);
+        assert!(parse("bad = rgb { 1 2 }").is_err());
+        assert!(parse("bad = HSV { one two three }").is_err());
     }
 
     #[test]
