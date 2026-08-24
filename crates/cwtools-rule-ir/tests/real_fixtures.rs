@@ -3,16 +3,16 @@ use cwtools_rule_ir::{NewField, RootRule, RuleKind, SkipRootKey, ValueType, pars
 fn fixture(path: &str) -> cwtools_rule_ir::Document {
     let source = match path {
         "types" => include_str!(
-            "../../../CWToolsTests/testfiles/configtests/rulestests/STL/types/rules.cwt"
+            "../../../fixtures/testfiles/configtests/rulestests/STL/types/rules.cwt"
         ),
         "enums" => include_str!(
-            "../../../CWToolsTests/testfiles/configtests/rulestests/STL/enums/rules.cwt"
+            "../../../fixtures/testfiles/configtests/rulestests/STL/enums/rules.cwt"
         ),
         "aliases" => include_str!(
-            "../../../CWToolsTests/testfiles/configtests/rulestests/STL/aliases/rules.cwt"
+            "../../../fixtures/testfiles/configtests/rulestests/STL/aliases/rules.cwt"
         ),
         "values" => include_str!(
-            "../../../CWToolsTests/testfiles/configtests/rulestests/STL/values/rules.cwt"
+            "../../../fixtures/testfiles/configtests/rulestests/STL/values/rules.cwt"
         ),
         _ => unreachable!(),
     };

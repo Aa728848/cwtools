@@ -1067,11 +1067,11 @@ fn declaration_items(line: &str, symbols: &[Symbol]) -> Vec<CompletionArgument> 
 mod tests {
     use super::*;
     const LINKS: &str =
-        include_str!("../../../CWToolsTests/testfiles/stellarisconfig/config/links.cwt");
+        include_str!("../../../fixtures/testfiles/stellarisconfig/config/links.cwt");
     const SCOPES: &str =
-        include_str!("../../../CWToolsTests/testfiles/stellarisconfig/config/scopes.cwt");
+        include_str!("../../../fixtures/testfiles/stellarisconfig/config/scopes.cwt");
     const MODIFIERS: &str = include_str!(
-        "../../../CWToolsTests/testfiles/stellarisconfig/config/modifier_categories.cwt"
+        "../../../fixtures/testfiles/stellarisconfig/config/modifier_categories.cwt"
     );
 
     #[test]

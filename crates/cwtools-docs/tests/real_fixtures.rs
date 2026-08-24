@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 fn fixture(name: &str) -> Vec<u8> {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("../../CWToolsTests/testfiles/parsertests/stellarisnewdocs");
+    path.push("../../fixtures/testfiles/parsertests/stellarisnewdocs");
     path.push(name);
     fs::read(path).unwrap()
 }

@@ -24,7 +24,7 @@ fn collect_cwt_files(root: &Path, files: &mut Vec<PathBuf>) {
 
 #[test]
 fn all_cwt_fixtures_parse() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../CWToolsTests");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
     let mut files = Vec::new();
     collect_cwt_files(&root, &mut files);
     files.sort();
