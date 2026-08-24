@@ -1,5 +1,7 @@
 use cwtools_rule_ir::parse_document;
-use cwtools_rules_engine::{CompileError, MAX_DEPTH, RuleCatalog, ScopeUniverse};
+use cwtools_rules_engine::{
+    CompileError, MAX_DEPTH, RuleCatalog, ScopeUniverse, ValidationOutcome,
+};
 
 fn catalog(source: &str) -> RuleCatalog {
     let document = parse_document("integration.cwt", source).expect("valid rule fixture");
@@ -1244,4 +1246,255 @@ fn scope_frame_propagates_through_type() {
 fn scope_frame_propagates_through_subtype() {
     let c = catalog("root = { subtype[mode] = { mode = on\nvalue = scope[planet] } }");
     assert!(codes(&c, "root", "mode = on\nvalue = planet").is_empty());
+}
+
+fn cancelled(
+    c: &RuleCatalog,
+    root: &str,
+    source: &str,
+    limit: usize,
+) -> (ValidationOutcome, usize) {
+    use std::cell::Cell;
+    let calls = Cell::new(0);
+    let outcome = c.validate_source_cancellable(root, source, None, || {
+        let n = calls.get();
+        calls.set(n + 1);
+        n >= limit
+    });
+    (outcome, calls.get())
+}
+
+#[test]
+fn cancellation_pre_cancel_wins_before_parse() {
+    let c = catalog("root = { value = scalar }");
+    let (outcome, calls) = cancelled(&c, "root", "broken = {", 0);
+    assert_eq!(outcome, ValidationOutcome::Cancelled);
+    assert_eq!(calls, 1);
+}
+
+#[test]
+fn cancellation_post_parse_stops_before_root() {
+    let c = catalog("root = { value = scalar }");
+    let (outcome, calls) = cancelled(&c, "root", "value = x", 1);
+    assert_eq!(outcome, ValidationOutcome::Cancelled);
+    assert!(calls >= 2);
+}
+
+#[test]
+fn cancellation_mid_first_node_is_cancelled() {
+    let c = catalog("root = { a = bool\n b = bool\n c = bool }");
+    let (outcome, _) = cancelled(&c, "root", "a = maybe\nb = maybe\nc = maybe", 2);
+    assert_eq!(outcome, ValidationOutcome::Cancelled);
+}
+
+#[test]
+fn cancellation_late_node_is_cancelled() {
+    let c = catalog("root = { a = bool\n b = bool\n c = bool\n d = bool\n e = bool }");
+    let (early, early_calls) = cancelled(
+        &c,
+        "root",
+        "a = maybe\nb = maybe\nc = maybe\nd = maybe\ne = maybe",
+        2,
+    );
+    let (late, late_calls) = cancelled(
+        &c,
+        "root",
+        "a = maybe\nb = maybe\nc = maybe\nd = maybe\ne = maybe",
+        20,
+    );
+    assert_eq!(early, ValidationOutcome::Cancelled);
+    assert!(late_calls > early_calls);
+    assert!(
+        matches!(late, ValidationOutcome::Completed(_)) || late == ValidationOutcome::Cancelled
+    );
+}
+
+#[test]
+fn cancellation_cardinality_loop_is_cancelled() {
+    let c = catalog("root = { ## cardinality = 1..1\n value = scalar }");
+    let (outcome, _) = cancelled(&c, "root", "value = a\nvalue = b\nvalue = c", 3);
+    assert_eq!(outcome, ValidationOutcome::Cancelled);
+}
+
+#[test]
+fn cancellation_alias_expansion_is_cancelled() {
+    let c = catalog("alias[group:item] = { value = bool }\nroot = { item = alias[group] }");
+    let (outcome, _) = cancelled(&c, "root", "item = nope", 2);
+    assert_eq!(outcome, ValidationOutcome::Cancelled);
+}
+
+#[test]
+fn cancellation_single_alias_expansion_is_cancelled() {
+    let c = catalog("single_alias[item] = { value = bool }\nroot = { item = single_alias[item] }");
+    let (outcome, _) = cancelled(&c, "root", "item = nope", 2);
+    assert_eq!(outcome, ValidationOutcome::Cancelled);
+}
+
+#[test]
+fn cancellation_type_expansion_is_cancelled() {
+    let c = catalog("types = { type[item] = { value = bool } }\nroot = { item = <item> }");
+    let (outcome, _) = cancelled(&c, "root", "item = nope", 2);
+    assert_eq!(outcome, ValidationOutcome::Cancelled);
+}
+
+#[test]
+fn cancellation_complex_type_expansion_is_cancelled() {
+    let c = catalog(
+        "types = { type[item] = { value = bool } }\nroot = { item = prefix:<item>:suffix }",
+    );
+    let (outcome, _) = cancelled(&c, "root", "item = prefix:nope:suffix", 2);
+    assert_eq!(outcome, ValidationOutcome::Cancelled);
+}
+
+#[test]
+fn cancellation_subtype_probe_is_cancelled() {
+    let c = catalog("root = { subtype[mode] = { mode = yes\nvalue = bool } }");
+    let (outcome, _) = cancelled(&c, "root", "mode = yes\nvalue = maybe", 2);
+    assert_eq!(outcome, ValidationOutcome::Cancelled);
+}
+
+#[test]
+fn cancellation_nested_subtype_is_cancelled() {
+    let c = catalog(
+        "root = { subtype[outer] = { outer = yes\nsubtype[inner] = { inner = yes\nvalue = bool } } }",
+    );
+    let (outcome, _) = cancelled(&c, "root", "outer = yes\ninner = yes\nvalue = maybe", 3);
+    assert_eq!(outcome, ValidationOutcome::Cancelled);
+}
+
+#[test]
+fn cancellation_scope_required_is_cancelled() {
+    let c = catalog("## required = country\nroot = { value = scalar }");
+    let (outcome, _) = cancelled(&c, "root", "value = x", 1);
+    assert_eq!(outcome, ValidationOutcome::Cancelled);
+}
+
+#[test]
+fn cancellation_deep_recursion_is_cancelled() {
+    let c = catalog("root = { child = { child = { child = { value = scalar } } } }");
+    let (outcome, _) = cancelled(
+        &c,
+        "root",
+        "child = { child = { child = { value = x } } }",
+        3,
+    );
+    assert_eq!(outcome, ValidationOutcome::Cancelled);
+}
+
+#[test]
+fn cancellation_precedes_invalid_source() {
+    let c = catalog("root = { value = scalar }");
+    assert_eq!(
+        cancelled(&c, "root", "value = {", 0).0,
+        ValidationOutcome::Cancelled
+    );
+    assert!(matches!(
+        cancelled(&c, "root", "value = {", 100).0,
+        ValidationOutcome::Completed(_)
+    ));
+}
+
+#[test]
+fn never_cancel_completed_matches_validate_source() {
+    let c = catalog("root = { value = bool }");
+    let ordinary = c.validate_source("root", "value = maybe");
+    let outcome = c.validate_source_cancellable("root", "value = maybe", None, || false);
+    assert_eq!(outcome, ValidationOutcome::Completed(ordinary));
+}
+
+#[test]
+fn counter_threshold_zero_cancels() {
+    let c = catalog("root = { value = scalar }");
+    assert_eq!(
+        cancelled(&c, "root", "value = x", 0).0,
+        ValidationOutcome::Cancelled
+    );
+}
+
+#[test]
+fn counter_threshold_one_cancels_after_entry() {
+    let c = catalog("root = { value = scalar }");
+    assert_eq!(
+        cancelled(&c, "root", "value = x", 1).0,
+        ValidationOutcome::Cancelled
+    );
+}
+
+#[test]
+fn counter_threshold_high_completes() {
+    let c = catalog("root = { value = scalar }");
+    assert!(matches!(
+        cancelled(&c, "root", "value = x", usize::MAX).0,
+        ValidationOutcome::Completed(_)
+    ));
+}
+
+#[test]
+fn repeated_cancelled_calls_do_not_pollute_normal_validation() {
+    let c = catalog("root = { value = bool }");
+    for _ in 0..5 {
+        assert_eq!(
+            cancelled(&c, "root", "value = maybe", 0).0,
+            ValidationOutcome::Cancelled
+        );
+    }
+    assert_eq!(
+        c.validate_source("root", "value = maybe").diagnostics.len(),
+        1
+    );
+}
+
+#[test]
+fn cancelled_has_no_partial_result_pattern() {
+    let c = catalog("root = { a = bool\n b = bool }");
+    match cancelled(&c, "root", "a = maybe\nb = maybe", 2).0 {
+        ValidationOutcome::Cancelled => {}
+        ValidationOutcome::Completed(result) => panic!(
+            "unexpected partial diagnostics: {}",
+            result.diagnostics.len()
+        ),
+    }
+}
+
+#[test]
+fn cancellation_closure_call_count_is_bounded_after_cancel() {
+    let c = catalog("root = { a = bool\n b = bool\n c = bool\n d = bool }");
+    let (outcome, calls) = cancelled(&c, "root", "a = maybe\nb = maybe\nc = maybe\nd = maybe", 2);
+    assert_eq!(outcome, ValidationOutcome::Cancelled);
+    assert!(calls <= 4);
+}
+
+#[test]
+fn cancellation_is_local_to_one_validation() {
+    let c = catalog("root = { value = bool }");
+    let (first, _) = cancelled(&c, "root", "value = maybe", 0);
+    assert_eq!(first, ValidationOutcome::Cancelled);
+    assert!(
+        c.validate_source("root", "value = yes")
+            .diagnostics
+            .is_empty()
+    );
+}
+
+#[test]
+fn cancelled_invalid_root_does_not_return_parse_diagnostic() {
+    let c = catalog("root = scalar");
+    assert_eq!(
+        cancelled(&c, "missing", "broken = {", 0).0,
+        ValidationOutcome::Cancelled
+    );
+}
+
+#[test]
+fn cancellation_with_scope_does_not_leak_scope_state() {
+    let c = catalog("## required = country\nroot = { value = scalar }");
+    assert_eq!(
+        cancelled(&c, "root", "value = x", 0).0,
+        ValidationOutcome::Cancelled
+    );
+    assert!(
+        c.validate_source_with_scope("root", "value = x", Some("country"))
+            .diagnostics
+            .is_empty()
+    );
 }

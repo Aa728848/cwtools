@@ -7,6 +7,19 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const MAX_RULES: usize = 100_000;
 pub const MAX_DEPTH: usize = 256;
 
+struct CancelCheck<'a> {
+    check: &'a mut dyn FnMut() -> bool,
+    cancelled: bool,
+}
+impl CancelCheck<'_> {
+    fn poll(&mut self) -> bool {
+        if !self.cancelled && (self.check)() {
+            self.cancelled = true;
+        }
+        self.cancelled
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct ScopeFrame {
     root: Option<String>,
@@ -79,6 +92,13 @@ pub struct Diagnostic {
 pub struct ValidationResult {
     pub diagnostics: Vec<Diagnostic>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ValidationOutcome {
+    Completed(ValidationResult),
+    Cancelled,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompileError {
     TooManyRules,
@@ -170,7 +190,39 @@ impl RuleCatalog {
     }
     #[must_use]
     pub fn validate_source(&self, root_rule_name: &str, source: &str) -> ValidationResult {
-        self.validate_source_with_scope(root_rule_name, source, None)
+        match self.validate_source_cancellable(root_rule_name, source, None, || false) {
+            ValidationOutcome::Completed(result) => result,
+            ValidationOutcome::Cancelled => ValidationResult::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn validate_source_cancellable<F>(
+        &self,
+        root_rule_name: &str,
+        source: &str,
+        initial_scope: Option<&str>,
+        mut should_cancel: F,
+    ) -> ValidationOutcome
+    where
+        F: FnMut() -> bool,
+    {
+        if should_cancel() {
+            return ValidationOutcome::Cancelled;
+        }
+        let mut cancel = CancelCheck {
+            check: &mut should_cancel,
+            cancelled: false,
+        };
+        match self.validate_source_with_scope_inner(
+            root_rule_name,
+            source,
+            initial_scope,
+            &mut cancel,
+        ) {
+            Some(result) => ValidationOutcome::Completed(result),
+            None => ValidationOutcome::Cancelled,
+        }
     }
     #[must_use]
     pub fn validate_source_with_scope(
@@ -179,6 +231,24 @@ impl RuleCatalog {
         source: &str,
         initial_scope: Option<&str>,
     ) -> ValidationResult {
+        let mut never = || false;
+        let mut cancel = CancelCheck {
+            check: &mut never,
+            cancelled: false,
+        };
+        self.validate_source_with_scope_inner(root_rule_name, source, initial_scope, &mut cancel)
+            .unwrap_or_default()
+    }
+    fn validate_source_with_scope_inner(
+        &self,
+        root_rule_name: &str,
+        source: &str,
+        initial_scope: Option<&str>,
+        cancel: &mut CancelCheck<'_>,
+    ) -> Option<ValidationResult> {
+        if cancel.poll() {
+            return None;
+        }
         let mut out = ValidationResult::default();
         let Ok(cst) = syntax::parse(source) else {
             out.diagnostics.push(Diagnostic {
@@ -190,7 +260,7 @@ impl RuleCatalog {
                     end: source.len(),
                 },
             });
-            return out;
+            return Some(out);
         };
         let Some(rule) = self.find(root_rule_name) else {
             out.diagnostics.push(diag(
@@ -199,7 +269,7 @@ impl RuleCatalog {
                 ByteRange { start: 0, end: 0 },
                 vec![],
             ));
-            return out;
+            return Some(out);
         };
         let mut ctx = BTreeSet::new();
         let frame = initial_scope
@@ -210,6 +280,9 @@ impl RuleCatalog {
             })
             .unwrap_or_default();
         for required in &rule.options.required_scopes {
+            if cancel.poll() {
+                return None;
+            }
             let ok = frame
                 .current
                 .as_deref()
@@ -232,7 +305,12 @@ impl RuleCatalog {
                 ));
             }
         }
-        self.validate_nodes(&rule.kind, &cst.roots, &mut out, &mut ctx, 0, &frame);
+        self.validate_nodes(
+            &rule.kind, &cst.roots, &mut out, &mut ctx, 0, &frame, cancel,
+        );
+        if cancel.cancelled {
+            return None;
+        }
         out.diagnostics.sort_by(|a, b| {
             (a.range.start, a.range.end, a.code.as_str(), a.key.as_str()).cmp(&(
                 b.range.start,
@@ -241,7 +319,7 @@ impl RuleCatalog {
                 b.key.as_str(),
             ))
         });
-        out
+        Some(out)
     }
     #[must_use]
     pub fn completion(&self, root: &str, prefix: &str) -> Vec<String> {
@@ -313,6 +391,7 @@ impl RuleCatalog {
     fn type_rules(&self, n: &str) -> Option<&Vec<NewRule>> {
         self.types.get(&n.to_ascii_lowercase())
     }
+    #[allow(clippy::too_many_arguments)]
     fn validate_nodes(
         &self,
         kind: &RuleKind,
@@ -321,6 +400,7 @@ impl RuleCatalog {
         seen: &mut BTreeSet<String>,
         depth: usize,
         frame: &ScopeFrame,
+        cancel: &mut CancelCheck<'_>,
     ) {
         if depth > MAX_DEPTH {
             out.diagnostics.push(diag(
@@ -337,10 +417,13 @@ impl RuleCatalog {
         else {
             return;
         };
-        let effective_rules = self.active_rules(rules, nodes, seen, depth, frame);
+        let effective_rules = self.active_rules(rules, nodes, seen, depth, frame, cancel);
         let rules = effective_rules.as_slice();
         let mut occurrences: BTreeMap<String, Vec<ByteRange>> = BTreeMap::new();
         for n in nodes {
+            if cancel.poll() {
+                return;
+            }
             if let CstNode::Assignment {
                 key, value, range, ..
             } = n
@@ -375,9 +458,9 @@ impl RuleCatalog {
                 let matched_name = field_name(&r.kind).to_ascii_lowercase();
                 occurrences.entry(matched_name).or_default().push(*range);
                 if let Some(alias) = self.left_alias_rule(&r.kind, &k) {
-                    self.validate_named_rule(alias, n, value, out, seen, depth, frame);
+                    self.validate_named_rule(alias, n, value, out, seen, depth, frame, cancel);
                 } else {
-                    self.validate_rule(r, n, value, out, seen, depth, frame);
+                    self.validate_rule(r, n, value, out, seen, depth, frame, cancel);
                 }
             }
         }
@@ -416,12 +499,16 @@ impl RuleCatalog {
         seen: &BTreeSet<String>,
         depth: usize,
         frame: &ScopeFrame,
+        cancel: &mut CancelCheck<'_>,
     ) -> Vec<NewRule> {
         if depth > MAX_DEPTH {
             return Vec::new();
         }
         let mut active = BTreeMap::new();
         for rule in rules {
+            if cancel.poll() {
+                return Vec::new();
+            }
             if let RuleKind::Subtype {
                 name,
                 primary: true,
@@ -441,6 +528,7 @@ impl RuleCatalog {
                     &mut probe_seen,
                     depth + 1,
                     frame,
+                    cancel,
                 );
                 active.insert(
                     name.to_ascii_lowercase(),
@@ -453,6 +541,9 @@ impl RuleCatalog {
         }
         let mut result = Vec::new();
         for rule in rules {
+            if cancel.poll() {
+                return Vec::new();
+            }
             match &rule.kind {
                 RuleKind::Subtype {
                     name,
@@ -464,7 +555,14 @@ impl RuleCatalog {
                         .copied()
                         .unwrap_or(false);
                     if (*primary && primary_active) || (!*primary && !primary_active) {
-                        result.extend(self.active_rules(children, nodes, seen, depth + 1, frame));
+                        result.extend(self.active_rules(
+                            children,
+                            nodes,
+                            seen,
+                            depth + 1,
+                            frame,
+                            cancel,
+                        ));
                     }
                 }
                 _ => result.push(rule.clone()),
@@ -495,6 +593,7 @@ impl RuleCatalog {
         seen: &mut BTreeSet<String>,
         depth: usize,
         frame: &ScopeFrame,
+        cancel: &mut CancelCheck<'_>,
     ) {
         let name = field_name(&r.kind).to_ascii_lowercase();
         if !seen.insert(name.clone()) {
@@ -502,7 +601,7 @@ impl RuleCatalog {
                 .push(diag("RULE130", &name, n_range(n), vec![name.clone()]));
             return;
         }
-        self.validate_rule(r, n, v, out, seen, depth, frame);
+        self.validate_rule(r, n, v, out, seen, depth, frame, cancel);
         seen.remove(&field_name(&r.kind).to_ascii_lowercase());
     }
     #[allow(clippy::too_many_arguments)]
@@ -515,8 +614,12 @@ impl RuleCatalog {
         seen: &mut BTreeSet<String>,
         depth: usize,
         frame: &ScopeFrame,
+        cancel: &mut CancelCheck<'_>,
     ) {
         for required in &r.options.required_scopes {
+            if cancel.poll() {
+                return;
+            }
             let valid = frame
                 .current
                 .as_deref()
@@ -540,7 +643,15 @@ impl RuleCatalog {
             RuleKind::Node { .. } | RuleKind::ValueClause { .. } | RuleKind::Subtype { .. } => {
                 if let CstNode::Clause { children, .. } = v {
                     let child_frame = frame.apply(&r.options);
-                    self.validate_nodes(&r.kind, children, out, seen, depth + 1, &child_frame);
+                    self.validate_nodes(
+                        &r.kind,
+                        children,
+                        out,
+                        seen,
+                        depth + 1,
+                        &child_frame,
+                        cancel,
+                    );
                 } else {
                     out.diagnostics
                         .push(diag("RULE102", &field_name(&r.kind), n_range(n), vec![]));
@@ -548,7 +659,7 @@ impl RuleCatalog {
             }
             RuleKind::Leaf { right, .. } | RuleKind::LeafValue { right } => {
                 if matches!(v, CstNode::Bare { .. } | CstNode::ColourLiteral { .. }) {
-                    self.validate_value(right, v, out, seen, depth, frame);
+                    self.validate_value(right, v, out, seen, depth, frame, cancel);
                 } else {
                     out.diagnostics
                         .push(diag("RULE103", &field_name(&r.kind), n_range(v), vec![]));
@@ -573,6 +684,7 @@ impl RuleCatalog {
         depth: usize,
         _prefix: &str,
         frame: &ScopeFrame,
+        cancel: &mut CancelCheck<'_>,
     ) {
         let key = name.to_ascii_lowercase();
         if !seen.insert(format!("type:{key}")) {
@@ -580,7 +692,10 @@ impl RuleCatalog {
         }
         if let Some(rules) = self.type_rules(name) {
             for r in rules {
-                self.validate_rule_value(r, raw, v, out, seen, depth, frame);
+                if cancel.poll() {
+                    break;
+                }
+                self.validate_rule_value(r, raw, v, out, seen, depth, frame, cancel);
             }
         } else {
             out.diagnostics
@@ -598,7 +713,11 @@ impl RuleCatalog {
         _seen: &mut BTreeSet<String>,
         _depth: usize,
         frame: &ScopeFrame,
+        cancel: &mut CancelCheck<'_>,
     ) {
+        if cancel.poll() {
+            return;
+        }
         if let RuleKind::Leaf { right, .. } | RuleKind::LeafValue { right } = &r.kind {
             self.validate_value_text(right, raw, n_range(v), out, frame);
         }
@@ -648,7 +767,7 @@ impl RuleCatalog {
             }
         }
     }
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn validate_value(
         &self,
         f: &NewField,
@@ -657,7 +776,11 @@ impl RuleCatalog {
         seen: &mut BTreeSet<String>,
         depth: usize,
         frame: &ScopeFrame,
+        cancel: &mut CancelCheck<'_>,
     ) {
+        if cancel.poll() {
+            return;
+        }
         let raw = bare(v);
         let (ty, key) = match f {
             NewField::Value(t) => (Some(t), raw.as_str()),
@@ -665,7 +788,7 @@ impl RuleCatalog {
             NewField::Aliases(group) => {
                 let key = format!("{group}:{raw}").to_ascii_lowercase();
                 if let Some(rule) = self.aliases.get(&key) {
-                    self.validate_named_rule(rule, v, v, out, seen, depth + 1, frame);
+                    self.validate_named_rule(rule, v, v, out, seen, depth + 1, frame, cancel);
                 } else {
                     out.diagnostics
                         .push(diag("RULE130", &key, n_range(v), vec![key.clone()]));
@@ -675,7 +798,7 @@ impl RuleCatalog {
             NewField::SingleAlias(name) => {
                 let key = name.to_ascii_lowercase();
                 if let Some(rule) = self.single.get(&key) {
-                    self.validate_named_rule(rule, v, v, out, seen, depth + 1, frame);
+                    self.validate_named_rule(rule, v, v, out, seen, depth + 1, frame, cancel);
                 } else {
                     out.diagnostics
                         .push(diag("RULE130", &key, n_range(v), vec![key.clone()]));
@@ -713,7 +836,7 @@ impl RuleCatalog {
                 return;
             }
             NewField::Type(ir::TypeType::Simple(name)) => {
-                self.validate_type(name, &raw, v, out, seen, depth, "", frame);
+                self.validate_type(name, &raw, v, out, seen, depth, "", frame, cancel);
                 return;
             }
             NewField::Type(ir::TypeType::Complex {
@@ -729,7 +852,7 @@ impl RuleCatalog {
                         .push(diag("RULE120", &raw, n_range(v), vec![name.clone()]));
                 } else {
                     let inner = &raw[prefix.len()..raw.len() - suffix.len()];
-                    self.validate_type(name, inner, v, out, seen, depth, "", frame);
+                    self.validate_type(name, inner, v, out, seen, depth, "", frame, cancel);
                 }
                 return;
             }
