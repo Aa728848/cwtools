@@ -389,7 +389,7 @@ impl RuleCatalog {
                 out.diagnostics.push(diag(
                     "RULE110",
                     &name,
-                    r.range,
+                    ByteRange { start: 0, end: 0 },
                     vec![name.clone(), r.options.min.to_string()],
                 ));
             }
@@ -543,7 +543,7 @@ impl RuleCatalog {
                     self.validate_nodes(&r.kind, children, out, seen, depth + 1, &child_frame);
                 } else {
                     out.diagnostics
-                        .push(diag("RULE102", &field_name(&r.kind), r.range, vec![]));
+                        .push(diag("RULE102", &field_name(&r.kind), n_range(n), vec![]));
                 }
             }
             RuleKind::Leaf { right, .. } | RuleKind::LeafValue { right } => {
@@ -633,9 +633,7 @@ impl RuleCatalog {
                 ),
                 ValueType::Int(a, b) => key.parse::<i64>().map_or(true, |x| x < *a || x > *b),
                 ValueType::Float(a, b) => key.parse::<f64>().map_or(true, |x| x < *a || x > *b),
-                ValueType::Percent => key
-                    .parse::<f64>()
-                    .map_or(true, |x| !(0.0..=100.0).contains(&x)),
+                ValueType::Percent => !valid_percent(key),
                 ValueType::Date => !valid_date(key),
                 ValueType::DateTime => !valid_datetime(key),
                 ValueType::Enum(name) => self
@@ -745,9 +743,7 @@ impl RuleCatalog {
                 ),
                 ValueType::Int(a, b) => key.parse::<i64>().map_or(true, |x| x < *a || x > *b),
                 ValueType::Float(a, b) => key.parse::<f64>().map_or(true, |x| x < *a || x > *b),
-                ValueType::Percent => key
-                    .parse::<f64>()
-                    .map_or(true, |x| !(0.0..=100.0).contains(&x)),
+                ValueType::Percent => !valid_percent(key),
                 ValueType::Date => !valid_date(key),
                 ValueType::DateTime => !valid_datetime(key),
                 ValueType::Enum(name) => self
@@ -763,6 +759,11 @@ impl RuleCatalog {
         }
     }
 }
+fn valid_percent(s: &str) -> bool {
+    s.strip_suffix('%')
+        .is_some_and(|number| number.parse::<f64>().is_ok())
+}
+
 fn valid_parameter(s: &str) -> bool {
     let parts: Vec<&str> = s.split('|').collect();
     (parts.len() == 1 || parts.len() == 2)
@@ -935,21 +936,18 @@ fn days_in_month(year: u32, month: u32) -> u32 {
 }
 fn valid_datetime(s: &str) -> bool {
     let parts: Vec<_> = s.split('.').collect();
-    if parts.len() != 6 || !valid_date(&parts[..3].join(".")) {
+    if !(4..=6).contains(&parts.len()) || !valid_date(&parts[..3].join(".")) {
         return false;
     }
     let time_parts = &parts[3..];
-    if time_parts.len() != 3 {
-        return false;
-    }
     let Ok(hour) = time_parts[0].parse::<u32>() else {
         return false;
     };
-    let Ok(minute) = time_parts[1].parse::<u32>() else {
-        return false;
-    };
-    let Ok(second) = time_parts[2].parse::<u32>() else {
-        return false;
-    };
-    hour < 24 && minute < 60 && second < 60
+    let minute = time_parts
+        .get(1)
+        .map_or(Some(0), |value| value.parse::<u32>().ok());
+    let second = time_parts
+        .get(2)
+        .map_or(Some(0), |value| value.parse::<u32>().ok());
+    minute.is_some_and(|value| value < 60) && second.is_some_and(|value| value < 60) && hour < 24
 }

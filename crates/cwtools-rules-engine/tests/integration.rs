@@ -194,8 +194,8 @@ fn percent_rejects_above_hundred() {
 }
 #[test]
 fn percent_accepts_zero_and_hundred() {
-    let c = catalog("root = { p = percent }");
-    assert!(codes(&c, "root", "p = 0").is_empty() && codes(&c, "root", "p = 100").is_empty());
+    let c = catalog("root = { p = percentage_field }");
+    assert!(codes(&c, "root", "p = 0%").is_empty() && codes(&c, "root", "p = 100%").is_empty());
 }
 #[test]
 fn date_accepts_leap_day() {

@@ -2,6 +2,7 @@
 
 use cwtools_rule_ir::parse_document;
 use cwtools_rules_engine::{RuleCatalog, ScopeUniverse};
+use cwtools_source::LineIndex;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
 
@@ -53,6 +54,14 @@ struct WireDiagnostic {
     args: Vec<String>,
     start: usize,
     end: usize,
+    #[serde(rename = "startLine")]
+    start_line: u32,
+    #[serde(rename = "startColumn")]
+    start_column: u32,
+    #[serde(rename = "endLine")]
+    end_line: u32,
+    #[serde(rename = "endColumn")]
+    end_column: u32,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -98,17 +107,38 @@ fn execute(input: Input) -> Output {
                 &input.source,
                 input.initial_scope.as_deref(),
             );
-            let mut diagnostics: Vec<_> = result
+            let line_index = LineIndex::new(&input.source);
+            let diagnostics = result
                 .diagnostics
                 .into_iter()
-                .map(|d| WireDiagnostic {
-                    code: d.code,
-                    key: d.key,
-                    args: d.args,
-                    start: d.range.start,
-                    end: d.range.end,
+                .map(|d| {
+                    let start = line_index
+                        .position(&input.source, d.range.start)
+                        .ok_or_else(|| {
+                            format!("invalid diagnostic start byte boundary: {}", d.range.start)
+                        })?;
+                    let end = line_index
+                        .position(&input.source, d.range.end)
+                        .ok_or_else(|| {
+                            format!("invalid diagnostic end byte boundary: {}", d.range.end)
+                        })?;
+                    Ok(WireDiagnostic {
+                        code: d.code,
+                        key: d.key,
+                        args: d.args,
+                        start: d.range.start,
+                        end: d.range.end,
+                        start_line: start.line,
+                        start_column: start.character,
+                        end_line: end.line,
+                        end_column: end.character,
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<_>, String>>();
+            let mut diagnostics = match diagnostics {
+                Ok(value) => value,
+                Err(message) => return error("diagnostic", message),
+            };
             diagnostics.sort_by(|a, b| {
                 (a.start, a.end, &a.code, &a.key, &a.args)
                     .cmp(&(b.start, b.end, &b.code, &b.key, &b.args))
@@ -293,5 +323,76 @@ mod tests {
     fn error_is_json() {
         let out = serde_json::to_string(&error("input", "bad")).unwrap();
         assert!(out.contains("error"));
+    }
+
+    #[test]
+    fn ascii_position() {
+        assert_eq!(
+            LineIndex::new("abc").position("abc", 1).unwrap().character,
+            1
+        );
+    }
+    #[test]
+    fn multiline_position() {
+        let source = "a\nb";
+        assert_eq!(LineIndex::new(source).position(source, 2).unwrap().line, 1);
+    }
+    #[test]
+    fn crlf_position() {
+        let source = "a\r\nb";
+        assert_eq!(LineIndex::new(source).position(source, 3).unwrap().line, 1);
+    }
+    #[test]
+    fn emoji_before_range() {
+        assert_eq!(
+            LineIndex::new("😀x").position("😀x", 4).unwrap().character,
+            2
+        );
+    }
+    #[test]
+    fn emoji_value_position() {
+        assert_eq!(
+            LineIndex::new("v=😀")
+                .position("v=😀", 6)
+                .unwrap()
+                .character,
+            4
+        );
+    }
+    #[test]
+    fn range_at_eof() {
+        assert_eq!(
+            LineIndex::new("abc").position("abc", 3).unwrap().character,
+            3
+        );
+    }
+    #[test]
+    fn unknown_position() {
+        assert_eq!(
+            LineIndex::new("unknown")
+                .position("unknown", 7)
+                .unwrap()
+                .character,
+            7
+        );
+    }
+    #[test]
+    fn cardinality_position() {
+        let source = "x\ny";
+        assert_eq!(LineIndex::new(source).position(source, 2).unwrap().line, 1);
+    }
+    #[test]
+    fn value_position() {
+        assert_eq!(
+            LineIndex::new("value")
+                .position("value", 5)
+                .unwrap()
+                .character,
+            5
+        );
+    }
+    #[test]
+    fn invalid_boundary_position() {
+        assert!(LineIndex::new("😀").position("😀", 1).is_none());
     }
 }

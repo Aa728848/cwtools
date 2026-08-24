@@ -298,8 +298,11 @@ fn typed(s: &str) -> NewField {
     if s == "bool" {
         return NewField::Value(ValueType::Bool);
     }
-    if s == "percent" {
+    if matches!(s, "percentage_field" | "int_percentage_field") {
         return NewField::Value(ValueType::Percent);
+    }
+    if s == "float" {
+        return NewField::Value(ValueType::Float(-f64::MAX, f64::MAX));
     }
     if s == "localisation" {
         return NewField::Localisation {
@@ -390,8 +393,8 @@ fn typed(s: &str) -> NewField {
         return NewField::SingleAlias(x.to_owned());
     }
     match s {
-        "date" | "date_field" => NewField::Value(ValueType::Date),
-        "datetime" | "datetime_field" => NewField::Value(ValueType::DateTime),
+        "date_field" => NewField::Value(ValueType::Date),
+        "datetime_field" => NewField::Value(ValueType::DateTime),
         "CK2DNA" => NewField::Value(ValueType::CK2DNA),
         _ => NewField::Specific(s.to_owned()),
     }
