@@ -5,7 +5,14 @@ fn catalog(source: &str) -> RuleCatalog {
     let document = parse_document("integration.cwt", source).expect("valid rule fixture");
     RuleCatalog::compile(
         &[document],
-        ScopeUniverse::new(["country".into(), "planet".into(), "ship".into()]),
+        ScopeUniverse::new([
+            "country".into(),
+            "planet".into(),
+            "ship".into(),
+            "fleet".into(),
+            "system".into(),
+            "moon".into(),
+        ]),
     )
     .expect("catalog compiles")
 }
@@ -1009,4 +1016,232 @@ fn subtype_activation_respects_max_validation_depth() {
         source.push_str(" }");
     }
     assert!(has(&c, "root", &source, "RULE150") || has(&c, "root", &source, "RULE001"));
+}
+
+// ScopeFrame regression coverage: every frame slot is observable through scope values.
+#[test]
+fn scope_frame_root_initial_exact_required_pass_fail() {
+    let c = catalog("## required = galaxy\nroot = { value = scalar }");
+    assert!(codes(&c, "root", "value = x").contains(&"RULE140".to_string()));
+    assert!(
+        !c.validate_source_with_scope("root", "value = x", Some("galaxy"))
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "RULE140")
+    );
+}
+#[test]
+fn scope_frame_push_nested_required_passes() {
+    let c = catalog(
+        "root = { ## push_scope = planet\nchild = { ## required = planet\nvalue = scalar } }",
+    );
+    assert!(!has(&c, "root", "child = { value = x }", "RULE140"));
+}
+#[test]
+fn scope_frame_parent_required_checked_before_push() {
+    let c = catalog(
+        "## required = country\nroot = { ## push_scope = planet\nchild = { value = scalar } }",
+    );
+    assert!(
+        c.validate_source_with_scope("root", "child = { value = x }", Some("ship"))
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "RULE140")
+    );
+    assert!(
+        !c.validate_source_with_scope("root", "child = { value = x }", Some("country"))
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "RULE140")
+    );
+}
+#[test]
+fn scope_frame_wrong_child_scope_fails() {
+    let c = catalog(
+        "root = { ## push_scope = planet\nchild = { ## required = ship\nvalue = scalar } }",
+    );
+    assert!(has(&c, "root", "child = { value = x }", "RULE140"));
+}
+#[test]
+fn scope_frame_nested_double_push() {
+    let c = catalog(
+        "root = { ## push_scope = planet\na = { ## push_scope = ship\nb = { ## required = ship\nvalue = scalar } } }",
+    );
+    assert!(!has(&c, "root", "a = { b = { value = x } }", "RULE140"));
+}
+#[test]
+fn scope_frame_sibling_isolation() {
+    let c = catalog(
+        "root = { ## push_scope = planet\na = { ## required = planet\nvalue = scalar }\nb = { ## required = planet\nvalue = scalar } }",
+    );
+    assert!(!has(
+        &c,
+        "root",
+        "a = { value = x }\nb = { value = x }",
+        "RULE140"
+    ));
+}
+#[test]
+fn scope_frame_replace_this_nested_passes() {
+    let c = catalog(
+        "root = { ## replace_scope = { this = ship }\nchild = { ## required = ship\nvalue = scalar } }",
+    );
+    assert!(!has(&c, "root", "child = { value = x }", "RULE140"));
+}
+#[test]
+fn scope_frame_replace_this_wrong_fails() {
+    let c = catalog(
+        "root = { ## replace_scope = { this = ship }\nchild = { ## required = planet\nvalue = scalar } }",
+    );
+    assert!(has(&c, "root", "child = { value = x }", "RULE140"));
+}
+#[test]
+fn scope_frame_replace_root_value_check() {
+    let c = catalog(
+        "root = { ## replace_scope = { root = system }\nchild = { value = scope[system] } }",
+    );
+    assert!(codes(&c, "root", "child = { value = system }").is_empty());
+    assert!(has(&c, "root", "child = { value = country }", "RULE120"));
+}
+#[test]
+fn scope_frame_replace_this_value_check() {
+    let c =
+        catalog("root = { ## replace_scope = { this = ship }\nchild = { value = scope[ship] } }");
+    assert!(codes(&c, "root", "child = { value = ship }").is_empty());
+    assert!(has(&c, "root", "child = { value = planet }", "RULE120"));
+}
+#[test]
+fn scope_frame_replace_from_value_check() {
+    let c =
+        catalog("root = { ## replace_scope = { from = fleet }\nchild = { value = scope[fleet] } }");
+    assert!(codes(&c, "root", "child = { value = fleet }").is_empty());
+    assert!(has(&c, "root", "child = { value = country }", "RULE120"));
+}
+#[test]
+fn scope_frame_replace_prev_value_check() {
+    let c =
+        catalog("root = { ## replace_scope = { prev = moon }\nchild = { value = scope[moon] } }");
+    assert!(codes(&c, "root", "child = { value = moon }").is_empty());
+    assert!(has(&c, "root", "child = { value = country }", "RULE120"));
+}
+#[test]
+fn scope_frame_push_precedence_over_replace() {
+    let c = catalog(
+        "root = { ## push_scope = ship\n## replace_scope = { this = planet }\nchild = { value = scope[ship] } }",
+    );
+    assert!(codes(&c, "root", "child = { value = ship }").is_empty());
+    assert!(has(&c, "root", "child = { value = planet }", "RULE120"));
+}
+#[test]
+fn scope_frame_nested_unknown_push_compile_error() {
+    let d = parse_document(
+        "x",
+        "root = { ## push_scope = galaxy\nchild = { value = scalar } }",
+    )
+    .unwrap();
+    assert!(
+        matches!(RuleCatalog::compile(&[d], ScopeUniverse::new(["country".into()])), Err(CompileError::UnknownScope(s)) if s == "galaxy")
+    );
+}
+#[test]
+fn scope_frame_unknown_replace_root_compile_error() {
+    let d = parse_document(
+        "x",
+        "root = { ## replace_scope = { root = galaxy }\nchild = { value = scalar } }",
+    )
+    .unwrap();
+    assert!(
+        matches!(RuleCatalog::compile(&[d],ScopeUniverse::new(["country".into()])),Err(CompileError::UnknownScope(s)) if s=="galaxy")
+    );
+}
+#[test]
+fn scope_frame_unknown_replace_this_compile_error() {
+    let d = parse_document(
+        "x",
+        "root = { ## replace_scope = { this = galaxy }\nchild = { value = scalar } }",
+    )
+    .unwrap();
+    assert!(
+        matches!(RuleCatalog::compile(&[d],ScopeUniverse::new(["country".into()])),Err(CompileError::UnknownScope(s)) if s=="galaxy")
+    );
+}
+#[test]
+fn scope_frame_unknown_replace_from_compile_error() {
+    let d = parse_document(
+        "x",
+        "root = { ## replace_scope = { from = galaxy }\nchild = { value = scalar } }",
+    )
+    .unwrap();
+    assert!(
+        matches!(RuleCatalog::compile(&[d],ScopeUniverse::new(["country".into()])),Err(CompileError::UnknownScope(s)) if s=="galaxy")
+    );
+}
+#[test]
+fn scope_frame_unknown_replace_prev_compile_error() {
+    let d = parse_document(
+        "x",
+        "root = { ## replace_scope = { prev = galaxy }\nchild = { value = scalar } }",
+    )
+    .unwrap();
+    assert!(
+        matches!(RuleCatalog::compile(&[d],ScopeUniverse::new(["country".into()])),Err(CompileError::UnknownScope(s)) if s=="galaxy")
+    );
+}
+#[test]
+fn scope_frame_empty_universe_accepts_literal() {
+    let d = parse_document("x", "root = { value = scope[literal] }").unwrap();
+    let c = RuleCatalog::compile(&[d], ScopeUniverse::default()).unwrap();
+    assert!(codes(&c, "root", "value = literal").is_empty());
+}
+#[test]
+fn scope_field_accepts_literal() {
+    let c = catalog("root = { value = scope[literal] }");
+    assert!(codes(&c, "root", "value = literal").is_empty());
+}
+#[test]
+fn scope_field_accepts_current_fallback() {
+    let c = catalog("root = { ## push_scope = planet\nchild = { value = scope[] } }");
+    assert!(codes(&c, "root", "child = { value = planet }").is_empty());
+}
+#[test]
+fn scope_field_accepts_root_fallback() {
+    let c =
+        catalog("root = { ## replace_scope = { root = country }\nchild = { value = scope[] } }");
+    assert!(codes(&c, "root", "child = { value = country }").is_empty());
+}
+#[test]
+fn scope_field_accepts_from_fallback() {
+    let c = catalog("root = { ## replace_scope = { from = fleet }\nchild = { value = scope[] } }");
+    assert!(codes(&c, "root", "child = { value = fleet }").is_empty());
+}
+#[test]
+fn scope_field_accepts_prev_fallback() {
+    let c = catalog("root = { ## replace_scope = { prev = moon }\nchild = { value = scope[] } }");
+    assert!(codes(&c, "root", "child = { value = moon }").is_empty());
+}
+#[test]
+fn scope_field_rejects_unknown_value() {
+    let c = catalog("root = { value = scope[country] }");
+    assert!(has(&c, "root", "value = galaxy", "RULE120"));
+}
+#[test]
+fn scope_field_accepts_range_literal() {
+    let c = catalog("root = { value = scope[country,planet] }");
+    assert!(codes(&c, "root", "value = planet").is_empty());
+}
+#[test]
+fn scope_frame_propagates_through_alias() {
+    let c = catalog("alias[child:planet] = scope[planet]\nroot = { child = alias[child] }");
+    assert!(codes(&c, "root", "child = planet").is_empty());
+}
+#[test]
+fn scope_frame_propagates_through_type() {
+    let c =
+        catalog("types = { type[child] = { value = scope[planet] } }\nroot = { child = <child> }");
+    assert!(codes(&c, "root", "child = planet").is_empty());
+}
+#[test]
+fn scope_frame_propagates_through_subtype() {
+    let c = catalog("root = { subtype[mode] = { mode = on\nvalue = scope[planet] } }");
+    assert!(codes(&c, "root", "mode = on\nvalue = planet").is_empty());
 }

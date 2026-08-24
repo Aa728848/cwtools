@@ -7,6 +7,55 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const MAX_RULES: usize = 100_000;
 pub const MAX_DEPTH: usize = 256;
 
+#[derive(Clone, Debug, Default)]
+struct ScopeFrame {
+    root: Option<String>,
+    current: Option<String>,
+    froms: Vec<String>,
+    prevs: Vec<String>,
+}
+impl ScopeFrame {
+    fn apply(&self, options: &ir::Options) -> Self {
+        if let Some(scope) = &options.push_scope {
+            let mut next = self.clone();
+            if let Some(current) = &self.current {
+                next.prevs.insert(0, current.clone());
+            }
+            next.current = Some(scope.clone());
+            return next;
+        }
+        let mut next = self.clone();
+        if let Some(r) = &options.replace_scopes {
+            if r.root.is_some() {
+                next.root.clone_from(&r.root);
+            }
+            if r.this.is_some() {
+                next.current.clone_from(&r.this);
+            }
+            if let Some(froms) = &r.froms {
+                next.froms.clone_from(froms);
+            }
+            if let Some(prevs) = &r.prevs {
+                next.prevs.clone_from(prevs);
+            }
+        }
+        next
+    }
+    fn allows(&self, raw: &str, universe: &ScopeUniverse) -> bool {
+        [self.root.as_deref(), self.current.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|x| x.eq_ignore_ascii_case(raw))
+            || self
+                .froms
+                .iter()
+                .chain(&self.prevs)
+                .any(|x| x.eq_ignore_ascii_case(raw))
+            || (self.current.is_none()
+                && universe.names.iter().any(|x| x.eq_ignore_ascii_case(raw)))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ScopeUniverse {
     pub names: BTreeSet<String>,
@@ -100,11 +149,7 @@ impl RuleCatalog {
                 if map == 3 {
                     c.types.entry(n).or_default().push(x.clone());
                 }
-                if let Some(scope) = x.options.push_scope.as_deref() {
-                    if !c.scopes.names.iter().any(|s| s.eq_ignore_ascii_case(scope)) {
-                        return Err(CompileError::UnknownScope(scope.to_owned()));
-                    }
-                }
+                validate_rule_scope_options(x, &c.scopes)?;
                 count_rules(&x.kind, &mut count, limit, 0)?;
             }
             for t in &d.types {
@@ -157,13 +202,24 @@ impl RuleCatalog {
             return out;
         };
         let mut ctx = BTreeSet::new();
+        let frame = initial_scope
+            .map(|scope| ScopeFrame {
+                root: Some(scope.into()),
+                current: Some(scope.into()),
+                ..Default::default()
+            })
+            .unwrap_or_default();
         for required in &rule.options.required_scopes {
-            let ok = initial_scope.is_some_and(|scope| scope.eq_ignore_ascii_case(required))
-                || self
-                    .scopes
-                    .names
-                    .iter()
-                    .any(|scope| scope.eq_ignore_ascii_case(required));
+            let ok = frame
+                .current
+                .as_deref()
+                .is_some_and(|scope| scope.eq_ignore_ascii_case(required))
+                || (frame.current.is_none()
+                    && self
+                        .scopes
+                        .names
+                        .iter()
+                        .any(|scope| scope.eq_ignore_ascii_case(required)));
             if !ok {
                 out.diagnostics.push(diag(
                     "RULE140",
@@ -176,7 +232,7 @@ impl RuleCatalog {
                 ));
             }
         }
-        self.validate_nodes(&rule.kind, &cst.roots, &mut out, &mut ctx, 0);
+        self.validate_nodes(&rule.kind, &cst.roots, &mut out, &mut ctx, 0, &frame);
         out.diagnostics.sort_by(|a, b| {
             (a.range.start, a.range.end, a.code.as_str(), a.key.as_str()).cmp(&(
                 b.range.start,
@@ -264,6 +320,7 @@ impl RuleCatalog {
         out: &mut ValidationResult,
         seen: &mut BTreeSet<String>,
         depth: usize,
+        frame: &ScopeFrame,
     ) {
         if depth > MAX_DEPTH {
             out.diagnostics.push(diag(
@@ -280,7 +337,7 @@ impl RuleCatalog {
         else {
             return;
         };
-        let effective_rules = self.active_rules(rules, nodes, seen, depth);
+        let effective_rules = self.active_rules(rules, nodes, seen, depth, frame);
         let rules = effective_rules.as_slice();
         let mut occurrences: BTreeMap<String, Vec<ByteRange>> = BTreeMap::new();
         for n in nodes {
@@ -318,9 +375,9 @@ impl RuleCatalog {
                 let matched_name = field_name(&r.kind).to_ascii_lowercase();
                 occurrences.entry(matched_name).or_default().push(*range);
                 if let Some(alias) = self.left_alias_rule(&r.kind, &k) {
-                    self.validate_named_rule(alias, n, value, out, seen, depth);
+                    self.validate_named_rule(alias, n, value, out, seen, depth, frame);
                 } else {
-                    self.validate_rule(r, n, value, out, seen, depth);
+                    self.validate_rule(r, n, value, out, seen, depth, frame);
                 }
             }
         }
@@ -358,6 +415,7 @@ impl RuleCatalog {
         nodes: &[CstNode],
         seen: &BTreeSet<String>,
         depth: usize,
+        frame: &ScopeFrame,
     ) -> Vec<NewRule> {
         if depth > MAX_DEPTH {
             return Vec::new();
@@ -376,7 +434,14 @@ impl RuleCatalog {
                 };
                 let mut probe = ValidationResult::default();
                 let mut probe_seen = seen.clone();
-                self.validate_nodes(&probe_kind, nodes, &mut probe, &mut probe_seen, depth + 1);
+                self.validate_nodes(
+                    &probe_kind,
+                    nodes,
+                    &mut probe,
+                    &mut probe_seen,
+                    depth + 1,
+                    frame,
+                );
                 active.insert(
                     name.to_ascii_lowercase(),
                     probe
@@ -399,7 +464,7 @@ impl RuleCatalog {
                         .copied()
                         .unwrap_or(false);
                     if (*primary && primary_active) || (!*primary && !primary_active) {
-                        result.extend(self.active_rules(children, nodes, seen, depth + 1));
+                        result.extend(self.active_rules(children, nodes, seen, depth + 1, frame));
                     }
                 }
                 _ => result.push(rule.clone()),
@@ -420,6 +485,7 @@ impl RuleCatalog {
         map.get(&format!("{group}:{key}").to_ascii_lowercase())
             .or_else(|| map.get(&key.to_ascii_lowercase()))
     }
+    #[allow(clippy::too_many_arguments)]
     fn validate_named_rule(
         &self,
         r: &NewRule,
@@ -428,6 +494,7 @@ impl RuleCatalog {
         out: &mut ValidationResult,
         seen: &mut BTreeSet<String>,
         depth: usize,
+        frame: &ScopeFrame,
     ) {
         let name = field_name(&r.kind).to_ascii_lowercase();
         if !seen.insert(name.clone()) {
@@ -435,9 +502,10 @@ impl RuleCatalog {
                 .push(diag("RULE130", &name, n_range(n), vec![name.clone()]));
             return;
         }
-        self.validate_rule(r, n, v, out, seen, depth);
+        self.validate_rule(r, n, v, out, seen, depth, frame);
         seen.remove(&field_name(&r.kind).to_ascii_lowercase());
     }
+    #[allow(clippy::too_many_arguments)]
     fn validate_rule(
         &self,
         r: &NewRule,
@@ -446,14 +514,20 @@ impl RuleCatalog {
         out: &mut ValidationResult,
         seen: &mut BTreeSet<String>,
         depth: usize,
+        frame: &ScopeFrame,
     ) {
         for required in &r.options.required_scopes {
-            if !self
-                .scopes
-                .names
-                .iter()
-                .any(|scope| scope.eq_ignore_ascii_case(required))
-            {
+            let valid = frame
+                .current
+                .as_deref()
+                .is_some_and(|scope| scope.eq_ignore_ascii_case(required))
+                || (frame.current.is_none()
+                    && self
+                        .scopes
+                        .names
+                        .iter()
+                        .any(|scope| scope.eq_ignore_ascii_case(required)));
+            if !valid {
                 out.diagnostics.push(diag(
                     "RULE140",
                     required,
@@ -465,7 +539,8 @@ impl RuleCatalog {
         match &r.kind {
             RuleKind::Node { .. } | RuleKind::ValueClause { .. } | RuleKind::Subtype { .. } => {
                 if let CstNode::Clause { children, .. } = v {
-                    self.validate_nodes(&r.kind, children, out, seen, depth + 1);
+                    let child_frame = frame.apply(&r.options);
+                    self.validate_nodes(&r.kind, children, out, seen, depth + 1, &child_frame);
                 } else {
                     out.diagnostics
                         .push(diag("RULE102", &field_name(&r.kind), r.range, vec![]));
@@ -473,7 +548,7 @@ impl RuleCatalog {
             }
             RuleKind::Leaf { right, .. } | RuleKind::LeafValue { right } => {
                 if matches!(v, CstNode::Bare { .. } | CstNode::ColourLiteral { .. }) {
-                    self.validate_value(right, v, out, seen, depth);
+                    self.validate_value(right, v, out, seen, depth, frame);
                 } else {
                     out.diagnostics
                         .push(diag("RULE103", &field_name(&r.kind), n_range(v), vec![]));
@@ -497,6 +572,7 @@ impl RuleCatalog {
         seen: &mut BTreeSet<String>,
         depth: usize,
         _prefix: &str,
+        frame: &ScopeFrame,
     ) {
         let key = name.to_ascii_lowercase();
         if !seen.insert(format!("type:{key}")) {
@@ -504,7 +580,7 @@ impl RuleCatalog {
         }
         if let Some(rules) = self.type_rules(name) {
             for r in rules {
-                self.validate_rule_value(r, raw, v, out, seen, depth);
+                self.validate_rule_value(r, raw, v, out, seen, depth, frame);
             }
         } else {
             out.diagnostics
@@ -512,6 +588,7 @@ impl RuleCatalog {
         }
         seen.remove(&format!("type:{key}"));
     }
+    #[allow(clippy::too_many_arguments)]
     fn validate_rule_value(
         &self,
         r: &NewRule,
@@ -520,9 +597,10 @@ impl RuleCatalog {
         out: &mut ValidationResult,
         _seen: &mut BTreeSet<String>,
         _depth: usize,
+        frame: &ScopeFrame,
     ) {
         if let RuleKind::Leaf { right, .. } | RuleKind::LeafValue { right } = &r.kind {
-            self.validate_value_text(right, raw, n_range(v), out);
+            self.validate_value_text(right, raw, n_range(v), out, frame);
         }
     }
     fn validate_value_text(
@@ -531,10 +609,20 @@ impl RuleCatalog {
         raw: &str,
         range: ByteRange,
         out: &mut ValidationResult,
+        frame: &ScopeFrame,
     ) {
         let (ty, key) = match f {
             NewField::Value(t) => (Some(t), raw),
             NewField::Scalar => (Some(&ValueType::Scalar), raw),
+            NewField::Scope(allowed) => {
+                if !allowed.iter().any(|x| x.eq_ignore_ascii_case(raw))
+                    && !frame.allows(raw, &self.scopes)
+                {
+                    out.diagnostics
+                        .push(diag("RULE120", raw, range, allowed.clone()));
+                }
+                return;
+            }
             _ => return,
         };
         if let Some(t) = ty {
@@ -562,6 +650,7 @@ impl RuleCatalog {
             }
         }
     }
+    #[allow(clippy::too_many_lines)]
     fn validate_value(
         &self,
         f: &NewField,
@@ -569,6 +658,7 @@ impl RuleCatalog {
         out: &mut ValidationResult,
         seen: &mut BTreeSet<String>,
         depth: usize,
+        frame: &ScopeFrame,
     ) {
         let raw = bare(v);
         let (ty, key) = match f {
@@ -577,7 +667,7 @@ impl RuleCatalog {
             NewField::Aliases(group) => {
                 let key = format!("{group}:{raw}").to_ascii_lowercase();
                 if let Some(rule) = self.aliases.get(&key) {
-                    self.validate_named_rule(rule, v, v, out, seen, depth + 1);
+                    self.validate_named_rule(rule, v, v, out, seen, depth + 1, frame);
                 } else {
                     out.diagnostics
                         .push(diag("RULE130", &key, n_range(v), vec![key.clone()]));
@@ -587,7 +677,7 @@ impl RuleCatalog {
             NewField::SingleAlias(name) => {
                 let key = name.to_ascii_lowercase();
                 if let Some(rule) = self.single.get(&key) {
-                    self.validate_named_rule(rule, v, v, out, seen, depth + 1);
+                    self.validate_named_rule(rule, v, v, out, seen, depth + 1, frame);
                 } else {
                     out.diagnostics
                         .push(diag("RULE130", &key, n_range(v), vec![key.clone()]));
@@ -608,6 +698,15 @@ impl RuleCatalog {
                 }
                 return;
             }
+            NewField::Scope(allowed) => {
+                if !allowed.iter().any(|x| x.eq_ignore_ascii_case(&raw))
+                    && (!allowed.is_empty() || !frame.allows(&raw, &self.scopes))
+                {
+                    out.diagnostics
+                        .push(diag("RULE120", &raw, n_range(v), allowed.clone()));
+                }
+                return;
+            }
             NewField::ParameterValue => {
                 if !valid_parameter_value(&raw) {
                     out.diagnostics
@@ -616,7 +715,7 @@ impl RuleCatalog {
                 return;
             }
             NewField::Type(ir::TypeType::Simple(name)) => {
-                self.validate_type(name, &raw, v, out, seen, depth, "");
+                self.validate_type(name, &raw, v, out, seen, depth, "", frame);
                 return;
             }
             NewField::Type(ir::TypeType::Complex {
@@ -632,7 +731,7 @@ impl RuleCatalog {
                         .push(diag("RULE120", &raw, n_range(v), vec![name.clone()]));
                 } else {
                     let inner = &raw[prefix.len()..raw.len() - suffix.len()];
-                    self.validate_type(name, inner, v, out, seen, depth, "");
+                    self.validate_type(name, inner, v, out, seen, depth, "", frame);
                 }
                 return;
             }
@@ -683,6 +782,65 @@ fn valid_parameter_value(s: &str) -> bool {
     !s.is_empty()
         && (valid_parameter(s) || s.parse::<f64>().is_ok() || !s.contains(char::is_whitespace))
 }
+fn validate_rule_scope_options(rule: &NewRule, scopes: &ScopeUniverse) -> Result<(), CompileError> {
+    let check = |name: &str| {
+        if scopes.names.is_empty() || scopes.names.iter().any(|s| s.eq_ignore_ascii_case(name)) {
+            Ok(())
+        } else {
+            Err(CompileError::UnknownScope(name.to_owned()))
+        }
+    };
+    if let Some(scope) = &rule.options.push_scope {
+        check(scope)?;
+    }
+    if let Some(replacement) = &rule.options.replace_scopes {
+        for scope in replacement
+            .root
+            .iter()
+            .chain(replacement.this.iter())
+            .chain(replacement.froms.iter().flatten())
+            .chain(replacement.prevs.iter().flatten())
+        {
+            check(scope)?;
+        }
+    }
+    validate_scope_options(&rule.kind, scopes)
+}
+
+fn validate_scope_options(kind: &RuleKind, scopes: &ScopeUniverse) -> Result<(), CompileError> {
+    let check = |name: &str| {
+        if scopes.names.is_empty() || scopes.names.iter().any(|s| s.eq_ignore_ascii_case(name)) {
+            Ok(())
+        } else {
+            Err(CompileError::UnknownScope(name.to_owned()))
+        }
+    };
+    let (RuleKind::Node { rules, .. }
+    | RuleKind::ValueClause { rules }
+    | RuleKind::Subtype { rules, .. }) = kind
+    else {
+        return Ok(());
+    };
+    for rule in rules {
+        if let Some(s) = &rule.options.push_scope {
+            check(s)?;
+        }
+        if let Some(rs) = &rule.options.replace_scopes {
+            for s in rs
+                .root
+                .iter()
+                .chain(rs.this.iter())
+                .chain(rs.froms.iter().flatten())
+                .chain(rs.prevs.iter().flatten())
+            {
+                check(s)?;
+            }
+        }
+        validate_rule_scope_options(rule, scopes)?;
+    }
+    Ok(())
+}
+
 fn count_rules(
     k: &RuleKind,
     n: &mut usize,
