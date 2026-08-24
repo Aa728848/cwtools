@@ -1070,9 +1070,8 @@ mod tests {
         include_str!("../../../fixtures/testfiles/stellarisconfig/config/links.cwt");
     const SCOPES: &str =
         include_str!("../../../fixtures/testfiles/stellarisconfig/config/scopes.cwt");
-    const MODIFIERS: &str = include_str!(
-        "../../../fixtures/testfiles/stellarisconfig/config/modifier_categories.cwt"
-    );
+    const MODIFIERS: &str =
+        include_str!("../../../fixtures/testfiles/stellarisconfig/config/modifier_categories.cwt");
 
     #[test]
     fn real_declaration_keys_are_arguments() {

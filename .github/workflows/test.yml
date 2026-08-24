@@ -1,19 +1,19 @@
-on: [push, pull_request]
+name: Rust core
 
-name: cwtools
+on: [push, pull_request]
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
-
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-    - uses: actions/checkout@v1
-    - name: Setup .NET Core
-      uses: actions/setup-dotnet@v1
-      with:
-        dotnet-version: 9.0.x
-    - name: Set chmod
-      run: chmod +x ./build.sh
-    - name: Test
-      run: /bin/sh ./build.sh Test
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo test --workspace --all-targets --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings

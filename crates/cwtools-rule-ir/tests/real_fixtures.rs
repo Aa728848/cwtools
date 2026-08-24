@@ -2,18 +2,18 @@ use cwtools_rule_ir::{NewField, RootRule, RuleKind, SkipRootKey, ValueType, pars
 
 fn fixture(path: &str) -> cwtools_rule_ir::Document {
     let source = match path {
-        "types" => include_str!(
-            "../../../fixtures/testfiles/configtests/rulestests/STL/types/rules.cwt"
-        ),
-        "enums" => include_str!(
-            "../../../fixtures/testfiles/configtests/rulestests/STL/enums/rules.cwt"
-        ),
-        "aliases" => include_str!(
-            "../../../fixtures/testfiles/configtests/rulestests/STL/aliases/rules.cwt"
-        ),
-        "values" => include_str!(
-            "../../../fixtures/testfiles/configtests/rulestests/STL/values/rules.cwt"
-        ),
+        "types" => {
+            include_str!("../../../fixtures/testfiles/configtests/rulestests/STL/types/rules.cwt")
+        }
+        "enums" => {
+            include_str!("../../../fixtures/testfiles/configtests/rulestests/STL/enums/rules.cwt")
+        }
+        "aliases" => {
+            include_str!("../../../fixtures/testfiles/configtests/rulestests/STL/aliases/rules.cwt")
+        }
+        "values" => {
+            include_str!("../../../fixtures/testfiles/configtests/rulestests/STL/values/rules.cwt")
+        }
         _ => unreachable!(),
     };
     parse_document(path, source).unwrap_or_else(|errors| panic!("{path}: {errors:?}"))

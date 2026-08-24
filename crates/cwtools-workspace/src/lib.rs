@@ -451,7 +451,7 @@ pub struct GameComputedData {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GameComputedProfile {
-    /// Assignment key to F# variable-set kind.
+    /// Assignment key to the variable-set kind.
     pub variable_set_keys: BTreeMap<String, String>,
     pub saved_event_target_keys: BTreeSet<String>,
     pub effect_block_keys: BTreeSet<String>,

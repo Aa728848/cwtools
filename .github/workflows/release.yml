@@ -1,43 +1,18 @@
+name: Rust core release verification
+
 on:
   workflow_dispatch:
-    inputs:
-      username:
-        description: Github username of the person triggering the release
-        default: "tboby"
-        required: true
-      email:
-        description: Email of the person triggering the release
-        default: "th.boby@gmail.com"
-        required: true
 
-
-name: Release
-
+permissions:
+  contents: read
 jobs:
-  release:
+  verify:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v3
-      with:
-        ref: ${{ github.head_ref }}
-    - name: Setup .NET Core
-      uses: actions/setup-dotnet@v3
-      with:
-        dotnet-version: 9.0.x
-    - name: Set chmod
-      run: chmod +x ./build.sh
-    - name: Test and Pack
-      run: /bin/sh ./build.sh PackTools
-    - name: upload artifact package
-      uses: actions/upload-artifact@v4
-      with:
-        name: cwtools-nugets
-        path: pkg/
-    - name: Publish Release
-      env:
-        github-user: ${{ github.event.inputs.username }}
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        NUGET_TOKEN: ${{ secrets.NUGET_TOKEN }}
-        user-email: ${{ github.event.inputs.email }}
-      run: dotnet run --project build -- -t ReleaseGitHub
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo test --workspace --all-targets --release --locked
+      - run: cargo clippy --workspace --all-targets --release --locked -- -D warnings

@@ -537,7 +537,7 @@ impl RuleCatalog {
 
     /// Applies a type definition's subtype selectors and full rule validation.
     ///
-    /// This mirrors F# `testSubtype`: selector filters run before the rule probe,
+    /// Selector filters run before the rule probe,
     /// subtypes whose diagnostics are only missing-cardinality remain applicable,
     /// and `only_if_not` is evaluated against the complete pre-filter match set.
     ///
