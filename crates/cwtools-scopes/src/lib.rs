@@ -4,6 +4,7 @@
     clippy::match_wildcard_for_single_variants
 )]
 use std::collections::BTreeMap;
+pub mod game;
 pub const FIXED_SLOTS: i32 = -1;
 #[allow(non_upper_case_globals)]
 pub const FixedSlots: i32 = FIXED_SLOTS;
