@@ -4,12 +4,16 @@ use cwtools_script_syntax::{parse, print_canonical};
 fn contract_simple() {
     let source = "key = value\nlabel = {\n\tvaluea\n\tvalueb\n}\n";
     let parsed = parse(source).expect("fixture should parse");
-    assert_eq!(print_canonical(&parsed), "key = value\nlabel = {\n\tvaluea\n\tvalueb\n}");
+    assert_eq!(
+        print_canonical(&parsed),
+        "key = value\nlabel = {\n\tvaluea\n\tvalueb\n}"
+    );
 }
 
 #[test]
 fn contract_unicode() {
-    let source = "中文键 = 中文值\ninline_script = { script = districts/精灵服务区划岗位添加（无海军） }";
+    let source =
+        "中文键 = 中文值\ninline_script = { script = districts/精灵服务区划岗位添加（无海军） }";
     let parsed = parse(source).expect("fixture should parse");
     assert!(!parsed.tokens.is_empty());
 }
