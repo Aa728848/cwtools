@@ -2,6 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use regex::{Captures, Regex};
+
 #[must_use]
 pub const fn should_use_immediate_fallback(
     writer_busy: bool,
@@ -309,6 +311,162 @@ pub fn folding_ranges(text: &str) -> Vec<FoldingSpan> {
     spans
 }
 
+pub const MAX_LOCALISATION_REFERENCE_DEPTH: usize = 8;
+pub const MAX_LOCALISATION_EXPANDED_LENGTH: usize = 4096;
+
+fn strip_localisation_quotes(value: &str) -> &str {
+    let trimmed = value.trim();
+    if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    }
+}
+
+fn bounded(value: &str) -> String {
+    value
+        .chars()
+        .take(MAX_LOCALISATION_EXPANDED_LENGTH)
+        .collect()
+}
+
+fn valid_reference_key(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().all(|ch| {
+            ch.is_ascii_alphanumeric()
+                || matches!(ch, '_' | '@' | '.' | ':' | '/' | '-')
+                || ch as u32 == 39
+        })
+}
+
+fn resolve_localisation_text(
+    depth: usize,
+    visited: &BTreeSet<String>,
+    text: &str,
+    localisation: &BTreeMap<String, String>,
+    variables: &BTreeMap<String, String>,
+) -> String {
+    let text = bounded(text);
+    if depth >= MAX_LOCALISATION_REFERENCE_DEPTH || text.is_empty() {
+        return text;
+    }
+    let reference = Regex::new(r"\$([^$\r\n]+)\$").expect("static reference regex");
+    let whitespace = Regex::new(r"(?i)^\$(?:t|tt|TABBED_NEW_LINE|NEW_LINE)\$$")
+        .expect("static whitespace regex");
+    let references = reference.replace_all(&text, |captures: &Captures<'_>| {
+        let original = captures.get(0).map_or("", |value| value.as_str());
+        if whitespace.is_match(original) {
+            return " ".to_owned();
+        }
+        let payload = captures.get(1).map_or("", |value| value.as_str());
+        let key = payload.split('|').next().unwrap_or_default().trim();
+        if !valid_reference_key(key) || visited.contains(key) {
+            return original.to_owned();
+        }
+        let Some(replacement) = localisation.get(key).or_else(|| variables.get(key)) else {
+            return original.to_owned();
+        };
+        let mut next = visited.clone();
+        next.insert(key.to_owned());
+        resolve_localisation_text(
+            depth + 1,
+            &next,
+            strip_localisation_quotes(replacement),
+            localisation,
+            variables,
+        )
+    });
+    let concept = Regex::new(r"\[\s*'([^'\]\r\n]+)'(?:\s*,?\s*'?([^'\]\r\n]*)'?)?\s*\]")
+        .expect("static concept regex");
+    bounded(
+        &concept.replace_all(&references, |captures: &Captures<'_>| {
+            let explicit = captures.get(2).map_or("", |value| value.as_str());
+            if !explicit.trim().is_empty() {
+                return resolve_localisation_text(
+                    depth + 1,
+                    visited,
+                    explicit,
+                    localisation,
+                    variables,
+                );
+            }
+            let key = captures.get(1).map_or("", |value| value.as_str());
+            if visited.contains(key) {
+                return captures
+                    .get(0)
+                    .map_or("", |value| value.as_str())
+                    .to_owned();
+            }
+            let Some(replacement) = localisation.get(key).or_else(|| variables.get(key)) else {
+                return captures
+                    .get(0)
+                    .map_or("", |value| value.as_str())
+                    .to_owned();
+            };
+            let mut next = visited.clone();
+            next.insert(key.to_owned());
+            resolve_localisation_text(
+                depth + 1,
+                &next,
+                strip_localisation_quotes(replacement),
+                localisation,
+                variables,
+            )
+        }),
+    )
+}
+
+/// Formats the bounded plain-text label used by localisation inlay hints.
+///
+/// # Panics
+/// Panics only if a checked-in static regular expression is invalid.
+#[must_use]
+pub fn format_localisation_hint(
+    localisation: &BTreeMap<String, String>,
+    variables: &BTreeMap<String, String>,
+    description: &str,
+) -> Option<String> {
+    let normalized = description
+        .replace("\r\n", " ")
+        .replace('\n', " ")
+        .replace("\\n", " ");
+    let resolved = resolve_localisation_text(
+        0,
+        &BTreeSet::new(),
+        strip_localisation_quotes(normalized.trim()),
+        localisation,
+        variables,
+    );
+    let sequence =
+        Regex::new(r"\(\s*\d+\?:(?:[^()]|\([^()]*\))*\)").expect("static sequence regex");
+    let icon = Regex::new(r"(?:Â)?£([A-Za-z0-9_.:-]+)(?:\|([^£Â\s\[\]]+))?(?:Â)?£?")
+        .expect("static icon regex");
+    let style = Regex::new(r"(?:(?:Â)?§|搂)[A-Za-z0-9!%-]").expect("static style regex");
+    let whitespace_marker =
+        Regex::new(r"(?i)\$(?:t|tt|TABBED_NEW_LINE|NEW_LINE)\$").expect("static whitespace regex");
+    let collapsed = Regex::new(r"\s+").expect("static whitespace regex");
+    let no_sequence = sequence.replace_all(&resolved, "");
+    let icons = icon.replace_all(&no_sequence, |captures: &Captures<'_>| {
+        let name = captures.get(1).map_or("", |value| value.as_str());
+        captures.get(2).map_or_else(
+            || format!("£{name}£"),
+            |modifier| format!("£{name}|{}£", modifier.as_str()),
+        )
+    });
+    let markers = whitespace_marker.replace_all(&icons, " ");
+    let styles = style.replace_all(&markers, "");
+    let clean = collapsed.replace_all(&styles, " ").trim().to_owned();
+    if clean.is_empty() {
+        return None;
+    }
+    let count = clean.chars().count();
+    Some(if count > 50 {
+        format!("{}...", clean.chars().take(50).collect::<String>())
+    } else {
+        clean
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,6 +526,39 @@ mod tests {
             PayloadDecision::Truncated
         );
     }
+    #[test]
+    fn localisation_preview_is_bounded_and_cycle_safe() {
+        let localisation = BTreeMap::from([
+            (
+                "ROOT".to_owned(),
+                "\"Hello $NAME$ §Y£energy£§!\"".to_owned(),
+            ),
+            ("LOOP".to_owned(), "$LOOP$".to_owned()),
+            ("CONCEPT".to_owned(), "Concept Name".to_owned()),
+        ]);
+        let variables = BTreeMap::from([("NAME".to_owned(), "Commander".to_owned())]);
+        assert_eq!(
+            format_localisation_hint(&localisation, &variables, "$ROOT$"),
+            Some("Hello Commander £energy£".to_owned())
+        );
+        assert_eq!(
+            format_localisation_hint(&localisation, &variables, "['CONCEPT']"),
+            Some("Concept Name".to_owned())
+        );
+        assert_eq!(
+            format_localisation_hint(&localisation, &variables, "$LOOP$"),
+            Some("$LOOP$".to_owned())
+        );
+        let long = "a".repeat(100);
+        assert_eq!(
+            format_localisation_hint(&BTreeMap::new(), &BTreeMap::new(), &long)
+                .unwrap()
+                .chars()
+                .count(),
+            53
+        );
+    }
+
     #[test]
     fn folding_contract() {
         let text = "root = {\n value = \"}\" # {\n child = {\n  x = 1\n }\n}\nunclosed = {";
