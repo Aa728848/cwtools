@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use cwtools_rule_ir::parse_document;
-use cwtools_rules_engine::{RuleCatalog, ScopeUniverse};
+use cwtools_rules_engine::{RuleCatalog, ScopeUniverse, diagnostic_message_key};
 use cwtools_source::LineIndex;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
@@ -50,6 +50,8 @@ enum Output {
 #[derive(Debug, Serialize, PartialEq, Eq)]
 struct WireDiagnostic {
     code: String,
+    #[serde(rename = "messageKey")]
+    message_key: String,
     key: String,
     args: Vec<String>,
     start: usize,
@@ -123,6 +125,7 @@ fn execute(input: Input) -> Output {
                             format!("invalid diagnostic end byte boundary: {}", d.range.end)
                         })?;
                     Ok(WireDiagnostic {
+                        message_key: diagnostic_message_key(&d.code).to_owned(),
                         code: d.code,
                         key: d.key,
                         args: d.args,
@@ -213,7 +216,9 @@ mod tests {
     fn validation_unknown() {
         if let Output::Validation { diagnostics } = execute(input("unknown = x", Mode::Validation))
         {
-            assert!(!diagnostics.is_empty());
+            assert_eq!(diagnostics[0].message_key, "rules.unknown_field");
+            let json = serde_json::to_value(&diagnostics[0]).unwrap();
+            assert_eq!(json["messageKey"], "rules.unknown_field");
         }
     }
     #[test]

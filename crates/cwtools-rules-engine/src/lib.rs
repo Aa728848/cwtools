@@ -108,6 +108,7 @@ impl ScopeUniverse {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
     pub code: String,
+    pub message_key: String,
     pub key: String,
     pub args: Vec<String>,
     pub range: ByteRange,
@@ -277,6 +278,7 @@ impl RuleCatalog {
         let Ok(cst) = syntax::parse(source) else {
             out.diagnostics.push(Diagnostic {
                 code: "RULE001".into(),
+                message_key: diagnostic_message_key("RULE001").into(),
                 key: root_rule_name.into(),
                 args: vec![],
                 range: ByteRange {
@@ -1066,9 +1068,27 @@ fn n_range(n: &CstNode) -> ByteRange {
         _ => ByteRange { start: 0, end: 0 },
     }
 }
+#[must_use]
+pub fn diagnostic_message_key(code: &str) -> &'static str {
+    match code {
+        "RULE001" => "rules.syntax",
+        "RULE101" => "rules.unknown_field",
+        "RULE102" => "rules.expected_clause",
+        "RULE103" => "rules.expected_scalar",
+        "RULE110" => "rules.cardinality_minimum",
+        "RULE111" => "rules.cardinality_maximum",
+        "RULE120" => "rules.invalid_value",
+        "RULE130" => "rules.unresolved_reference",
+        "RULE140" => "rules.scope_mismatch",
+        "RULE150" => "rules.depth_exceeded",
+        _ => "rules.unknown",
+    }
+}
+
 fn diag(code: &str, key: &str, range: ByteRange, args: Vec<String>) -> Diagnostic {
     Diagnostic {
         code: code.into(),
+        message_key: diagnostic_message_key(code).into(),
         key: key.into(),
         args,
         range,

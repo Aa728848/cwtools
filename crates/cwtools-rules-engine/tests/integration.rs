@@ -1,6 +1,6 @@
 use cwtools_rule_ir::parse_document;
 use cwtools_rules_engine::{
-    CompileError, MAX_DEPTH, RuleCatalog, ScopeUniverse, ValidationOutcome,
+    CompileError, MAX_DEPTH, RuleCatalog, ScopeUniverse, ValidationOutcome, diagnostic_message_key,
 };
 
 fn catalog(source: &str) -> RuleCatalog {
@@ -1497,4 +1497,58 @@ fn cancellation_with_scope_does_not_leak_scope_state() {
             .diagnostics
             .is_empty()
     );
+}
+
+#[test]
+fn diagnostic_message_keys_are_stable() {
+    let expected = [
+        ("RULE001", "rules.syntax"),
+        ("RULE101", "rules.unknown_field"),
+        ("RULE102", "rules.expected_clause"),
+        ("RULE103", "rules.expected_scalar"),
+        ("RULE110", "rules.cardinality_minimum"),
+        ("RULE111", "rules.cardinality_maximum"),
+        ("RULE120", "rules.invalid_value"),
+        ("RULE130", "rules.unresolved_reference"),
+        ("RULE140", "rules.scope_mismatch"),
+        ("RULE150", "rules.depth_exceeded"),
+    ];
+    for (code, key) in expected {
+        assert_eq!(diagnostic_message_key(code), key);
+    }
+    assert_eq!(diagnostic_message_key("RULE999"), "rules.unknown");
+}
+
+#[test]
+fn emitted_diagnostics_carry_canonical_message_keys() {
+    let fixtures = [
+        (catalog("root = { known = scalar }"), "root", "broken = {"),
+        (catalog("root = { known = scalar }"), "root", "unknown = x"),
+        (
+            catalog("root = { known = { child = scalar } }"),
+            "root",
+            "known = x",
+        ),
+        (
+            catalog("root = { known = scalar }"),
+            "root",
+            "known = { child = x }",
+        ),
+        (catalog("root = { known = scalar }"), "root", ""),
+        (
+            catalog("root = { known = scalar }"),
+            "root",
+            "known = a\nknown = b",
+        ),
+        (catalog("root = { known = bool }"), "root", "known = maybe"),
+        (catalog("root = { known = <missing> }"), "root", "known = x"),
+    ];
+    for (catalog, root, source) in fixtures {
+        for diagnostic in catalog.validate_source(root, source).diagnostics {
+            assert_eq!(
+                diagnostic.message_key,
+                diagnostic_message_key(&diagnostic.code)
+            );
+        }
+    }
 }
