@@ -126,82 +126,139 @@ fn bare(node: &CstNode) -> Option<(&str, ByteRange)> {
         _ => None,
     }
 }
-fn add_node(node: &CstNode, source: &str, model: &mut DocumentModel) {
+
+fn declaration(name: &str) -> Option<(&str, &str, SymbolKind)> {
+    let (family, argument) = name.split_once('[')?;
+    let argument = argument.strip_suffix(']')?;
+    let kind = match family {
+        "type" => SymbolKind::Type,
+        "subtype" => SymbolKind::Subtype,
+        "enum" => SymbolKind::Enum,
+        "complex_enum" => SymbolKind::Complex,
+        "value" => SymbolKind::Value,
+        "alias" => SymbolKind::Alias,
+        "single_alias" => SymbolKind::SingleAlias,
+        "scope" => SymbolKind::Scope,
+        "scope_group" => SymbolKind::ScopeGroup,
+        _ => return None,
+    };
+    Some((family, argument, kind))
+}
+
+fn add_completion(model: &mut DocumentModel, family: &str, name: &str, kind: SymbolKind) {
+    model.completion_arguments.push(CompletionArgument {
+        label: name.to_owned(),
+        detail: Some(family.to_owned()),
+        kind,
+    });
+}
+
+fn add_node(node: &CstNode, source: &str, model: &mut DocumentModel, top_block: Option<&str>) {
     match node {
         CstNode::Assignment { key, value, .. } => {
-            if let Some((name, _range)) = bare(key) {
-                let n = name.trim_matches('"');
-                let k = match n {
-                    "type" => Some(SymbolKind::Type),
-                    "subtype" => Some(SymbolKind::Subtype),
-                    "enum" => Some(SymbolKind::Enum),
-                    "complex" => Some(SymbolKind::Complex),
-                    "value" => Some(SymbolKind::Value),
-                    "alias" => Some(SymbolKind::Alias),
-                    "single_alias" => Some(SymbolKind::SingleAlias),
-                    "scope" => Some(SymbolKind::Scope),
-                    "scope_group" => Some(SymbolKind::ScopeGroup),
-                    "link" => Some(SymbolKind::Link),
-                    "modifier_category" => Some(SymbolKind::ModifierCategory),
-                    _ => None,
-                };
-                if let Some(kind) = k {
-                    if let Some((v, vr)) = bare(value) {
+            if let Some((name, key_range)) = bare(key) {
+                if let Some((family, argument, kind)) = declaration(name) {
+                    if kind != SymbolKind::Scope {
                         model.symbols.push(Symbol {
-                            name: v.to_owned(),
+                            name: argument.to_owned(),
                             kind,
-                            range: range(source, vr),
-                            detail: Some(n.to_owned()),
+                            range: range(source, key_range),
+                            detail: Some(family.to_owned()),
                         });
-                    } else if let CstNode::Clause { children, .. } = value.as_ref() {
-                        if let Some((v, vr)) = children.iter().find_map(bare) {
-                            model.symbols.push(Symbol {
-                                name: v.to_owned(),
-                                kind,
-                                range: range(source, vr),
-                                detail: Some(n.to_owned()),
-                            });
-                        }
                     }
+                    if matches!(
+                        family,
+                        "enum" | "complex_enum" | "value" | "scope" | "scope_group"
+                    ) {
+                        add_completion(model, family, argument, kind);
+                    }
+                } else if top_block == Some("links") {
+                    if let Some((child, child_range)) = bare(key) {
+                        model.symbols.push(Symbol {
+                            name: child.to_owned(),
+                            kind: SymbolKind::Link,
+                            range: range(source, child_range),
+                            detail: Some("links".into()),
+                        });
+                    }
+                } else if top_block == Some("modifier_categories") {
+                    model.symbols.push(Symbol {
+                        name: name.trim_matches('"').to_owned(),
+                        kind: SymbolKind::ModifierCategory,
+                        range: range(source, key_range),
+                        detail: Some("modifier_categories".into()),
+                    });
                 }
-                refs_for(n, value, source, model);
+                scan_value_refs(value, source, model);
             }
-            add_node(value, source, model);
+            let nested_top = match bare(key).map(|(x, _)| x) {
+                Some(name @ ("links" | "modifier_categories")) => Some(name),
+                _ => None,
+            };
+            if let CstNode::Clause { children, .. } = value.as_ref() {
+                for child in children {
+                    add_node(child, source, model, nested_top);
+                }
+            } else {
+                add_node(value, source, model, nested_top);
+            }
         }
         CstNode::Clause { children, .. } => {
-            for c in children {
-                add_node(c, source, model)
+            for child in children {
+                add_node(child, source, model, top_block);
             }
         }
         _ => {}
     }
 }
-fn refs_for(key: &str, value: &CstNode, source: &str, model: &mut DocumentModel) {
-    let kind = match key {
-        "enum" => Some(SymbolKind::Enum),
-        "scope" => Some(SymbolKind::Scope),
-        "value_set" => Some(SymbolKind::Value),
-        "type" => Some(SymbolKind::Type),
-        "alias" => Some(SymbolKind::Alias),
-        _ => None,
-    };
-    if let Some(kind) = kind {
-        collect_bares(value, source, model, kind);
-    }
-}
-fn collect_bares(node: &CstNode, source: &str, model: &mut DocumentModel, kind: SymbolKind) {
+
+fn scan_value_refs(node: &CstNode, source: &str, model: &mut DocumentModel) {
     match node {
-        CstNode::Bare { token } => model.references.push(Reference {
-            name: token.value.clone(),
-            kind,
-            range: range(source, token.range),
-        }),
-        CstNode::Clause { children, .. } => {
-            for c in children {
-                collect_bares(c, source, model, kind)
+        CstNode::Bare { token } => {
+            let text = token.value.trim_matches('"');
+            let (kind, name) = if let Some((family, value)) = text
+                .split_once('[')
+                .and_then(|(f, rest)| rest.strip_suffix(']').map(|v| (f, v)))
+            {
+                match family {
+                    "enum" | "complex_enum" => (Some(SymbolKind::Enum), Some(value)),
+                    "scope" | "scope_group" => (Some(SymbolKind::Scope), Some(value)),
+                    "value_set" | "value" => (Some(SymbolKind::Value), Some(value)),
+                    "alias_name" | "alias_match_left" => (Some(SymbolKind::Alias), Some(value)),
+                    "single_alias_right" => (Some(SymbolKind::SingleAlias), Some(value)),
+                    _ => (None, None),
+                }
+            } else if text.starts_with('<') && text.ends_with('>') && text.len() > 2 {
+                (Some(SymbolKind::Type), Some(&text[1..text.len() - 1]))
+            } else if let Some(start) = text.find('<') {
+                if let Some(end) = text[start + 1..].find('>') {
+                    (
+                        Some(SymbolKind::Type),
+                        Some(&text[start + 1..start + 1 + end]),
+                    )
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            };
+            if let (Some(kind), Some(name)) = (kind, name) {
+                if let Some((family, _)) = text.split_once('[') {
+                    add_completion(model, family, name, kind);
+                }
+                model.references.push(Reference {
+                    name: name.to_owned(),
+                    kind,
+                    range: range(source, token.range),
+                });
             }
         }
-        CstNode::Assignment { value, .. } => collect_bares(value, source, model, kind),
+        CstNode::Clause { children, .. } => {
+            for child in children {
+                scan_value_refs(child, source, model);
+            }
+        }
+        CstNode::Assignment { value, .. } => scan_value_refs(value, source, model),
         _ => {}
     }
 }
@@ -222,7 +279,7 @@ pub fn analyze_document(source: &str) -> AnalysisResult {
         result.diagnostics.push(diagnostic(
             source,
             "CWT001",
-            "syntax",
+            "cwt.syntaxError",
             r,
             vec![e.message],
             DiagnosticSeverity::Error,
@@ -232,16 +289,32 @@ pub fn analyze_document(source: &str) -> AnalysisResult {
     for root in &parsed.cst.roots {
         if let CstNode::Assignment { key, .. } = root {
             if let Some((name, declaration_range)) = bare(key) {
-                result.model.root_names.push(name.to_owned());
-                result.model.symbols.push(Symbol {
-                    name: name.to_owned(),
-                    kind: SymbolKind::RootDeclaration,
-                    range: range(source, declaration_range),
-                    detail: None,
-                });
+                if declaration(name).is_none() {
+                    let trimmed = name.trim_matches('"');
+                    if !matches!(
+                        trimmed,
+                        "types"
+                            | "enums"
+                            | "values"
+                            | "links"
+                            | "modifier_categories"
+                            | "scopes"
+                            | "scope_groups"
+                    ) && !trimmed.starts_with("alias[")
+                        && !trimmed.starts_with("single_alias[")
+                    {
+                        result.model.root_names.push(trimmed.to_owned());
+                        result.model.symbols.push(Symbol {
+                            name: trimmed.to_owned(),
+                            kind: SymbolKind::RootDeclaration,
+                            range: range(source, declaration_range),
+                            detail: None,
+                        });
+                    }
+                }
             }
         }
-        add_node(root, source, &mut result.model);
+        add_node(root, source, &mut result.model, None);
     }
     scan_directives(source, &mut result);
     scan_injects(source, &mut result);
@@ -255,11 +328,66 @@ pub fn analyze_document(source: &str) -> AnalysisResult {
             .then(a.name.cmp(&b.name))
     });
     result
+        .model
+        .references
+        .sort_by(|a, b| a.kind.cmp(&b.kind).then(a.name.cmp(&b.name)));
+    result
+        .model
+        .references
+        .dedup_by(|a, b| a.kind == b.kind && a.name == b.name);
+    result
+        .model
+        .symbols
+        .retain(|symbol| symbol.kind != SymbolKind::RootDeclaration);
+    result.model.completion_arguments.sort_by(|a, b| {
+        a.label
+            .cmp(&b.label)
+            .then(a.detail.cmp(&b.detail))
+            .then(a.kind.cmp(&b.kind))
+    });
+    result
+        .model
+        .completion_arguments
+        .dedup_by(|a, b| a.label == b.label && a.detail == b.detail && a.kind == b.kind);
+    result
 }
 fn scan_directives(source: &str, result: &mut AnalysisResult) {
     for (line, text) in source.lines().enumerate() {
         let t = text.trim();
-        if t.starts_with('@') {
+        if t.starts_with("##") {
+            let body = t.trim_start_matches('#').trim();
+            if let Some((name, _value)) = body.split_once('=') {
+                let name = name.trim();
+                let known = [
+                    "cardinality",
+                    "severity",
+                    "description",
+                    "scope",
+                    "comparison",
+                    "inject",
+                    "required",
+                    "push_scope",
+                    "replace_scope",
+                    "file_extensions",
+                    "forbid_quoted_values",
+                ];
+                if !known.contains(&name) {
+                    let start: usize = source.lines().take(line).map(|x| x.len() + 1).sum();
+                    result.diagnostics.push(diagnostic(
+                        source,
+                        "CWT101",
+                        "cwt.unknownDirective",
+                        ByteRange {
+                            start,
+                            end: start + text.len(),
+                        },
+                        vec![name.into()],
+                        DiagnosticSeverity::Warning,
+                        "structure",
+                    ));
+                }
+            }
+        } else if t.starts_with('@') {
             let name = t.split_whitespace().next().unwrap_or(t);
             let start: usize = source.lines().take(line).map(|x| x.len() + 1).sum();
             let allowed = ["@include", "@replace", "@hide", "@clear", "@trigger"];
@@ -363,133 +491,203 @@ pub fn completions(source: &str, offset: usize) -> Vec<CompletionArgument> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const LINKS: &str =
+        include_str!("../../../CWToolsTests/testfiles/stellarisconfig/config/links.cwt");
+    const SCOPES: &str =
+        include_str!("../../../CWToolsTests/testfiles/stellarisconfig/config/scopes.cwt");
+    const MODIFIERS: &str = include_str!(
+        "../../../CWToolsTests/testfiles/stellarisconfig/config/modifier_categories.cwt"
+    );
+
     #[test]
-    fn api_kinds() {
-        assert_eq!(SymbolKind::Type, SymbolKind::Type);
+    fn real_declaration_keys_are_arguments() {
+        let r = analyze_document(
+            "type[technology] = {
+ enum[category] = {
+ value[cost] = 1
+ }",
+        );
+        assert!(
+            r.model
+                .symbols
+                .iter()
+                .any(|s| s.name == "technology" && s.kind == SymbolKind::Type)
+        );
+        assert!(
+            r.model
+                .symbols
+                .iter()
+                .any(|s| s.name == "category" && s.kind == SymbolKind::Enum)
+        );
+        assert!(
+            r.model
+                .symbols
+                .iter()
+                .any(|s| s.name == "cost" && s.kind == SymbolKind::Value)
+        );
     }
+
     #[test]
-    fn t0() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
+    fn declaration_range_is_key_token() {
+        let r = analyze_document("type[Country] = { }");
+        let s = r
+            .model
+            .symbols
+            .iter()
+            .find(|s| s.name == "Country")
+            .unwrap();
+        assert_eq!(s.range.start.character, 0);
+        assert!(s.range.end.character > s.range.start.character);
     }
+
     #[test]
-    fn t1() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
+    fn all_declaration_families_are_supported() {
+        let r = analyze_document(
+            "subtype[x] = y
+complex_enum[x] = y
+alias[g:x] = y
+single_alias[x] = y
+scope_group[x] = y",
+        );
+        for name in ["x", "g:x"] {
+            assert!(r.model.symbols.iter().any(|s| s.name == name));
+        }
+        assert!(
+            r.model
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Complex)
+        );
+        assert!(r.model.symbols.iter().any(|s| s.kind == SymbolKind::Alias));
+        assert!(
+            r.model
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::SingleAlias)
+        );
+        assert!(
+            r.model
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::ScopeGroup)
+        );
     }
+
     #[test]
-    fn t2() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
+    fn declarations_are_not_references() {
+        let r = analyze_document("enum[x] = { red blue }");
+        assert!(r.model.references.is_empty());
     }
+
     #[test]
-    fn t3() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
+    fn nested_value_expressions_are_references() {
+        let r = analyze_document(
+            "field = { enum[x] complex_enum[y] scope[z] scope_group[g] value_set[v] value[w] alias_name[a] alias_match_left[b] single_alias_right[c] <thing> pre<other>post }",
+        );
+        for (name, kind) in [
+            ("x", SymbolKind::Enum),
+            ("y", SymbolKind::Enum),
+            ("z", SymbolKind::Scope),
+            ("g", SymbolKind::Scope),
+            ("v", SymbolKind::Value),
+            ("w", SymbolKind::Value),
+            ("a", SymbolKind::Alias),
+            ("b", SymbolKind::Alias),
+            ("c", SymbolKind::SingleAlias),
+            ("thing", SymbolKind::Type),
+            ("other", SymbolKind::Type),
+        ] {
+            assert!(
+                r.model
+                    .references
+                    .iter()
+                    .any(|x| x.name == name && x.kind == kind),
+                "missing {name}"
+            );
+        }
     }
+
     #[test]
-    fn t4() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
+    fn link_children_use_real_top_block() {
+        let r = analyze_document(LINKS);
+        assert!(
+            r.model
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Link && s.name == "space_owner")
+        );
+        assert!(
+            !r.model
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::Link && s.name == "input_scopes")
+        );
     }
+
     #[test]
-    fn t5() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
+    fn modifier_children_use_real_top_block() {
+        let r = analyze_document(MODIFIERS);
+        assert!(
+            r.model
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::ModifierCategory && s.name == "Pops")
+        );
+        assert!(
+            !r.model
+                .symbols
+                .iter()
+                .any(|s| s.kind == SymbolKind::ModifierCategory && s.name == "supported_scopes")
+        );
     }
+
     #[test]
-    fn t6() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
+    fn root_names_keep_blocks_only() {
+        let r = analyze_document(SCOPES);
+        assert!(!r.model.root_names.contains(&"scopes".to_owned()));
+        assert!(
+            !r.model
+                .root_names
+                .iter()
+                .any(|x| x == "alias[country]" || x == "single_alias[country]")
+        );
     }
+
     #[test]
-    fn t7() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
+    fn completion_arguments_are_sorted_and_deduplicated() {
+        let r = analyze_document(
+            "enum[z] = { a }
+enum[a] = { b }
+enum[z] = { c }",
+        );
+        let labels: Vec<_> = r
+            .model
+            .completion_arguments
+            .iter()
+            .map(|x| x.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["a", "z"]);
     }
+
     #[test]
-    fn t8() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
+    fn diagnostics_are_preserved() {
+        let r = analyze_document("broken = {");
+        assert!(r.diagnostics.iter().any(|d| d.code == "CWT001"));
     }
+
     #[test]
-    fn t9() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
+    fn real_fixture_files_parse() {
+        for fixture in [LINKS, SCOPES, MODIFIERS] {
+            assert!(analyze_document(fixture).diagnostics.is_empty());
+        }
     }
+
     #[test]
-    fn t10() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
-    }
-    #[test]
-    fn t11() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
-    }
-    #[test]
-    fn t12() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
-    }
-    #[test]
-    fn t13() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
-    }
-    #[test]
-    fn t14() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
-    }
-    #[test]
-    fn t15() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
-    }
-    #[test]
-    fn t16() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
-    }
-    #[test]
-    fn t17() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
-    }
-    #[test]
-    fn t18() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
-    }
-    #[test]
-    fn t19() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
-    }
-    #[test]
-    fn t20() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
-    }
-    #[test]
-    fn t21() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
-    }
-    #[test]
-    fn t22() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
-    }
-    #[test]
-    fn t23() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
-    }
-    #[test]
-    fn t24() {
-        let r = analyze_document("type = foo");
-        assert!(r.model.symbols.iter().any(|s| s.name == "foo"));
+    fn completion_directives_remain_stable() {
+        let labels: Vec<_> = completions("@", 1).into_iter().map(|x| x.label).collect();
+        assert_eq!(
+            labels,
+            vec!["@clear", "@hide", "@include", "@replace", "@trigger"]
+        );
     }
 }

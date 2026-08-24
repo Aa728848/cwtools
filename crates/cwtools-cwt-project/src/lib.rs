@@ -110,6 +110,76 @@ fn service_diag(file: &str, d: &cwtools_cwt_service::Diagnostic) -> Diagnostic {
     }
 }
 
+/// Build a project snapshot directly from in-memory path/text pairs.
+#[must_use]
+pub fn build_snapshot_from_texts(entries: &[(String, String)], root: &Path) -> ProjectSnapshot {
+    let mut docs = entries
+        .iter()
+        .map(|(path, source)| {
+            let key = normalize_path(path);
+            let result = analyze_document(source);
+            let failed = result.diagnostics.iter().any(|d| d.code == "CWT001");
+            ProjectDocument {
+                path: key.clone(),
+                source: source.clone(),
+                model: result.model,
+                parsed: if failed {
+                    None
+                } else {
+                    parse_document(&key, source).ok()
+                },
+                content_hash: fnv1a(source.as_bytes()),
+                partial: false,
+                skipped: false,
+                parse_failed: failed,
+            }
+        })
+        .collect::<Vec<_>>();
+    docs.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut by_kind_name = BTreeMap::new();
+    let mut references = BTreeSet::new();
+    let mut diagnostics = Vec::new();
+    let mut parse_failed = Vec::new();
+    for d in &docs {
+        let result = analyze_document(&d.source);
+        diagnostics.extend(result.diagnostics.iter().map(|x| service_diag(&d.path, x)));
+        if d.parse_failed {
+            parse_failed.push(d.path.clone());
+        }
+        for s in &d.model.symbols {
+            by_kind_name
+                .entry((s.kind, s.name.clone()))
+                .or_insert_with(Vec::new)
+                .push(d.path.clone());
+        }
+        for r in &d.model.references {
+            references.insert((r.kind, r.name.clone()));
+        }
+    }
+    for files in by_kind_name.values_mut() {
+        files.sort();
+        files.dedup();
+    }
+    let symbols = SymbolIndex {
+        by_kind_name,
+        references,
+    };
+    let semantic_diagnostics = Vec::new();
+    let content_hash = ordered_content_hash(&docs);
+    ProjectSnapshot {
+        version: content_hash,
+        root: normalize_path(&root.to_string_lossy()),
+        documents: docs,
+        symbols,
+        diagnostics,
+        semantic_diagnostics,
+        partial: false,
+        skipped: Vec::new(),
+        parse_failed,
+        content_hash,
+    }
+}
+
 pub fn build_snapshot(
     files: &[PathBuf],
     max_files: Option<usize>,
@@ -533,9 +603,8 @@ mod tests {
     fn indexes_type_enum_subtype_symbols() {
         let s = snapshot(&[(
             "a.cwt",
-            "type = thing
-enum = color
-subtype = child",
+            "type[thing] = { subtype[child] = {} }
+enum[color] = { red }",
         )]);
         assert!(
             s.symbols
@@ -555,49 +624,52 @@ subtype = child",
     }
     #[test]
     fn indexes_complex_enum_clause_as_enum() {
-        let s = snapshot(&[("a.cwt", "enum = { red blue }")]);
+        let s = snapshot(&[("a.cwt", "complex_enum[red] = { name = { x = scalar } }")]);
         assert!(
             s.symbols
                 .by_kind_name
-                .contains_key(&(SymbolKind::Enum, "red".into()))
+                .contains_key(&(SymbolKind::Complex, "red".into()))
         );
     }
     #[test]
     fn cwt301_reports_undefined_reference() {
-        let s = snapshot(&[("a.cwt", "value_set = { missing }")]);
+        let s = snapshot(&[("a.cwt", "rule = value[missing]")]);
         assert!(s.semantic_diagnostics.iter().any(|d| d.code == "CWT301"));
     }
     #[test]
     fn cwt301_defined_reference_is_clean() {
         let s = snapshot(&[(
             "a.cwt",
-            "value = known
-value_set = { known }",
+            "value[known] = { one }
+rule = value[known]",
         )]);
         assert!(!s.semantic_diagnostics.iter().any(|d| d.code == "CWT301"));
     }
     #[test]
     fn cwt301_builtin_scope_is_allowed() {
-        let s = snapshot(&[("a.cwt", "scope = { root }")]);
+        let s = snapshot(&[("a.cwt", "rule = scope[root]")]);
         assert!(!s.semantic_diagnostics.iter().any(|d| d.code == "CWT301"));
     }
     #[test]
     fn cwt301_complex_enum_reference_is_defined() {
-        let s = snapshot(&[("a.cwt", "complex = red\nenum = { red }")]);
+        let s = snapshot(&[(
+            "a.cwt",
+            "complex_enum[red] = { name = { x = scalar } }\nrule = enum[red]",
+        )]);
         assert!(!s.semantic_diagnostics.iter().any(|d| d.code == "CWT301"));
     }
     #[test]
     fn cwt302_same_file_duplicate_is_not_cross_file_duplicate() {
         let s = snapshot(&[(
             "a.cwt",
-            "type = same
-type = same",
+            "type[same] = {}
+type[same] = {}",
         )]);
         assert!(!s.semantic_diagnostics.iter().any(|d| d.code == "CWT302"));
     }
     #[test]
     fn cwt302_cross_file_duplicate_reports() {
-        let s = snapshot(&[("a.cwt", "type = same"), ("b.cwt", "type = same")]);
+        let s = snapshot(&[("a.cwt", "type[same] = {}"), ("b.cwt", "type[same] = {}")]);
         assert!(s.semantic_diagnostics.iter().any(|d| d.code == "CWT302"));
     }
     #[test]

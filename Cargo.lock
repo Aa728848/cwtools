@@ -20,6 +20,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cwtools-cwt-projection-cli"
+version = "0.1.0"
+dependencies = [
+ "cwtools-cwt-project",
+ "cwtools-cwt-service",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cwtools-cwt-service"
 version = "0.1.0"
 dependencies = [
