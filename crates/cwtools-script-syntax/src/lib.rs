@@ -523,6 +523,209 @@ fn print_nodes(ns: &[CstNode], depth: usize, out: &mut String) {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TypedValue {
+    String(String),
+    QuotedString(String),
+    Integer(i64),
+    Decimal(String),
+    Boolean(bool),
+    Rgb(Vec<i64>),
+    Hsv {
+        components: Vec<String>,
+        degrees: bool,
+    },
+}
+
+#[must_use]
+pub fn classify_scalar(raw: &str, quoted: bool) -> TypedValue {
+    if quoted {
+        return TypedValue::QuotedString(raw.to_owned());
+    }
+    if raw == "yes" {
+        return TypedValue::Boolean(true);
+    }
+    if raw == "no" {
+        return TypedValue::Boolean(false);
+    }
+    let unsigned = raw.strip_prefix('-').unwrap_or(raw);
+    let leading_zero = unsigned.len() > 1
+        && unsigned.starts_with('0')
+        && unsigned.as_bytes().get(1).is_some_and(u8::is_ascii_digit);
+    if !leading_zero {
+        if let Ok(value) = raw.parse::<i64>() {
+            return TypedValue::Integer(value);
+        }
+        if raw.parse::<f64>().is_ok() && raw.chars().any(|value| matches!(value, '.' | 'e' | 'E')) {
+            return TypedValue::Decimal(raw.to_owned());
+        }
+    }
+    TypedValue::String(raw.to_owned())
+}
+
+#[must_use]
+pub fn classify_colour_literal(source: &str) -> Option<TypedValue> {
+    let tokens = lex(source).ok()?;
+    let values: Vec<_> = tokens
+        .iter()
+        .filter(|token| {
+            !token.is_trivia() && !matches!(token.kind, TokenKind::Eof | TokenKind::Comment)
+        })
+        .collect();
+    let (head, body) = values.split_first()?;
+    let mut at = 0;
+    let degrees = head.value == "hsv360"
+        || (head.value == "hsv" && body.first().is_some_and(|token| token.value == "360"));
+    if head.value == "hsv" && degrees {
+        at = 1;
+    }
+    let open = body.get(at)?;
+    if !matches!(open.kind, TokenKind::LBrace) {
+        return None;
+    }
+    let close = body.last()?;
+    if !matches!(close.kind, TokenKind::RBrace) {
+        return None;
+    }
+    let components = &body[at + 1..body.len() - 1];
+    if !(3..=4).contains(&components.len()) {
+        return None;
+    }
+    match head.value.as_str() {
+        "rgb" | "RGB" => components
+            .iter()
+            .map(|token| token.value.parse::<i64>().ok())
+            .collect::<Option<Vec<_>>>()
+            .map(TypedValue::Rgb),
+        "hsv" | "HSV" | "hsv360" => {
+            let values = components
+                .iter()
+                .map(|token| token.value.parse::<f64>().ok().map(|_| token.value.clone()))
+                .collect::<Option<Vec<_>>>()?;
+            Some(TypedValue::Hsv {
+                components: values,
+                degrees,
+            })
+        }
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScriptEncoding {
+    Utf8,
+    Windows1252,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecodeError {
+    pub offset: usize,
+    pub message: &'static str,
+}
+
+pub fn decode_script_bytes(bytes: &[u8], encoding: ScriptEncoding) -> Result<String, DecodeError> {
+    match encoding {
+        ScriptEncoding::Utf8 => std::str::from_utf8(bytes)
+            .map(str::to_owned)
+            .map_err(|error| DecodeError {
+                offset: error.valid_up_to(),
+                message: "invalid UTF-8",
+            }),
+        ScriptEncoding::Windows1252 => Ok(bytes
+            .iter()
+            .map(|byte| decode_windows_1252(*byte))
+            .collect()),
+    }
+}
+
+fn decode_windows_1252(byte: u8) -> char {
+    const SPECIAL: [char; 32] = [
+        '€', '\u{0081}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{008D}', 'Ž',
+        '\u{008F}', '\u{0090}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ',
+        '\u{009D}', 'ž', 'Ÿ',
+    ];
+    match byte {
+        0x80..=0x9F => SPECIAL[usize::from(byte - 0x80)],
+        _ => char::from_u32(u32::from(byte)).unwrap_or(char::REPLACEMENT_CHARACTER),
+    }
+}
+
+#[must_use]
+pub fn print_canonical(cst: &Cst) -> String {
+    let mut output = String::new();
+    print_canonical_nodes(&cst.roots, 0, &mut output);
+    output.trim_end().to_owned()
+}
+
+fn print_canonical_nodes(nodes: &[CstNode], depth: usize, output: &mut String) {
+    for node in nodes {
+        output.push_str(&"\t".repeat(depth));
+        match node {
+            CstNode::Comment { token } => {
+                output.push_str(&token.raw);
+                output.push('\n');
+            }
+            CstNode::Bare { token } | CstNode::Error { token } | CstNode::Trivia { token } => {
+                output.push_str(&render_token(token));
+                output.push('\n');
+            }
+            CstNode::Assignment {
+                key,
+                operator,
+                value,
+                ..
+            } => {
+                output.push_str(&render_node_inline(key));
+                output.push(' ');
+                output.push_str(operator.text());
+                output.push(' ');
+                match value.as_ref() {
+                    CstNode::Clause { children, .. } => {
+                        output.push_str("{\n");
+                        print_canonical_nodes(children, depth + 1, output);
+                        output.push_str(&"\t".repeat(depth));
+                        output.push_str("}\n");
+                    }
+                    other => {
+                        output.push_str(&render_node_inline(other));
+                        output.push('\n');
+                    }
+                }
+            }
+            CstNode::Clause { children, .. } => {
+                output.push_str("{\n");
+                print_canonical_nodes(children, depth + 1, output);
+                output.push_str(&"\t".repeat(depth));
+                output.push_str("}\n");
+            }
+        }
+    }
+}
+
+fn render_node_inline(node: &CstNode) -> String {
+    match node {
+        CstNode::Bare { token }
+        | CstNode::Error { token }
+        | CstNode::Comment { token }
+        | CstNode::Trivia { token } => render_token(token),
+        CstNode::Clause { .. } | CstNode::Assignment { .. } => String::new(),
+    }
+}
+
+fn render_token(token: &Token) -> String {
+    if matches!(token.kind, TokenKind::QuotedString) {
+        format!(
+            "\"{}\"",
+            token
+                .value
+                .replace(char::from(92), "\\\\")
+                .replace('\"', "\\\"")
+        )
+    } else {
+        token.value.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,6 +813,69 @@ mod tests {
                 assert!(token.range.start <= token.range.end && token.range.end <= source.len());
             }
         }
+    }
+
+    #[test]
+    fn typed_scalars_preserve_leading_zero_and_int64() {
+        assert_eq!(classify_scalar("yes", false), TypedValue::Boolean(true));
+        assert_eq!(classify_scalar("no", false), TypedValue::Boolean(false));
+        assert_eq!(
+            classify_scalar("80000000000000", false),
+            TypedValue::Integer(80_000_000_000_000)
+        );
+        assert_eq!(
+            classify_scalar("007", false),
+            TypedValue::String("007".to_owned())
+        );
+        assert_eq!(
+            classify_scalar("1.25", false),
+            TypedValue::Decimal("1.25".to_owned())
+        );
+        assert_eq!(
+            classify_scalar("yes", true),
+            TypedValue::QuotedString("yes".to_owned())
+        );
+    }
+
+    #[test]
+    fn rgb_hsv_and_alpha_are_typed() {
+        assert_eq!(
+            classify_colour_literal("rgb { 1 2 3 4 }"),
+            Some(TypedValue::Rgb(vec![1, 2, 3, 4]))
+        );
+        assert_eq!(
+            classify_colour_literal("HSV { 0.1 0.2 0.3 }"),
+            Some(TypedValue::Hsv {
+                components: vec!["0.1".into(), "0.2".into(), "0.3".into()],
+                degrees: false
+            })
+        );
+        assert_eq!(
+            classify_colour_literal("hsv 360 { 1 2 3 }"),
+            Some(TypedValue::Hsv {
+                components: vec!["1".into(), "2".into(), "3".into()],
+                degrees: true
+            })
+        );
+        assert_eq!(classify_colour_literal("rgb { 1 2 }"), None);
+    }
+
+    #[test]
+    fn windows_1252_decoder_is_explicit() {
+        assert_eq!(
+            decode_script_bytes(&[0x53, 0x8A, 0x9A], ScriptEncoding::Windows1252).unwrap(),
+            "SŠš"
+        );
+        assert!(decode_script_bytes(&[0xFF], ScriptEncoding::Utf8).is_err());
+    }
+
+    #[test]
+    fn canonical_printer_matches_simple_fixture_shape() {
+        let parsed = parse("key=value label={ valuea valueb }").unwrap();
+        assert_eq!(
+            print_canonical(&parsed),
+            "key = value\nlabel = {\n\tvaluea\n\tvalueb\n}"
+        );
     }
 
     #[test]
