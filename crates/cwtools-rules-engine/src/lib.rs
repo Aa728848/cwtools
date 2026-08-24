@@ -54,6 +54,30 @@ impl ScopeFrame {
         }
         next
     }
+    fn resolves_keyword_to_allowed(&self, raw: &str, allowed: &[String]) -> bool {
+        let scope = if raw.eq_ignore_ascii_case("this") {
+            self.current.as_deref()
+        } else if raw.eq_ignore_ascii_case("root") {
+            self.root.as_deref()
+        } else {
+            let lower = raw.to_ascii_lowercase();
+            if lower.starts_with("from")
+                && lower[4..].len() % 4 == 0
+                && lower.as_bytes()[4..].chunks(4).all(|part| part == b"from")
+            {
+                self.froms.get(lower[4..].len() / 4).map(String::as_str)
+            } else if lower.starts_with("prev")
+                && lower[4..].len() % 4 == 0
+                && lower.as_bytes()[4..].chunks(4).all(|part| part == b"prev")
+            {
+                self.prevs.get(lower[4..].len() / 4).map(String::as_str)
+            } else {
+                None
+            }
+        };
+        scope.is_some_and(|scope| allowed.iter().any(|item| item.eq_ignore_ascii_case(scope)))
+    }
+
     fn allows(&self, raw: &str, universe: &ScopeUniverse) -> bool {
         [self.root.as_deref(), self.current.as_deref()]
             .into_iter()
@@ -821,6 +845,7 @@ impl RuleCatalog {
             }
             NewField::Scope(allowed) => {
                 if !allowed.iter().any(|x| x.eq_ignore_ascii_case(&raw))
+                    && !frame.resolves_keyword_to_allowed(&raw, allowed)
                     && (!allowed.is_empty() || !frame.allows(&raw, &self.scopes))
                 {
                     out.diagnostics
@@ -888,12 +913,28 @@ fn valid_percent(s: &str) -> bool {
 }
 
 fn valid_parameter(s: &str) -> bool {
-    let parts: Vec<&str> = s.split('|').collect();
+    let Some(rest) = s.strip_prefix('$') else {
+        return false;
+    };
+    let Some(end) = rest.find('$') else {
+        return false;
+    };
+    let name = &rest[..end];
+    let suffix = &rest[end + 1..];
+    let inner = if let Some(default) = suffix.strip_prefix('|') {
+        if default.is_empty() {
+            return false;
+        }
+        format!("{name}|{default}")
+    } else if suffix.is_empty() {
+        name.to_owned()
+    } else {
+        return false;
+    };
+    let parts: Vec<&str> = inner.split('|').collect();
     (parts.len() == 1 || parts.len() == 2)
-        && parts[0].starts_with('$')
-        && parts[0].ends_with('$')
         && {
-            let n = &parts[0][1..parts[0].len() - 1];
+            let n = parts[0];
             let mut chars = n.chars();
             chars
                 .next()
