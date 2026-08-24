@@ -1,7 +1,7 @@
-use cwtools_rule_ir::parse_document;
+use cwtools_rule_ir::{SubtypeDefinition, TypeDefinition, parse_document};
 use cwtools_rules_engine::{
-    CompileError, MAX_DEPTH, QueryError, RuleCatalog, ScopeUniverse, ValidationOutcome,
-    diagnostic_message_key,
+    CompileError, DynamicTypeReference, MAX_DEPTH, QueryError, RuleCatalog, ScopeUniverse,
+    ValidationOutcome, diagnostic_message_key,
 };
 
 fn catalog(source: &str) -> RuleCatalog {
@@ -19,6 +19,262 @@ fn catalog(source: &str) -> RuleCatalog {
     )
     .expect("catalog compiles")
 }
+#[test]
+fn typed_references_follow_nested_rule_context() {
+    let c =
+        catalog("root = { target = <event> nested = { other = <technology> scalar = scalar } }");
+    let refs = c
+        .typed_references(
+            "root",
+            "target = event_a nested = { other = tech_a scalar = event_a } unrelated = event_a",
+            10,
+        )
+        .unwrap();
+    assert_eq!(
+        refs.iter()
+            .map(|reference| (reference.type_name.as_str(), reference.value.as_str()))
+            .collect::<Vec<_>>(),
+        [("event", "event_a"), ("technology", "tech_a")]
+    );
+}
+
+#[test]
+fn typed_references_strip_complex_type_affixes() {
+    let c = catalog("root = { target = pre<event>suf }");
+    let refs = c
+        .typed_references("root", "target = preevent_asuf", 10)
+        .unwrap();
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].type_name, "event");
+    assert_eq!(refs[0].value, "event_a");
+    assert!(refs[0].is_outgoing);
+    assert_eq!(refs[0].reference_label, None);
+    assert!(refs[0].fuzzy);
+    assert!(
+        c.typed_references("root", "target = wrong", 10)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn typed_references_follow_type_rule_on_left() {
+    let c = catalog("root = { <event> = scalar }");
+    let refs = c.typed_references("root", "event_a = yes", 10).unwrap();
+    assert_eq!(refs[0].type_name, "event");
+    assert_eq!(refs[0].value, "event_a");
+}
+
+#[test]
+fn value_scope_references_use_caller_resolver_and_trim_pipe_suffix() {
+    let c = catalog("root = { amount = value_field }");
+    let mut calls = Vec::new();
+    let refs = c
+        .typed_references_with(
+            "root",
+            "amount = scripted_value|fallback",
+            10,
+            |value, _scope| {
+                calls.push(value.to_owned());
+                (value == "scripted_value").then(|| DynamicTypeReference {
+                    type_name: "script_value".into(),
+                    value: "resolved_value".into(),
+                })
+            },
+        )
+        .unwrap();
+    assert_eq!(calls, ["scripted_value"]);
+    assert_eq!(refs[0].type_name, "script_value");
+    assert_eq!(refs[0].value, "resolved_value");
+    assert_eq!(refs[0].associated_type, None);
+    assert!(
+        c.typed_references("root", "amount = scripted_value", 10)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn value_scope_reference_resolver_is_bounded() {
+    let c = catalog("root = { amount = value_field other = value_field }");
+    assert_eq!(
+        c.typed_references_with("root", "amount = one other = two", 1, |value, _scope| Some(
+            DynamicTypeReference {
+                type_name: "script_value".into(),
+                value: value.into(),
+            }
+        ),),
+        Err(QueryError::TooManyResults)
+    );
+}
+
+#[test]
+fn typed_references_preserve_incoming_reference_label() {
+    let c = catalog("root = { ## incomingReferenceLabel = source\n target = <event> }");
+    let refs = c.typed_references("root", "target = event_a", 10).unwrap();
+    assert!(!refs[0].is_outgoing);
+    assert_eq!(refs[0].reference_label.as_deref(), Some("source"));
+    assert!(!refs[0].fuzzy);
+}
+
+#[test]
+fn typed_references_are_bounded_and_reject_malformed_source() {
+    let c = catalog("root = { target = <event> }");
+    assert_eq!(
+        c.typed_references("root", "target = event_a", 0),
+        Err(QueryError::TooManyResults)
+    );
+    assert_eq!(
+        c.typed_references("root", "target = {", 10),
+        Err(QueryError::ParseFailed)
+    );
+}
+
+#[test]
+fn computed_data_uses_variable_set_rules_and_active_nested_context() {
+    let c = catalog(
+        "root = { variable = value_set[variable] nested = { flag = value_set[country_flag] scalar = scalar } }",
+    );
+    let data = c
+        .computed_data(
+            "root",
+            "variable = scope@foo.bar?x nested = { flag = active scalar = ignored } unknown = nope",
+            10,
+        )
+        .unwrap();
+    assert_eq!(
+        data.variable_sets
+            .iter()
+            .map(|item| (item.kind.as_str(), item.value.as_str()))
+            .collect::<Vec<_>>(),
+        [("variable", "scope@foo.bar?x"), ("country_flag", "active")]
+    );
+}
+
+#[test]
+fn computed_data_extracts_variable_set_from_leaf_key() {
+    let c = catalog("root = { value_set[event_target] = scalar }");
+    let data = c.computed_data("root", "target_a = yes", 10).unwrap();
+    assert_eq!(data.variable_sets[0].kind, "event_target");
+    assert_eq!(data.variable_sets[0].value, "target_a");
+}
+
+#[test]
+fn computed_data_extracts_variable_set_from_node_key_and_children() {
+    let c = catalog("root = { value_set[global_event_target] = { child = value_set[flag] } }");
+    let data = c
+        .computed_data("root", "target_a = { child = inner }", 10)
+        .unwrap();
+    assert_eq!(
+        data.variable_sets
+            .iter()
+            .map(|item| (item.kind.as_str(), item.value.as_str()))
+            .collect::<Vec<_>>(),
+        [("global_event_target", "target_a"), ("flag", "inner")]
+    );
+}
+
+#[test]
+fn computed_data_tracks_current_scope_for_saved_targets() {
+    let c =
+        catalog("root = { ## push_scope = country\n nested = { save = value_set[event_target] } }");
+    let data = c
+        .computed_data("root", "nested = { save = target_a }", 10)
+        .unwrap();
+    assert_eq!(data.variable_sets[0].scope.as_deref(), Some("country"));
+}
+
+#[test]
+fn computed_data_marks_alias_blocks_and_enforces_bound() {
+    let c = catalog(
+        "alias[effect:do_effect] = scalar alias[trigger:has_flag] = scalar root = { effects = { alias[effect] = scalar } triggers = { alias[trigger] = scalar } }",
+    );
+    let source = "effects = { do_effect = yes } triggers = { has_flag = yes }";
+    let data = c.computed_data("root", source, 2).unwrap();
+    assert_eq!(data.effect_blocks.len(), 1);
+    assert_eq!(data.trigger_blocks.len(), 1);
+    assert_eq!(
+        c.computed_data("root", source, 1),
+        Err(QueryError::TooManyResults)
+    );
+}
+
+#[test]
+fn computed_data_rejects_malformed_source() {
+    let c = catalog("root = { variable = value_set[variable] }");
+    assert_eq!(
+        c.computed_data("root", "variable = {", 10),
+        Err(QueryError::ParseFailed)
+    );
+}
+
+fn subtype(name: &str, rules: &str) -> SubtypeDefinition {
+    let document = parse_document(
+        "subtype.cwt",
+        &format!("types = {{ type[test] = {{ subtype[{name}] = {{ {rules} }} }} }}"),
+    )
+    .unwrap();
+    document.types[0].subtypes[0].clone()
+}
+
+#[test]
+fn type_subtype_applicator_uses_full_validation_and_missing_rules_are_valid() {
+    let c = catalog("root = scalar");
+    let mut definition = TypeDefinition {
+        name: "test".into(),
+        ..TypeDefinition::default()
+    };
+    definition.subtypes = vec![
+        subtype(
+            "valid",
+            "required = scalar ## cardinality = 0..1\n optional = scalar",
+        ),
+        subtype("invalid_value", "required = bool"),
+        subtype("invalid_shape", "required = { nested = scalar }"),
+    ];
+    let matched = c
+        .apply_type_subtypes(&definition, "entry", "required = maybe")
+        .unwrap();
+    assert_eq!(matched.names, ["valid"]);
+}
+
+#[test]
+fn type_subtype_applicator_applies_selectors_only_if_not_and_scope() {
+    let c = catalog("root = scalar");
+    let mut primary = subtype("primary", "marker = scalar");
+    primary.type_key_field = Some("Country_Event".into());
+    primary.push_scope = Some("country".into());
+    let mut regex = subtype("regex", "marker = scalar");
+    regex.type_key_regex = Some("^country_.*$".into());
+    regex.only_if_not = vec!["PRIMARY".into()];
+    let mut invalid_regex = subtype("invalid_regex", "marker = scalar");
+    invalid_regex.type_key_regex = Some("[".into());
+    let mut definition = TypeDefinition {
+        name: "test".into(),
+        ..TypeDefinition::default()
+    };
+    definition.subtypes = vec![primary, regex, invalid_regex];
+    let matched = c
+        .apply_type_subtypes(&definition, "country_event", "marker = yes")
+        .unwrap();
+    assert_eq!(matched.names, ["primary"]);
+    assert_eq!(
+        matched.scope,
+        Some(cwtools_rules_engine::SubtypeScopeTransition::Push(
+            "country".into()
+        ))
+    );
+}
+
+#[test]
+fn type_subtype_applicator_rejects_malformed_source() {
+    let c = catalog("root = scalar");
+    assert_eq!(
+        c.apply_type_subtypes(&TypeDefinition::default(), "entry", "broken = {"),
+        Err(QueryError::ParseFailed)
+    );
+}
+
 fn codes(c: &RuleCatalog, root: &str, source: &str) -> Vec<String> {
     c.validate_source(root, source)
         .diagnostics
@@ -1664,6 +1920,24 @@ fn contextual_info_enters_nested_clause() {
     assert_eq!(
         c.info_at("root", source, 10, "child").unwrap().as_deref(),
         Some("Child detail")
+    );
+}
+#[test]
+fn contextual_completion_unwraps_synthetic_root_clause() {
+    let c = catalog("root = { root_field = scalar node = { child = scalar } }");
+    let source = "root = {\nnode = {\n\n}\n}";
+    assert_eq!(
+        c.completion_at("root", source, 18, "").unwrap(),
+        vec!["child"]
+    );
+}
+#[test]
+fn contextual_info_unwraps_synthetic_root_clause() {
+    let c = catalog("root = { node = { ### Child detail\nchild = scalar } }");
+    let source = "root = {\nnode = {\nchild = x\n}\n}";
+    assert_eq!(
+        c.info_at("root", source, 20, "child").unwrap().as_deref(),
+        Some(" Child detail")
     );
 }
 #[test]

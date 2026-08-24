@@ -346,6 +346,7 @@ fn tok(src: &str, kind: TokenKind, s: usize, e: usize, value: String) -> Token {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CstNode {
     Assignment {
+        key_prefix: Option<Box<Token>>,
         key: Box<CstNode>,
         operator: Operator,
         value: Box<CstNode>,
@@ -505,6 +506,24 @@ impl<'a> Parser<'a> {
             }
         }
     }
+    fn key_prefix(&mut self, key: &mut Token) -> Option<Box<Token>> {
+        if !matches!(
+            self.peek().kind,
+            TokenKind::Identifier | TokenKind::QuotedString
+        ) || self.peek().value.starts_with('@')
+        {
+            return None;
+        }
+        let checkpoint = self.at;
+        let candidate = self.take();
+        if matches!(self.peek().kind, TokenKind::Operator(_)) {
+            Some(Box::new(std::mem::replace(key, candidate)))
+        } else {
+            self.at = checkpoint;
+            None
+        }
+    }
+
     fn colour_literal(&mut self) -> Option<Box<CstNode>> {
         let head = self.peek().clone();
         let lower = head.value.to_ascii_lowercase();
@@ -626,8 +645,9 @@ impl<'a> Parser<'a> {
                 });
                 continue;
             }
-            let key = self.take();
+            let mut key = self.take();
             let key_start = key.range.start;
+            let key_prefix = self.key_prefix(&mut key);
             if matches!(self.peek().kind, TokenKind::Operator(_)) {
                 let op = match self.take().kind {
                     TokenKind::Operator(x) => x,
@@ -640,6 +660,7 @@ impl<'a> Parser<'a> {
                     let at = self.peek().range.start;
                     self.errors.push(error(self.src, "MissingValue", at));
                     v.push(CstNode::Assignment {
+                        key_prefix: key_prefix.clone(),
                         key: Box::new(CstNode::Bare { token: key.clone() }),
                         operator: op,
                         value: Box::new(CstNode::Error { token: key }),
@@ -656,6 +677,7 @@ impl<'a> Parser<'a> {
                         _ => unreachable!(),
                     };
                     v.push(CstNode::Assignment {
+                        key_prefix: key_prefix.clone(),
                         key: Box::new(CstNode::Bare { token: key }),
                         operator: op,
                         value: colour,
@@ -692,6 +714,7 @@ impl<'a> Parser<'a> {
                             .push(error(self.src, "unclosed clause", open.range.start));
                     }
                     v.push(CstNode::Assignment {
+                        key_prefix: key_prefix.clone(),
                         key: Box::new(CstNode::Bare { token: key }),
                         operator: op,
                         value: Box::new(CstNode::Clause {
@@ -712,6 +735,7 @@ impl<'a> Parser<'a> {
                     let val = self.take();
                     let end = val.range.end;
                     v.push(CstNode::Assignment {
+                        key_prefix: key_prefix.clone(),
                         key: Box::new(CstNode::Bare { token: key }),
                         operator: op,
                         value: Box::new(CstNode::Bare { token: val }),
@@ -755,11 +779,16 @@ fn print_nodes(ns: &[CstNode], depth: usize, out: &mut String) {
                 out.push(' ')
             }
             CstNode::Assignment {
+                key_prefix,
                 key,
                 operator,
                 value,
                 ..
             } => {
+                if let Some(prefix) = key_prefix {
+                    out.push_str(&render_token(prefix));
+                    out.push(' ');
+                }
                 print_nodes(std::slice::from_ref(key), depth, out);
                 out.push_str(operator.text());
                 out.push(' ');
@@ -926,11 +955,16 @@ fn print_canonical_nodes(nodes: &[CstNode], depth: usize, output: &mut String) {
                 output.push('\n');
             }
             CstNode::Assignment {
+                key_prefix,
                 key,
                 operator,
                 value,
                 ..
             } => {
+                if let Some(prefix) = key_prefix {
+                    output.push_str(&render_token(prefix));
+                    output.push(' ');
+                }
                 output.push_str(&render_node_inline(key));
                 output.push(' ');
                 output.push_str(operator.text());
@@ -1214,6 +1248,28 @@ mod tests {
         let errors =
             parse("outer = { missing = }").expect_err("missing assignment value must fail");
         assert!(errors.iter().any(|error| error.message == "MissingValue"));
+    }
+
+    #[test]
+    fn jomini_key_prefix_is_preserved_and_printed() {
+        let parsed = parse("not_event country_event = { value = yes }").unwrap();
+        let CstNode::Assignment {
+            key_prefix, key, ..
+        } = &parsed.roots[0]
+        else {
+            panic!("expected assignment");
+        };
+        assert_eq!(
+            key_prefix.as_ref().map(|token| token.value.as_str()),
+            Some("not_event")
+        );
+        assert!(matches!(key.as_ref(), CstNode::Bare { token } if token.value == "country_event"));
+        assert_eq!(
+            print_canonical(&parsed),
+            "not_event country_event = {\n\tvalue = yes\n}\n"
+        );
+        let reparsed = parse(&print_canonical(&parsed)).unwrap();
+        assert_eq!(print_canonical(&reparsed), print_canonical(&parsed));
     }
 
     #[test]

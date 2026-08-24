@@ -1,4 +1,4 @@
-use cwtools_rule_ir::{NewField, RootRule, RuleKind, ValueType, parse_document};
+use cwtools_rule_ir::{NewField, RootRule, RuleKind, SkipRootKey, ValueType, parse_document};
 
 fn fixture(path: &str) -> cwtools_rule_ir::Document {
     let source = match path {
@@ -40,7 +40,13 @@ fn stl_types_contract() {
         skip.path_file.as_deref(),
         Some("one_file_skip_multiple.txt")
     );
-    assert_eq!(skip.skip_root_key, vec!["skip_me_one", "skip_me_two"]);
+    assert_eq!(
+        skip.skip_root_key,
+        vec![SkipRootKey::Multiple {
+            keys: vec!["skip_me_one".to_owned(), "skip_me_two".to_owned()],
+            should_match: true,
+        }]
+    );
     assert_eq!(
         d.types
             .iter()

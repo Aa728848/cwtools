@@ -113,6 +113,50 @@ pub struct Diagnostic {
     pub args: Vec<String>,
     pub range: ByteRange,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedReference {
+    pub type_name: String,
+    pub value: String,
+    pub range: ByteRange,
+    pub is_outgoing: bool,
+    pub reference_label: Option<String>,
+    pub fuzzy: bool,
+    pub associated_type: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DynamicTypeReference {
+    pub type_name: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SubtypeScopeTransition {
+    Push(String),
+    Replace(ir::ReplaceScopes),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct TypeSubtypeMatch {
+    pub names: Vec<String>,
+    pub scope: Option<SubtypeScopeTransition>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuleVariableSet {
+    pub kind: String,
+    pub value: String,
+    pub range: ByteRange,
+    pub scope: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct RuleComputedData {
+    pub variable_sets: Vec<RuleVariableSet>,
+    pub effect_blocks: Vec<ByteRange>,
+    pub trigger_blocks: Vec<ByteRange>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ValidationResult {
     pub diagnostics: Vec<Diagnostic>,
@@ -128,6 +172,7 @@ pub enum ValidationOutcome {
 pub enum QueryError {
     InvalidOffset,
     ParseFailed,
+    TooManyResults,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -353,6 +398,217 @@ impl RuleCatalog {
         });
         Some(out)
     }
+    /// Extracts only scalar references selected by the active rule path.
+    ///
+    /// # Errors
+    /// Returns [`QueryError::ParseFailed`] for malformed source or
+    /// [`QueryError::TooManyResults`] when the caller-provided bound is exceeded.
+    pub fn typed_references(
+        &self,
+        root: &str,
+        source: &str,
+        max_results: usize,
+    ) -> Result<Vec<TypedReference>, QueryError> {
+        self.typed_references_with(root, source, max_results, |_, _| None)
+    }
+
+    /// Extracts exact, fuzzy and value-scope dynamic references from active rules.
+    ///
+    /// # Errors
+    /// Returns [`QueryError::ParseFailed`] for malformed source or
+    /// [`QueryError::TooManyResults`] when the caller-provided bound is exceeded.
+    pub fn typed_references_with<F>(
+        &self,
+        root: &str,
+        source: &str,
+        max_results: usize,
+        mut resolve_value_scope: F,
+    ) -> Result<Vec<TypedReference>, QueryError>
+    where
+        F: FnMut(&str, Option<&str>) -> Option<DynamicTypeReference>,
+    {
+        let cst = syntax::parse(source).map_err(|_| QueryError::ParseFailed)?;
+        let Some(root_rule) = self.find(root) else {
+            return Ok(Vec::new());
+        };
+        let mut result = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut never = || false;
+        let mut cancel = CancelCheck {
+            check: &mut never,
+            cancelled: false,
+        };
+        self.collect_typed_references(
+            &root_rule.kind,
+            &cst.roots,
+            &mut result,
+            max_results,
+            &mut seen,
+            0,
+            &ScopeFrame::default(),
+            &mut cancel,
+            &mut resolve_value_scope,
+        )?;
+        result.sort_by(|left, right| {
+            (
+                left.range.start,
+                left.range.end,
+                &left.type_name,
+                &left.value,
+                left.is_outgoing,
+                &left.reference_label,
+                left.fuzzy,
+                &left.associated_type,
+            )
+                .cmp(&(
+                    right.range.start,
+                    right.range.end,
+                    &right.type_name,
+                    &right.value,
+                    right.is_outgoing,
+                    &right.reference_label,
+                    right.fuzzy,
+                    &right.associated_type,
+                ))
+        });
+        result.dedup();
+        Ok(result)
+    }
+
+    /// Extracts variable sets and effect/trigger blocks from active rules.
+    ///
+    /// # Errors
+    /// Returns [`QueryError::ParseFailed`] for malformed source or
+    /// [`QueryError::TooManyResults`] when the shared bound is exceeded.
+    pub fn computed_data(
+        &self,
+        root: &str,
+        source: &str,
+        max_results: usize,
+    ) -> Result<RuleComputedData, QueryError> {
+        let cst = syntax::parse(source).map_err(|_| QueryError::ParseFailed)?;
+        let Some(root_rule) = self.find(root) else {
+            return Ok(RuleComputedData::default());
+        };
+        let mut result = RuleComputedData::default();
+        let mut seen = BTreeSet::new();
+        let mut never = || false;
+        let mut cancel = CancelCheck {
+            check: &mut never,
+            cancelled: false,
+        };
+        self.collect_rule_computed_data(
+            &root_rule.kind,
+            &cst.roots,
+            &mut result,
+            max_results,
+            &mut seen,
+            0,
+            &ScopeFrame::default(),
+            &mut cancel,
+        )?;
+        result.variable_sets.sort_by(|left, right| {
+            (
+                left.range.start,
+                left.range.end,
+                &left.kind,
+                &left.value,
+                &left.scope,
+            )
+                .cmp(&(
+                    right.range.start,
+                    right.range.end,
+                    &right.kind,
+                    &right.value,
+                    &right.scope,
+                ))
+        });
+        result.variable_sets.dedup();
+        result
+            .effect_blocks
+            .sort_by_key(|range| (range.start, range.end));
+        result.effect_blocks.dedup();
+        result
+            .trigger_blocks
+            .sort_by_key(|range| (range.start, range.end));
+        result.trigger_blocks.dedup();
+        Ok(result)
+    }
+
+    /// Applies a type definition's subtype selectors and full rule validation.
+    ///
+    /// This mirrors F# `testSubtype`: selector filters run before the rule probe,
+    /// subtypes whose diagnostics are only missing-cardinality remain applicable,
+    /// and `only_if_not` is evaluated against the complete pre-filter match set.
+    ///
+    /// # Errors
+    /// Returns [`QueryError::ParseFailed`] for malformed source.
+    pub fn apply_type_subtypes(
+        &self,
+        type_definition: &ir::TypeDefinition,
+        key: &str,
+        source: &str,
+    ) -> Result<TypeSubtypeMatch, QueryError> {
+        let cst = syntax::parse(source).map_err(|_| QueryError::ParseFailed)?;
+        let mut candidates = Vec::new();
+        let mut never = || false;
+        let mut cancel = CancelCheck {
+            check: &mut never,
+            cancelled: false,
+        };
+        for subtype in &type_definition.subtypes {
+            if !subtype_selector_matches(subtype, key) {
+                continue;
+            }
+            let probe_kind = RuleKind::Node {
+                left: NewField::Specific("__subtype_probe".into()),
+                rules: subtype.rules.clone(),
+            };
+            let mut probe = ValidationResult::default();
+            let mut seen = BTreeSet::new();
+            self.validate_nodes(
+                &probe_kind,
+                &cst.roots,
+                &mut probe,
+                &mut seen,
+                0,
+                &ScopeFrame::default(),
+                &mut cancel,
+            );
+            if probe
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code == "RULE101")
+            {
+                candidates.push(subtype);
+            }
+        }
+        let names = candidates
+            .iter()
+            .filter(|subtype| {
+                !subtype.only_if_not.iter().any(|excluded| {
+                    candidates
+                        .iter()
+                        .any(|matched| matched.name.eq_ignore_ascii_case(excluded))
+                })
+            })
+            .map(|subtype| subtype.name.clone())
+            .collect::<Vec<_>>();
+        let scope = candidates.iter().find_map(|subtype| {
+            subtype
+                .push_scope
+                .clone()
+                .map(SubtypeScopeTransition::Push)
+                .or_else(|| {
+                    subtype
+                        .replace_scopes
+                        .clone()
+                        .map(SubtypeScopeTransition::Replace)
+                })
+        });
+        Ok(TypeSubtypeMatch { names, scope })
+    }
+
     #[must_use]
     pub fn completion(&self, root: &str, prefix: &str) -> Vec<String> {
         let mut result = BTreeSet::new();
@@ -385,7 +641,8 @@ impl RuleCatalog {
         let Some(root_rule) = self.find(root) else {
             return Ok(Vec::new());
         };
-        let (kind, nodes) = Self::context_at(&root_rule.kind, &cst.roots, offset, 0);
+        let nodes = Self::query_roots(root, &cst.roots, offset);
+        let (kind, nodes) = Self::context_at(&root_rule.kind, nodes, offset, 0);
         let mut result = BTreeSet::new();
         if let Some(rule) = Self::rhs_rule_at(kind, nodes, offset)
             && Self::supports_rhs_completion(&rule.kind)
@@ -416,9 +673,34 @@ impl RuleCatalog {
         let Some(root_rule) = self.find(root) else {
             return Ok(None);
         };
-        let (kind, _) = Self::context_at(&root_rule.kind, &cst.roots, offset, 0);
+        let nodes = Self::query_roots(root, &cst.roots, offset);
+        let (kind, _) = Self::context_at(&root_rule.kind, nodes, offset, 0);
         Ok(Self::find_direct_info(kind, field))
     }
+    fn query_roots<'a>(root: &str, nodes: &'a [CstNode], offset: usize) -> &'a [CstNode] {
+        nodes
+            .iter()
+            .find_map(|node| {
+                let CstNode::Assignment {
+                    key, value, range, ..
+                } = node
+                else {
+                    return None;
+                };
+                if !bare(key).eq_ignore_ascii_case(root)
+                    || offset < range.start
+                    || offset > range.end
+                {
+                    return None;
+                }
+                match value.as_ref() {
+                    CstNode::Clause { children, .. } => Some(children.as_slice()),
+                    _ => None,
+                }
+            })
+            .unwrap_or(nodes)
+    }
+
     fn context_at<'a>(
         kind: &'a RuleKind,
         nodes: &'a [CstNode],
@@ -655,6 +937,229 @@ impl RuleCatalog {
     fn type_rules(&self, n: &str) -> Option<&Vec<NewRule>> {
         self.types.get(&n.to_ascii_lowercase())
     }
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn collect_rule_computed_data(
+        &self,
+        kind: &RuleKind,
+        nodes: &[CstNode],
+        out: &mut RuleComputedData,
+        limit: usize,
+        seen: &mut BTreeSet<String>,
+        depth: usize,
+        frame: &ScopeFrame,
+        cancel: &mut CancelCheck<'_>,
+    ) -> Result<(), QueryError> {
+        if depth > MAX_DEPTH {
+            return Ok(());
+        }
+        let (RuleKind::Node { rules, .. }
+        | RuleKind::ValueClause { rules }
+        | RuleKind::Subtype { rules, .. }) = kind
+        else {
+            return Ok(());
+        };
+        let effective = self.active_rules(rules, nodes, seen, depth, frame, cancel);
+        for node in nodes {
+            let CstNode::Assignment {
+                key, value, range, ..
+            } = node
+            else {
+                continue;
+            };
+            let key_text = bare(key);
+            let Some(rule) = effective
+                .iter()
+                .find(|rule| field_matches(&rule.kind, &key_text))
+                .or_else(|| {
+                    effective
+                        .iter()
+                        .find(|rule| self.left_alias_rule(&rule.kind, &key_text).is_some())
+                })
+            else {
+                continue;
+            };
+            let selected = self.left_alias_rule(&rule.kind, &key_text).unwrap_or(rule);
+            match &selected.kind {
+                RuleKind::Leaf {
+                    left: NewField::VariableSet(kind),
+                    ..
+                } => {
+                    ensure_computed_capacity(out, limit)?;
+                    out.variable_sets.push(RuleVariableSet {
+                        kind: kind.clone(),
+                        value: key_text.clone(),
+                        range: n_range(key),
+                        scope: frame.current.clone(),
+                    });
+                }
+                RuleKind::Node {
+                    left: NewField::VariableSet(kind),
+                    rules,
+                } => {
+                    ensure_computed_capacity(out, limit)?;
+                    out.variable_sets.push(RuleVariableSet {
+                        kind: kind.clone(),
+                        value: key_text.clone(),
+                        range: n_range(key),
+                        scope: frame.current.clone(),
+                    });
+                    if let CstNode::Clause { children, .. } = value.as_ref() {
+                        self.collect_rule_computed_data(
+                            &RuleKind::ValueClause {
+                                rules: rules.clone(),
+                            },
+                            children,
+                            out,
+                            limit,
+                            seen,
+                            depth + 1,
+                            &frame.apply(&selected.options),
+                            cancel,
+                        )?;
+                    }
+                }
+                RuleKind::Leaf {
+                    right: NewField::VariableSet(kind),
+                    ..
+                }
+                | RuleKind::LeafValue {
+                    right: NewField::VariableSet(kind),
+                } => {
+                    ensure_computed_capacity(out, limit)?;
+                    out.variable_sets.push(RuleVariableSet {
+                        kind: kind.clone(),
+                        value: bare(value),
+                        range: n_range(value),
+                        scope: frame.current.clone(),
+                    });
+                }
+                RuleKind::Node { .. } | RuleKind::ValueClause { .. } | RuleKind::Subtype { .. } => {
+                    if let CstNode::Clause { children, .. } = value.as_ref() {
+                        if rule_has_alias(&selected.kind, "effect") {
+                            ensure_computed_capacity(out, limit)?;
+                            out.effect_blocks.push(*range);
+                        }
+                        if rule_has_alias(&selected.kind, "trigger") {
+                            ensure_computed_capacity(out, limit)?;
+                            out.trigger_blocks.push(*range);
+                        }
+                        self.collect_rule_computed_data(
+                            &selected.kind,
+                            children,
+                            out,
+                            limit,
+                            seen,
+                            depth + 1,
+                            &frame.apply(&selected.options),
+                            cancel,
+                        )?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn collect_typed_references(
+        &self,
+        kind: &RuleKind,
+        nodes: &[CstNode],
+        out: &mut Vec<TypedReference>,
+        limit: usize,
+        seen: &mut BTreeSet<String>,
+        depth: usize,
+        frame: &ScopeFrame,
+        cancel: &mut CancelCheck<'_>,
+        resolve_value_scope: &mut dyn FnMut(&str, Option<&str>) -> Option<DynamicTypeReference>,
+    ) -> Result<(), QueryError> {
+        if depth > MAX_DEPTH {
+            return Ok(());
+        }
+        let (RuleKind::Node { rules, .. }
+        | RuleKind::ValueClause { rules }
+        | RuleKind::Subtype { rules, .. }) = kind
+        else {
+            return Ok(());
+        };
+        let effective = self.active_rules(rules, nodes, seen, depth, frame, cancel);
+        for node in nodes {
+            let CstNode::Assignment { key, value, .. } = node else {
+                continue;
+            };
+            let key_text = bare(key);
+            let Some(rule) = effective
+                .iter()
+                .find(|rule| field_matches(&rule.kind, &key_text))
+                .or_else(|| {
+                    effective
+                        .iter()
+                        .find(|rule| self.left_alias_rule(&rule.kind, &key_text).is_some())
+                })
+            else {
+                continue;
+            };
+            let selected = self.left_alias_rule(&rule.kind, &key_text).unwrap_or(rule);
+            match &selected.kind {
+                RuleKind::Leaf { left, right } => {
+                    if let Some(reference) = typed_reference(
+                        right,
+                        value,
+                        &selected.options,
+                        frame.current.as_deref(),
+                        resolve_value_scope,
+                    )
+                    .or_else(|| {
+                        typed_reference(
+                            left,
+                            key,
+                            &selected.options,
+                            frame.current.as_deref(),
+                            resolve_value_scope,
+                        )
+                    }) {
+                        if out.len() >= limit {
+                            return Err(QueryError::TooManyResults);
+                        }
+                        out.push(reference);
+                    }
+                }
+                RuleKind::LeafValue { right } => {
+                    if let Some(reference) = typed_reference(
+                        right,
+                        value,
+                        &selected.options,
+                        frame.current.as_deref(),
+                        resolve_value_scope,
+                    ) {
+                        if out.len() >= limit {
+                            return Err(QueryError::TooManyResults);
+                        }
+                        out.push(reference);
+                    }
+                }
+                RuleKind::Node { .. } | RuleKind::ValueClause { .. } | RuleKind::Subtype { .. } => {
+                    if let CstNode::Clause { children, .. } = value.as_ref() {
+                        self.collect_typed_references(
+                            &selected.kind,
+                            children,
+                            out,
+                            limit,
+                            seen,
+                            depth + 1,
+                            &frame.apply(&selected.options),
+                            cancel,
+                            resolve_value_scope,
+                        )?;
+                    }
+                }
+                RuleKind::Opaque(_) => {}
+            }
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn validate_nodes(
         &self,
@@ -1147,6 +1652,114 @@ impl RuleCatalog {
         }
     }
 }
+fn subtype_selector_matches(subtype: &ir::SubtypeDefinition, key: &str) -> bool {
+    let field_match = subtype
+        .type_key_field
+        .as_deref()
+        .is_none_or(|field| key.eq_ignore_ascii_case(field));
+    let starts_match = subtype.starts_with.as_deref().is_none_or(|prefix| {
+        key.to_ascii_lowercase()
+            .starts_with(&prefix.to_ascii_lowercase())
+    });
+    let regex_match = subtype.type_key_regex.as_deref().is_none_or(|pattern| {
+        regex::RegexBuilder::new(pattern)
+            .case_insensitive(true)
+            .build()
+            .is_ok_and(|regex| regex.is_match(key))
+    });
+    field_match && starts_match && regex_match
+}
+
+fn computed_count(data: &RuleComputedData) -> usize {
+    data.variable_sets.len() + data.effect_blocks.len() + data.trigger_blocks.len()
+}
+
+fn ensure_computed_capacity(data: &RuleComputedData, limit: usize) -> Result<(), QueryError> {
+    if computed_count(data) >= limit {
+        return Err(QueryError::TooManyResults);
+    }
+    Ok(())
+}
+
+fn rule_has_alias(kind: &RuleKind, alias: &str) -> bool {
+    match kind {
+        RuleKind::Node { rules, .. }
+        | RuleKind::ValueClause { rules }
+        | RuleKind::Subtype { rules, .. } => rules.iter().any(|rule| match &rule.kind {
+            RuleKind::Leaf {
+                left: NewField::Aliases(group),
+                ..
+            } => group.eq_ignore_ascii_case(alias),
+            nested => rule_has_alias(nested, alias),
+        }),
+        _ => false,
+    }
+}
+
+fn typed_reference(
+    field: &NewField,
+    node: &CstNode,
+    options: &ir::Options,
+    current_scope: Option<&str>,
+    resolve_value_scope: &mut dyn FnMut(&str, Option<&str>) -> Option<DynamicTypeReference>,
+) -> Option<TypedReference> {
+    let raw = bare(node);
+    let (type_name, prefix, suffix, associated_type) = match field {
+        NewField::Type(ir::TypeType::Simple(name)) => {
+            (name.clone(), String::new(), String::new(), None)
+        }
+        NewField::Type(ir::TypeType::Complex {
+            prefix,
+            name,
+            suffix,
+        }) => (name.clone(), prefix.clone(), suffix.clone(), None),
+        NewField::ValueScope { .. } => {
+            let dynamic = resolve_value_scope(value_scope_head(&raw), current_scope)?;
+            let associated_type = options.type_hint.as_ref().map(|hint| hint.0.clone());
+            return Some(TypedReference {
+                type_name: dynamic.type_name,
+                value: dynamic.value,
+                range: n_range(node),
+                is_outgoing: options
+                    .reference_details
+                    .as_ref()
+                    .is_none_or(|details| details.0),
+                reference_label: options
+                    .reference_details
+                    .as_ref()
+                    .map(|details| details.1.clone()),
+                fuzzy: false,
+                associated_type,
+            });
+        }
+        _ => return None,
+    };
+    let value = raw;
+    let value = value
+        .strip_prefix(&prefix)?
+        .strip_suffix(&suffix)?
+        .to_owned();
+    Some(TypedReference {
+        type_name,
+        value,
+        range: n_range(node),
+        is_outgoing: options
+            .reference_details
+            .as_ref()
+            .is_none_or(|details| details.0),
+        reference_label: options
+            .reference_details
+            .as_ref()
+            .map(|details| details.1.clone()),
+        fuzzy: !prefix.is_empty() || !suffix.is_empty(),
+        associated_type,
+    })
+}
+
+fn value_scope_head(raw: &str) -> &str {
+    raw.trim_matches('"').split('|').next().unwrap_or("")
+}
+
 fn valid_percent(s: &str) -> bool {
     s.strip_suffix('%')
         .is_some_and(|number| number.parse::<f64>().is_ok())
@@ -1270,6 +1883,20 @@ fn count_rules(
     }
     Ok(())
 }
+fn field_matches(kind: &RuleKind, key: &str) -> bool {
+    match kind {
+        RuleKind::Node {
+            left: NewField::VariableSet(_) | NewField::Type(_),
+            ..
+        }
+        | RuleKind::Leaf {
+            left: NewField::VariableSet(_) | NewField::Type(_),
+            ..
+        } => true,
+        _ => field_name(kind).eq_ignore_ascii_case(key),
+    }
+}
+
 fn field_name(k: &RuleKind) -> String {
     match k {
         RuleKind::Node { left, .. } | RuleKind::Leaf { left, .. } => new_field_name(left),

@@ -13,12 +13,18 @@ members = [
     "crates/cwtools-cwt-project",
     "crates/cwtools-domain",
     "crates/cwtools-process",
+    "crates/cwtools-workspace",
+    "crates/cwtools-cache",
+    "crates/cwtools-game-core",
     "crates/cwtools-scopes",
     "crates/cwtools-docs",
     "crates/cwtools-metadata",
     "crates/cwtools-structural-diff-cli",
     "crates/cwtools-cwt-projection-cli",
     "crates/cwtools-rules-projection-cli",
+    "crates/cwtools-workspace-projection-cli",
+    "crates/cwtools-shader",
+    "crates/cwtools-semantic",
 ]
 
 [workspace.package]
@@ -30,6 +36,14 @@ rust-version = "1.85"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 regex = "1.11"
+globset = "0.4"
+cwtools-script-syntax = { path = "crates/cwtools-script-syntax" }
+cwtools-rules-engine = { path = "crates/cwtools-rules-engine" }
+cwtools-rule-ir = { path = "crates/cwtools-rule-ir" }
+cwtools-scopes = { path = "crates/cwtools-scopes" }
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

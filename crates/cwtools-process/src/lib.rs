@@ -241,6 +241,7 @@ fn convert_cst(xs: &[CstNode]) -> Vec<ProcessedItem> {
                 operator,
                 value,
                 range,
+                ..
             } => match value.as_ref() {
                 CstNode::Clause { children, .. } => Some(ProcessedItem::Node(Node {
                     key: key(k),

@@ -100,6 +100,7 @@ fn convert_item(node: &CstNode) -> Option<Item> {
             operator,
             value,
             range,
+            ..
         } => Some(Item::Assignment {
             key: key_text(key),
             operator: *operator,

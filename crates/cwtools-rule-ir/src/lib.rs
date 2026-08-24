@@ -5,7 +5,7 @@
     clippy::too_many_lines
 )]
 
-use cwtools_cwt_syntax::{ByteRange, CstNode, parse_cwt};
+use cwtools_cwt_syntax::{ByteRange, CstNode, Operator, parse_cwt};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,6 +121,12 @@ pub enum NewField {
     Parameter,
     ParameterValue,
     LocalisationParameter,
+    VariableSet(String),
+    ValueScope {
+        integer: bool,
+        minimum: String,
+        maximum: String,
+    },
     Opaque(String),
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -175,6 +181,16 @@ pub struct SubtypeDefinition {
     pub only_if_not: Vec<String>,
     pub modifiers: Vec<String>,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SkipRootKey {
+    Specific(String),
+    Any,
+    Multiple {
+        keys: Vec<String>,
+        should_match: bool,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct TypeDefinition {
     pub name: String,
@@ -189,7 +205,7 @@ pub struct TypeDefinition {
     pub type_key_filter: Option<(Vec<String>, bool)>,
     pub type_key_regex: Option<String>,
     pub root_completion_from_subtypes: bool,
-    pub skip_root_key: Vec<String>,
+    pub skip_root_key: Vec<SkipRootKey>,
     pub starts_with: Option<String>,
     pub type_per_file: bool,
     pub key_prefix: Option<String>,
@@ -284,6 +300,42 @@ fn key(n: &CstNode) -> String {
 fn number<T: std::str::FromStr>(s: &str, inf: T) -> T {
     s.trim().parse().unwrap_or(inf)
 }
+fn value_scope_field(s: &str) -> Option<NewField> {
+    let (integer, rest) = if let Some(rest) = s.strip_prefix("int_value_field") {
+        (true, rest)
+    } else {
+        (false, s.strip_prefix("value_field")?)
+    };
+    let defaults = if integer {
+        (i32::MIN.to_string(), i32::MAX.to_string())
+    } else {
+        (f64::MIN.to_string(), f64::MAX.to_string())
+    };
+    let (minimum, maximum) = if rest.is_empty() {
+        defaults
+    } else {
+        let body = rest
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+            .or_else(|| {
+                rest.strip_prefix('(')
+                    .and_then(|value| value.strip_suffix(')'))
+            })?;
+        let mut range = body.split("..");
+        let minimum = range.next()?.trim();
+        let maximum = range.next()?.trim();
+        if range.next().is_some() || minimum.is_empty() || maximum.is_empty() {
+            return None;
+        }
+        (minimum.to_owned(), maximum.to_owned())
+    };
+    Some(NewField::ValueScope {
+        integer,
+        minimum,
+        maximum,
+    })
+}
+
 fn typed(s: &str) -> NewField {
     let s = s.trim();
     if s == "scalar" {
@@ -294,6 +346,15 @@ fn typed(s: &str) -> NewField {
         "$parameter_value" => return NewField::ParameterValue,
         "$localisation_parameter" => return NewField::LocalisationParameter,
         _ => {}
+    }
+    if let Some(kind) = s
+        .strip_prefix("value_set[")
+        .and_then(|value| value.strip_suffix(']'))
+    {
+        return NewField::VariableSet(kind.to_owned());
+    }
+    if let Some(field) = value_scope_field(s) {
+        return field;
     }
     if s == "bool" {
         return NewField::Value(ValueType::Bool);
@@ -493,8 +554,12 @@ fn replace_scopes(value: &str) -> ReplaceScopes {
     result
 }
 fn directive(line: &str, o: &mut Options) {
-    let x = line
-        .trim()
+    let trimmed = line.trim();
+    if let Some(description) = trimmed.strip_prefix("###") {
+        o.description = Some(description.to_owned());
+        return;
+    }
+    let x = trimmed
         .trim_start_matches('#')
         .trim_start_matches('#')
         .trim();
@@ -534,6 +599,12 @@ fn directive(line: &str, o: &mut Options) {
             o.comparison = !matches!(value.to_ascii_lowercase().as_str(), "false" | "0")
         }
         "description" => o.description = Some(directive_value(value)),
+        "outgoingreferencelabel" => {
+            o.reference_details = Some((true, directive_value(value)));
+        }
+        "incomingreferencelabel" => {
+            o.reference_details = Some((false, directive_value(value)));
+        }
         "inject" => o.inject = Some(directive_value(value)),
         _ => {}
     }
@@ -621,22 +692,6 @@ fn make_rule(n: &CstNode, pending: Vec<String>) -> Option<(String, NewRule)> {
         ))
     } else {
         None
-    }
-}
-fn props(clause: &CstNode, name: &str) -> Vec<String> {
-    match clause {
-        CstNode::Clause { children, .. } => children
-            .iter()
-            .filter_map(|n| match n {
-                CstNode::Assignment {
-                    key: field_key,
-                    value,
-                    ..
-                } if key(field_key) == name => Some(text(value).trim_matches('"').to_owned()),
-                _ => None,
-            })
-            .collect(),
-        _ => vec![],
     }
 }
 fn prop(clause: &CstNode, name: &str) -> Option<String> {
@@ -825,6 +880,59 @@ fn parse_metadata_section(
     }
 }
 
+fn skip_root_keys(clause: &CstNode) -> Vec<SkipRootKey> {
+    let CstNode::Clause { children, .. } = clause else {
+        return Vec::new();
+    };
+    let assignments = children
+        .iter()
+        .filter_map(|node| {
+            let CstNode::Assignment {
+                key: field_key,
+                operator,
+                value,
+                ..
+            } = node
+            else {
+                return None;
+            };
+            (key(field_key) == "skip_root_key").then_some((*operator, value.as_ref()))
+        })
+        .collect::<Vec<_>>();
+    match assignments.as_slice() {
+        [] => Vec::new(),
+        [(_, CstNode::Clause { children, .. })] => children
+            .iter()
+            .filter_map(|node| {
+                let value = match node {
+                    CstNode::Bare { token } => Some(token.value.clone()),
+                    _ => None,
+                }?;
+                Some(if value == "any" {
+                    SkipRootKey::Any
+                } else {
+                    SkipRootKey::Specific(value)
+                })
+            })
+            .collect(),
+        [(_, value)] => {
+            let value = text(value).trim_matches('"').to_owned();
+            vec![if value == "any" {
+                SkipRootKey::Any
+            } else {
+                SkipRootKey::Specific(value)
+            }]
+        }
+        values => vec![SkipRootKey::Multiple {
+            keys: values
+                .iter()
+                .map(|(_, value)| text(value).trim_matches('"').to_owned())
+                .collect(),
+            should_match: values[0].0 == Operator::Eq,
+        }],
+    }
+}
+
 fn type_def(name: &str, clause: &CstNode) -> TypeDefinition {
     let mut t = TypeDefinition {
         name: name.to_owned(),
@@ -833,12 +941,18 @@ fn type_def(name: &str, clause: &CstNode) -> TypeDefinition {
     t.path = prop(clause, "path");
     t.path_file = prop(clause, "path_file");
     t.name_field = prop(clause, "name_field");
+    t.conditions = prop(clause, "conditions");
     t.starts_with = prop(clause, "starts_with");
-    t.skip_root_key = props(clause, "skip_root_key");
+    t.skip_root_key = skip_root_keys(clause);
     t.type_key_filter = prop(clause, "type_key_filter").map(|v| filter_value(&v));
+    t.type_key_regex = prop(clause, "type_key_regex");
     t.type_per_file = yes(prop(clause, "type_per_file"));
+    t.root_completion_from_subtypes = yes(prop(clause, "root_completion_from_subtypes"));
+    t.key_prefix = prop(clause, "type_key_prefix").or_else(|| prop(clause, "key_prefix"));
     t.unique = yes(prop(clause, "unique"));
     t.warning_only = yes(prop(clause, "warning_only"));
+    t.should_be_referenced = prop(clause, "should_be_referenced");
+    t.unknown_key_handling = prop(clause, "unknown_key_handling");
     if let CstNode::Clause { children, .. } = clause {
         // Only explicit subtype[...] assignments define subtypes. Ordinary
         // properties belong to the type itself and must never be reclassified.
@@ -864,6 +978,7 @@ fn type_def(name: &str, clause: &CstNode) -> TypeDefinition {
                             | "unique"
                             | "warning_only"
                             | "root_completion_from_subtypes"
+                            | "type_key_prefix"
                             | "key_prefix"
                             | "should_be_referenced"
                             | "unknown_key_handling"
@@ -897,9 +1012,20 @@ fn type_def(name: &str, clause: &CstNode) -> TypeDefinition {
                             if parsed.replace_scopes.is_some() {
                                 s.replace_scopes = parsed.replace_scopes;
                             }
-                            if body.to_ascii_lowercase().starts_with("starts_with") {
+                            let lower = body.to_ascii_lowercase();
+                            if lower.starts_with("starts_with") {
                                 if let Some(value) = body.split_once('=').map(|x| x.1) {
                                     s.starts_with = Some(directive_value(value));
+                                }
+                            }
+                            if lower.starts_with("type_key_field") {
+                                if let Some(value) = body.split_once('=').map(|x| x.1) {
+                                    s.type_key_field = Some(directive_value(value));
+                                }
+                            }
+                            if lower.starts_with("type_key_regex") {
+                                if let Some(value) = body.split_once('=').map(|x| x.1) {
+                                    s.type_key_regex = Some(directive_value(value));
                                 }
                             }
                             if body.to_ascii_lowercase().starts_with("only_if_not") {
@@ -1125,6 +1251,14 @@ mod tests {
         assert_eq!(rule_options(&d.rules[0]).description, Some("one".into()));
     }
     #[test]
+    fn triple_hash_description_preserves_legacy_spacing() {
+        let d = parse_document("x", "### Alpha docs\na = scalar").unwrap();
+        assert_eq!(
+            rule_options(&d.rules[0]).description.as_deref(),
+            Some(" Alpha docs")
+        );
+    }
+    #[test]
     fn all_fields() {
         for s in [
             "scalar",
@@ -1160,11 +1294,17 @@ mod tests {
     fn types() {
         let d = parse_document(
             "x",
-            "types = { type[event] = { path = game/events unique = yes } }",
+            "types = { type[event] = { path = game/events conditions = active type_key_regex = ^event root_completion_from_subtypes = yes key_prefix = pre_ should_be_referenced = yes unknown_key_handling = warning unique = yes } }",
         )
         .unwrap();
         assert_eq!(d.types[0].name, "event");
-        assert_eq!(d.types[0].path.as_deref(), Some("game/events"))
+        assert_eq!(d.types[0].path.as_deref(), Some("game/events"));
+        assert_eq!(d.types[0].conditions.as_deref(), Some("active"));
+        assert_eq!(d.types[0].type_key_regex.as_deref(), Some("^event"));
+        assert!(d.types[0].root_completion_from_subtypes);
+        assert_eq!(d.types[0].key_prefix.as_deref(), Some("pre_"));
+        assert_eq!(d.types[0].should_be_referenced.as_deref(), Some("yes"));
+        assert_eq!(d.types[0].unknown_key_handling.as_deref(), Some("warning"))
     }
     #[test]
     fn aliases() {
@@ -1409,6 +1549,49 @@ mod tests {
     #[test]
     fn filepath() {
         assert!(matches!(typed("filepath"), NewField::Filepath { .. }))
+    }
+    #[test]
+    fn value_scope_fields_preserve_kind_and_bounds() {
+        assert!(matches!(
+            typed("value_field[-2.5..3.5]"),
+            NewField::ValueScope {
+                integer: false,
+                ref minimum,
+                ref maximum,
+            } if minimum == "-2.5" && maximum == "3.5"
+        ));
+        assert!(matches!(
+            typed("int_value_field(-2..3)"),
+            NewField::ValueScope {
+                integer: true,
+                ref minimum,
+                ref maximum,
+            } if minimum == "-2" && maximum == "3"
+        ));
+        assert!(matches!(
+            typed("value_field"),
+            NewField::ValueScope { integer: false, .. }
+        ));
+    }
+
+    #[test]
+    fn variable_set_and_reference_labels() {
+        assert_eq!(
+            typed("value_set[country_flag]"),
+            NewField::VariableSet("country_flag".into())
+        );
+        let outgoing =
+            parse_document("x", "## outgoingReferenceLabel = target\nfield = <event>").unwrap();
+        assert_eq!(
+            rule_options(&outgoing.rules[0]).reference_details,
+            Some((true, "target".into()))
+        );
+        let incoming =
+            parse_document("x", "## incomingReferenceLabel = source\nfield = <event>").unwrap();
+        assert_eq!(
+            rule_options(&incoming.rules[0]).reference_details,
+            Some((false, "source".into()))
+        );
     }
     #[test]
     fn scopes() {
