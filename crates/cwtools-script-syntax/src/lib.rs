@@ -177,7 +177,19 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
             while i < bytes.len() && bytes[i] != b'\n' {
                 i += 1
             }
-            out.push(tok(src, TokenKind::Comment, s, i, src[s..i].to_string()));
+            let end = if i > s && bytes[i.saturating_sub(1)] == b'\r' {
+                i - 1
+            } else {
+                i
+            };
+            out.push(tok(
+                src,
+                TokenKind::Comment,
+                s,
+                end,
+                src[s..end].to_string(),
+            ));
+            i = end;
             continue;
         }
         if bytes[i] == b'"' {
@@ -928,13 +940,7 @@ fn render_node_inline(node: &CstNode) -> String {
 
 fn render_token(token: &Token) -> String {
     if matches!(token.kind, TokenKind::QuotedString) {
-        format!(
-            "\"{}\"",
-            token
-                .value
-                .replace(char::from(92), "\\\\")
-                .replace('\"', "\\\"")
-        )
+        format!("\"{}\"", token.value)
     } else {
         token.value.clone()
     }
