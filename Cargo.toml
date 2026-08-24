@@ -4,6 +4,7 @@ members = [
     "crates/cwtools-source",
     "crates/cwtools-protocol",
     "crates/cwtools-transport",
+    "crates/cwtools-leaf",
 ]
 
 [workspace.package]
