@@ -545,12 +545,15 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                                         match detachedValidation.ValidateGlobalLocalisation() with
                                         | Invalid(_, es) -> es
                                         | _ -> []
-                                let globalErrors = shallowErrors @ deepErrors @ typeLocalisationErrors
-                                let globalErrors =
-                                    globalErrors
-                                    |> List.filter (fun error ->
-                                        entityFiles.Contains(normaliseIncrementalPath error.range.FileName))
-                                Some(shaderErrors @ errors @ globalErrors)
+                                if shouldCancel () then
+                                    None
+                                else
+                                    let globalErrors = shallowErrors @ deepErrors @ typeLocalisationErrors
+                                    let globalErrors =
+                                        globalErrors
+                                        |> List.filter (fun error ->
+                                            entityFiles.Contains(normaliseIncrementalPath error.range.FileName))
+                                    Some(shaderErrors @ errors @ globalErrors)
 
     let validateFileInteractiveCancellable (staged: StagedFileUpdate) (shouldCancel: unit -> bool) =
         if shouldCancel () then

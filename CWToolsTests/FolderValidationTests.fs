@@ -1873,8 +1873,29 @@ let incrementalScriptedRefreshTests =
                   (resolved.Value |> List.filter (fun error -> error.message.Contains("overlay_loc_1_title", StringComparison.Ordinal)))
                   (sprintf "sibling overlay localisation keys must satisfy the required event title: %A" (resolved.Value |> List.map _.message))
               Expect.equal (stl.AllLoadedLocalisation()) liveLocBefore "overlay localisation must never enter the live catalog"
+
+              let mutable completedCancellationChecks = 0
+              let completedForCancellationCount =
+                  stl.ValidateOverlayFilesCancellable(
+                      [ locFileEn, locEn; locFileZh, locZh; eventFile, event ],
+                      (fun () ->
+                          completedCancellationChecks <- completedCancellationChecks + 1
+                          false))
+              Expect.isSome completedForCancellationCount "the cancellation-count baseline must complete"
+
+              let mutable lateCancellationChecks = 0
+              let cancelledAfterGlobalLocalisation =
+                  stl.ValidateOverlayFilesCancellable(
+                      [ locFileEn, locEn; locFileZh, locZh; eventFile, event ],
+                      (fun () ->
+                          lateCancellationChecks <- lateCancellationChecks + 1
+                          lateCancellationChecks >= completedCancellationChecks))
+              Expect.isNone
+                  cancelledAfterGlobalLocalisation
+                  "cancellation after global localisation must discard the completed diagnostics"
+
               let cancelled = stl.ValidateOverlayFilesCancellable([ locFileEn, locEn; eventFile, event ], (fun () -> true))
-              Expect.isNone cancelled "a cancelled localisation batch must publish no partial result"
+              Expect.isNone cancelled "an already cancelled localisation batch must publish no partial result"
 
           testWithCapturedLogs "commit refreshes scripted parameter enums" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/scripteddefaults"
