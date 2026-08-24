@@ -8,6 +8,7 @@ members = [
     "crates/cwtools-script-syntax",
     "crates/cwtools-domain",
     "crates/cwtools-docs",
+    "crates/cwtools-structural-diff-cli",
 ]
 
 [workspace.package]

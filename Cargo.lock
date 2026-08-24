@@ -49,6 +49,14 @@ name = "cwtools-source"
 version = "0.1.0"
 
 [[package]]
+name = "cwtools-structural-diff-cli"
+version = "0.1.0"
+dependencies = [
+ "cwtools-script-syntax",
+ "serde_json",
+]
+
+[[package]]
 name = "cwtools-transport"
 version = "0.1.0"
 dependencies = [
