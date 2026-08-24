@@ -377,6 +377,29 @@ impl<'a> Parser<'a> {
         }
         t
     }
+    fn consume_clause(&mut self) -> Option<Token> {
+        let mut depth = 1usize;
+        loop {
+            let kind = self.tokens[self.at].kind.clone();
+            match kind {
+                TokenKind::Eof => return None,
+                TokenKind::LBrace => {
+                    self.take();
+                    depth += 1;
+                }
+                TokenKind::RBrace => {
+                    let close = self.take();
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(close);
+                    }
+                }
+                _ => {
+                    self.take();
+                }
+            }
+        }
+    }
     fn nodes(&mut self, in_clause: bool) -> Vec<CstNode> {
         let mut v = Vec::new();
         loop {
@@ -419,20 +442,23 @@ impl<'a> Parser<'a> {
                 };
                 if matches!(self.peek().kind, TokenKind::LBrace) {
                     let open = self.take();
-                    if self.depth >= MAX_DEPTH {
+                    let (children, close) = if self.depth >= MAX_DEPTH {
                         self.errors.push(error(
                             self.src,
                             "maximum nesting depth exceeded",
                             open.range.start,
                         ));
-                    }
-                    self.depth += 1;
-                    let children = self.nodes(true);
-                    self.depth -= 1;
-                    let close = if matches!(self.peek().kind, TokenKind::RBrace) {
-                        Some(self.take())
+                        (Vec::new(), self.consume_clause())
                     } else {
-                        None
+                        self.depth += 1;
+                        let children = self.nodes(true);
+                        self.depth -= 1;
+                        let close = if matches!(self.peek().kind, TokenKind::RBrace) {
+                            Some(self.take())
+                        } else {
+                            None
+                        };
+                        (children, close)
                     };
                     let end = close.as_ref().map_or(open.range.end, |x| x.range.end);
                     if close.is_none() {
@@ -792,6 +818,31 @@ mod tests {
             .map(|token| token.raw.as_str())
             .collect();
         assert_eq!(reconstructed, source);
+    }
+
+    #[test]
+    fn maximum_nesting_boundary_is_enforced_without_recursion() {
+        for levels in [MAX_DEPTH, MAX_DEPTH + 1, 10_000] {
+            let source = format!(
+                "a={{{}x{}}}",
+                "b={".repeat(levels - 1),
+                "}".repeat(levels - 1)
+            );
+            let loss_aware = parse_loss_aware(&source);
+            assert!(loss_aware.tokens.iter().all(
+                |token| token.range.start <= token.range.end && token.range.end <= source.len()
+            ));
+            if levels == MAX_DEPTH {
+                assert!(parse(&source).is_ok());
+            } else {
+                let errors = parse(&source).expect_err("excessive nesting must fail");
+                assert!(
+                    errors
+                        .iter()
+                        .any(|error| error.message.contains("maximum nesting"))
+                );
+            }
+        }
     }
 
     #[test]
