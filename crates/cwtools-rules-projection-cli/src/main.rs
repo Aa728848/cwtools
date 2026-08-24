@@ -436,4 +436,26 @@ mod tests {
             matches!(execute(x), Output::Error { error: WireError { kind, .. } } if kind == "query")
         );
     }
+    #[test]
+    fn contextual_rhs_specific_projects() {
+        let mut x = input("known = x", Mode::Completion);
+        x.rules[0].text = "root = { known = exact }".into();
+        x.cursor = Some("known = x".len());
+        if let Output::Completion { items } = execute(x) {
+            assert_eq!(items, vec!["exact"]);
+        } else {
+            panic!("expected completion");
+        }
+    }
+    #[test]
+    fn contextual_unclosed_clause_projects_loss_aware() {
+        let mut x = input("node = {", Mode::Completion);
+        x.rules[0].text = "root = { node = { child = scalar } }".into();
+        x.cursor = Some("node = {".len());
+        if let Output::Completion { items } = execute(x) {
+            assert_eq!(items, vec!["child"]);
+        } else {
+            panic!("expected completion");
+        }
+    }
 }

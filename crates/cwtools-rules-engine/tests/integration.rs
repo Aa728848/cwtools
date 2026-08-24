@@ -1635,10 +1635,11 @@ fn contextual_completion_accepts_unicode_boundary() {
     );
 }
 #[test]
-fn contextual_completion_rejects_incomplete_script() {
-    assert_eq!(
-        catalog("root = { a = scalar }").completion_at("root", "a = {", 5, ""),
-        Err(QueryError::ParseFailed)
+fn contextual_completion_accepts_incomplete_script_loss_aware() {
+    assert!(
+        catalog("root = { a = { child = scalar } }")
+            .completion_at("root", "a = {", 5, "")
+            .is_ok()
     );
 }
 #[test]
@@ -1673,4 +1674,79 @@ fn contextual_info_unknown_field_is_none() {
             .unwrap(),
         None
     );
+}
+
+#[test]
+fn contextual_rhs_specific_completion() {
+    let c = catalog("root = { mode = enabled }");
+    assert_eq!(
+        c.completion_at("root", "mode = en", 9, "en").unwrap(),
+        vec!["enabled"]
+    );
+}
+#[test]
+fn contextual_rhs_specific_excludes_field_names() {
+    let c = catalog("root = { mode = enabled other = scalar }");
+    assert_eq!(
+        c.completion_at("root", "mode = en", 9, "").unwrap(),
+        vec!["enabled"]
+    );
+}
+#[test]
+fn contextual_rhs_enum_completion_is_sorted_and_filtered() {
+    let c =
+        catalog("enums = { enum[state] = { zulu alpha alpine } }\nroot = { state = enum[state] }");
+    assert_eq!(
+        c.completion_at("root", "state = al", 10, "al").unwrap(),
+        vec!["alpha", "alpine"]
+    );
+}
+#[test]
+fn contextual_rhs_simple_type_completion() {
+    let c =
+        catalog("types = { type[id] = { value = first value = second } }\nroot = { id = <id> }");
+    assert_eq!(
+        c.completion_at("root", "id = f", 6, "f").unwrap(),
+        vec!["first"]
+    );
+}
+#[test]
+fn contextual_rhs_complex_type_completion() {
+    let c = catalog("types = { type[id] = { value = first } }\nroot = { id = pre<id>post }");
+    assert_eq!(
+        c.completion_at("root", "id = pre", 8, "pre").unwrap(),
+        vec!["prefirstpost"]
+    );
+}
+#[test]
+fn contextual_rhs_unknown_type_is_empty() {
+    let c = catalog("root = { id = <missing> }");
+    assert!(c.completion_at("root", "id = x", 6, "").unwrap().is_empty());
+}
+#[test]
+fn contextual_completion_loss_aware_unclosed_clause() {
+    let c = catalog("root = { node = { child = scalar } }");
+    assert_eq!(
+        c.completion_at("root", "node = {", 8, "").unwrap(),
+        vec!["child"]
+    );
+}
+#[test]
+fn contextual_completion_loss_aware_unclosed_nested_clause() {
+    let c = catalog("root = { node = { nested = { value = scalar } sibling = scalar } }");
+    assert_eq!(
+        c.completion_at(
+            "root",
+            "node = { nested = {",
+            "node = { nested = {".len(),
+            ""
+        )
+        .unwrap(),
+        vec!["value"]
+    );
+}
+#[test]
+fn contextual_completion_loss_aware_stray_close_is_safe() {
+    let c = catalog("root = { field = scalar }");
+    assert_eq!(c.completion_at("root", "} ", 2, "").unwrap(), vec!["field"]);
 }

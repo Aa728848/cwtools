@@ -381,13 +381,19 @@ impl RuleCatalog {
         if offset > source.len() || !source.is_char_boundary(offset) {
             return Err(QueryError::InvalidOffset);
         }
-        let cst = syntax::parse(source).map_err(|_| QueryError::ParseFailed)?;
+        let cst = syntax::parse_loss_aware(source);
         let Some(root_rule) = self.find(root) else {
             return Ok(Vec::new());
         };
         let (kind, nodes) = Self::context_at(&root_rule.kind, &cst.roots, offset, 0);
         let mut result = BTreeSet::new();
-        Self::collect_direct_completion(kind, nodes, prefix, &mut result);
+        if let Some(rule) = Self::rhs_rule_at(kind, nodes, offset)
+            && Self::supports_rhs_completion(&rule.kind)
+        {
+            self.collect_rhs_completion(&rule.kind, prefix, &mut result, 0);
+        } else {
+            Self::collect_direct_completion(kind, nodes, prefix, &mut result);
+        }
         Ok(result.into_iter().collect())
     }
 
@@ -429,7 +435,9 @@ impl RuleCatalog {
             else {
                 continue;
             };
-            if !(range.start <= offset && offset <= range.end) {
+            let contains = range.start <= offset && offset <= range.end
+                || matches!(value.as_ref(), CstNode::Clause { open, close: None, .. } if offset >= open.range.start);
+            if !contains {
                 continue;
             }
             let key = bare(key);
@@ -456,6 +464,98 @@ impl RuleCatalog {
             RuleKind::Subtype { rules, .. } => rules.as_slice(),
             _ => std::slice::from_ref(rule),
         })
+    }
+
+    fn supports_rhs_completion(kind: &RuleKind) -> bool {
+        matches!(
+            kind,
+            RuleKind::Leaf {
+                right: NewField::Specific(_)
+                    | NewField::Value(ValueType::Enum(_))
+                    | NewField::Type(_),
+                ..
+            } | RuleKind::LeafValue {
+                right: NewField::Specific(_)
+                    | NewField::Value(ValueType::Enum(_))
+                    | NewField::Type(_)
+            }
+        )
+    }
+
+    fn rhs_rule_at<'a>(
+        kind: &'a RuleKind,
+        nodes: &'a [CstNode],
+        offset: usize,
+    ) -> Option<&'a NewRule> {
+        nodes.iter().find_map(|node| {
+            let CstNode::Assignment { key, value, .. } = node else {
+                return None;
+            };
+            let value_range = n_range(value);
+            if !(value_range.start <= offset && offset <= value_range.end) {
+                return None;
+            }
+            let key = bare(key);
+            Self::direct_rules(kind).find(|rule| field_name(&rule.kind).eq_ignore_ascii_case(&key))
+        })
+    }
+
+    fn collect_rhs_completion(
+        &self,
+        kind: &RuleKind,
+        prefix: &str,
+        out: &mut BTreeSet<String>,
+        depth: usize,
+    ) {
+        if depth >= MAX_DEPTH {
+            return;
+        }
+        let (RuleKind::Leaf { right, .. } | RuleKind::LeafValue { right }) = kind else {
+            return;
+        };
+        match right {
+            NewField::Specific(value) => {
+                if value.starts_with(prefix) {
+                    out.insert(value.clone());
+                }
+            }
+            NewField::Value(ValueType::Enum(name)) => {
+                if let Some(values) = self.enums.get(&name.to_ascii_lowercase()) {
+                    out.extend(
+                        values
+                            .iter()
+                            .filter(|value| value.starts_with(prefix))
+                            .cloned(),
+                    );
+                }
+            }
+            NewField::Type(ir::TypeType::Simple(name)) => {
+                if let Some(rules) = self.type_rules(name) {
+                    for rule in rules {
+                        self.collect_rhs_completion(&rule.kind, prefix, out, depth + 1);
+                    }
+                }
+            }
+            NewField::Type(ir::TypeType::Complex {
+                prefix: left,
+                name,
+                suffix,
+            }) => {
+                if let Some(rules) = self.type_rules(name) {
+                    let mut inner = BTreeSet::new();
+                    for rule in rules {
+                        self.collect_rhs_completion(&rule.kind, "", &mut inner, depth + 1);
+                    }
+                    out.extend(
+                        inner
+                            .into_iter()
+                            .map(|value| format!("{left}{value}{suffix}"))
+                            .filter(|value| value.starts_with(prefix)),
+                    );
+                }
+            }
+            _ => {}
+        }
     }
 
     fn collect_direct_completion(
