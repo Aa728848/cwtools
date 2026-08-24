@@ -210,6 +210,24 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
             out.push(tok(src, TokenKind::RBrace, s, i, "}".into()));
             continue;
         }
+        // A sign belongs to a numeric literal when it is immediately followed by a digit
+        // (or a decimal point and a digit).  It must not become an Unknown token.
+        if matches!(bytes[i], b'+' | b'-')
+            && i + 1 < bytes.len()
+            && (bytes[i + 1].is_ascii_digit()
+                || (bytes[i + 1] == b'.' && i + 2 < bytes.len() && bytes[i + 2].is_ascii_digit()))
+        {
+            i += 1;
+            while i < bytes.len()
+                && (bytes[i].is_ascii_digit()
+                    || matches!(bytes[i], b'.' | b'e' | b'E' | b'+' | b'-'))
+            {
+                i += 1;
+            }
+            let raw = src[s..i].to_string();
+            out.push(tok(src, TokenKind::Identifier, s, i, raw));
+            continue;
+        }
         let mut found = None;
         for (op, k) in OPS {
             if src[i..].starts_with(op) {
@@ -433,6 +451,31 @@ impl<'a> Parser<'a> {
                 v.push(CstNode::Error { token: t });
                 continue;
             }
+            if matches!(self.peek().kind, TokenKind::LBrace) {
+                let open = self.take();
+                let clause_start = open.range.start;
+                self.depth += 1;
+                let children = self.nodes(true);
+                self.depth -= 1;
+                let close = if matches!(self.peek().kind, TokenKind::RBrace) {
+                    Some(self.take())
+                } else {
+                    None
+                };
+                let end = close
+                    .as_ref()
+                    .map_or(open.range.end, |token| token.range.end);
+                v.push(CstNode::Clause {
+                    open,
+                    children,
+                    close,
+                    range: ByteRange {
+                        start: clause_start,
+                        end,
+                    },
+                });
+                continue;
+            }
             let key = self.take();
             let key_start = key.range.start;
             if matches!(self.peek().kind, TokenKind::Operator(_)) {
@@ -440,6 +483,23 @@ impl<'a> Parser<'a> {
                     TokenKind::Operator(x) => x,
                     _ => unreachable!(),
                 };
+                if matches!(
+                    self.peek().kind,
+                    TokenKind::Eof | TokenKind::RBrace | TokenKind::Operator(_)
+                ) {
+                    let at = self.peek().range.start;
+                    self.errors.push(error(self.src, "MissingValue", at));
+                    v.push(CstNode::Assignment {
+                        key: Box::new(CstNode::Bare { token: key.clone() }),
+                        operator: op,
+                        value: Box::new(CstNode::Error { token: key }),
+                        range: ByteRange {
+                            start: key_start,
+                            end: at,
+                        },
+                    });
+                    continue;
+                }
                 if matches!(self.peek().kind, TokenKind::LBrace) {
                     let open = self.take();
                     let (children, close) = if self.depth >= MAX_DEPTH {
@@ -918,6 +978,23 @@ mod tests {
             "SŠš"
         );
         assert!(decode_script_bytes(&[0xFF], ScriptEncoding::Utf8).is_err());
+    }
+
+    #[test]
+    fn signed_values_missing_values_and_standalone_clauses() {
+        let parsed = parse("negative = -12 decimal = +1.5 exponent = -2e+3 { one two }").unwrap();
+        let values: Vec<_> = parsed
+            .tokens
+            .iter()
+            .map(|token| token.value.as_str())
+            .collect();
+        assert!(values.contains(&"-12"));
+        assert!(values.contains(&"+1.5"));
+        assert!(values.contains(&"-2e+3"));
+        assert!(matches!(parsed.roots.last(), Some(CstNode::Clause { .. })));
+        let errors =
+            parse("outer = { missing = }").expect_err("missing assignment value must fail");
+        assert!(errors.iter().any(|error| error.message == "MissingValue"));
     }
 
     #[test]
