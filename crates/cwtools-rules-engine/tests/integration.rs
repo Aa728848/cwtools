@@ -1,6 +1,7 @@
 use cwtools_rule_ir::parse_document;
 use cwtools_rules_engine::{
-    CompileError, MAX_DEPTH, RuleCatalog, ScopeUniverse, ValidationOutcome, diagnostic_message_key,
+    CompileError, MAX_DEPTH, QueryError, RuleCatalog, ScopeUniverse, ValidationOutcome,
+    diagnostic_message_key,
 };
 
 fn catalog(source: &str) -> RuleCatalog {
@@ -1551,4 +1552,125 @@ fn emitted_diagnostics_carry_canonical_message_keys() {
             );
         }
     }
+}
+
+#[test]
+fn contextual_completion_uses_direct_root_children() {
+    let c = catalog("root = { alpha = scalar node = { child = scalar } }");
+    assert_eq!(
+        c.completion_at("root", "", 0, "").unwrap(),
+        vec!["alpha", "node"]
+    );
+}
+#[test]
+fn contextual_completion_enters_nested_clause() {
+    let c = catalog("root = { root_field = scalar node = { child = scalar } }");
+    let source = "node = { child = x }";
+    assert_eq!(
+        c.completion_at("root", source, 10, "").unwrap(),
+        Vec::<String>::new()
+    );
+}
+#[test]
+fn contextual_completion_filters_prefix_and_sorts() {
+    let c = catalog("root = { beta = scalar alpha = scalar alpine = scalar }");
+    assert_eq!(
+        c.completion_at("root", "", 0, "al").unwrap(),
+        vec!["alpha", "alpine"]
+    );
+}
+#[test]
+fn contextual_completion_hides_satisfied_max_cardinality() {
+    let c = catalog("root = { one = scalar ## cardinality = 0..2\nmany = scalar }");
+    assert_eq!(
+        c.completion_at("root", "one = x", 7, "").unwrap(),
+        vec!["many"]
+    );
+}
+#[test]
+fn contextual_completion_keeps_remaining_cardinality() {
+    let c = catalog("root = { ## cardinality = 0..2\nmany = scalar }");
+    assert_eq!(
+        c.completion_at("root", "many = x", 8, "").unwrap(),
+        vec!["many"]
+    );
+}
+#[test]
+fn contextual_completion_includes_subtype_direct_children() {
+    let c = catalog("root = { subtype[x] = { nested = scalar } ordinary = scalar }");
+    assert_eq!(
+        c.completion_at("root", "", 0, "").unwrap(),
+        vec!["nested", "ordinary"]
+    );
+}
+#[test]
+fn contextual_completion_unknown_root_is_empty() {
+    assert!(
+        catalog("root = { a = scalar }")
+            .completion_at("missing", "", 0, "")
+            .unwrap()
+            .is_empty()
+    );
+}
+#[test]
+fn contextual_completion_rejects_offset_past_end() {
+    assert_eq!(
+        catalog("root = { a = scalar }").completion_at("root", "", 1, ""),
+        Err(QueryError::InvalidOffset)
+    );
+}
+#[test]
+fn contextual_completion_rejects_unicode_midpoint() {
+    assert_eq!(
+        catalog("root = { a = scalar }").completion_at("root", "雪", 1, ""),
+        Err(QueryError::InvalidOffset)
+    );
+}
+#[test]
+fn contextual_completion_accepts_unicode_boundary() {
+    assert!(
+        catalog("root = { a = scalar }")
+            .completion_at("root", "a = 雪", 7, "")
+            .is_ok()
+    );
+}
+#[test]
+fn contextual_completion_rejects_incomplete_script() {
+    assert_eq!(
+        catalog("root = { a = scalar }").completion_at("root", "a = {", 5, ""),
+        Err(QueryError::ParseFailed)
+    );
+}
+#[test]
+fn contextual_info_is_direct_and_case_insensitive() {
+    let c = catalog(
+        "root = {\n## description = Root detail\nAlpha = scalar\nnode = {\n## description = Child detail\nchild = scalar\n}\n}",
+    );
+    assert_eq!(
+        c.info_at("root", "", 0, "alpha").unwrap().as_deref(),
+        Some("Root detail")
+    );
+}
+#[test]
+fn contextual_info_does_not_leak_nested_fields_at_root() {
+    let c = catalog("root = {\nnode = {\n## description = Child detail\nchild = scalar\n}\n}");
+    assert_eq!(c.info_at("root", "", 0, "child").unwrap(), None);
+}
+#[test]
+fn contextual_info_enters_nested_clause() {
+    let c = catalog("root = {\nnode = {\n## description = Child detail\nchild = scalar\n}\n}");
+    let source = "node = { child = x }";
+    assert_eq!(
+        c.info_at("root", source, 10, "child").unwrap().as_deref(),
+        Some("Child detail")
+    );
+}
+#[test]
+fn contextual_info_unknown_field_is_none() {
+    assert_eq!(
+        catalog("root = { a = scalar }")
+            .info_at("root", "", 0, "missing")
+            .unwrap(),
+        None
+    );
 }

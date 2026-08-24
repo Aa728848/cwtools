@@ -21,6 +21,7 @@ struct Input {
     mode: Mode,
     prefix: Option<String>,
     field: Option<String>,
+    cursor: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -148,15 +149,30 @@ fn execute(input: Input) -> Output {
             });
             Output::Validation { diagnostics }
         }
-        Mode::Completion => Output::Completion {
-            items: catalog.completion(&input.root, input.prefix.as_deref().unwrap_or("")),
-        },
-        Mode::Info => Output::Info {
-            info: input
-                .field
-                .as_deref()
-                .and_then(|field| catalog.info(&input.root, field)),
-        },
+        Mode::Completion => {
+            let prefix = input.prefix.as_deref().unwrap_or("");
+            let items = if let Some(cursor) = input.cursor {
+                match catalog.completion_at(&input.root, &input.source, cursor, prefix) {
+                    Ok(items) => items,
+                    Err(value) => return error("query", format!("{value:?}")),
+                }
+            } else {
+                catalog.completion(&input.root, prefix)
+            };
+            Output::Completion { items }
+        }
+        Mode::Info => {
+            let field = input.field.as_deref().unwrap_or("");
+            let info = if let Some(cursor) = input.cursor {
+                match catalog.info_at(&input.root, &input.source, cursor, field) {
+                    Ok(info) => info,
+                    Err(value) => return error("query", format!("{value:?}")),
+                }
+            } else {
+                catalog.info(&input.root, field)
+            };
+            Output::Info { info }
+        }
     }
 }
 
@@ -197,6 +213,7 @@ mod tests {
             mode,
             prefix: None,
             field: None,
+            cursor: None,
         }
     }
     #[test]
@@ -399,5 +416,24 @@ mod tests {
     #[test]
     fn invalid_boundary_position() {
         assert!(LineIndex::new("😀").position("😀", 1).is_none());
+    }
+    #[test]
+    fn contextual_completion_cursor_is_used() {
+        let mut x = input("known = x", Mode::Completion);
+        x.cursor = Some(9);
+        if let Output::Completion { items } = execute(x) {
+            assert!(!items.contains(&"known".to_owned()));
+            assert!(items.contains(&"value".to_owned()));
+        } else {
+            panic!("expected completion");
+        }
+    }
+    #[test]
+    fn invalid_contextual_cursor_is_query_error() {
+        let mut x = input("雪", Mode::Completion);
+        x.cursor = Some(1);
+        assert!(
+            matches!(execute(x), Output::Error { error: WireError { kind, .. } } if kind == "query")
+        );
     }
 }

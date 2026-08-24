@@ -125,6 +125,12 @@ pub enum ValidationOutcome {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QueryError {
+    InvalidOffset,
+    ParseFailed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompileError {
     TooManyRules,
     TooDeep,
@@ -360,6 +366,138 @@ impl RuleCatalog {
         self.find(root)
             .and_then(|r| Self::find_info(&r.kind, field))
     }
+    /// Return direct completions for the deepest rule clause containing `offset`.
+    ///
+    /// # Errors
+    /// Returns [`QueryError::InvalidOffset`] for a non-boundary offset and
+    /// [`QueryError::ParseFailed`] when `source` is not a complete script.
+    pub fn completion_at(
+        &self,
+        root: &str,
+        source: &str,
+        offset: usize,
+        prefix: &str,
+    ) -> Result<Vec<String>, QueryError> {
+        if offset > source.len() || !source.is_char_boundary(offset) {
+            return Err(QueryError::InvalidOffset);
+        }
+        let cst = syntax::parse(source).map_err(|_| QueryError::ParseFailed)?;
+        let Some(root_rule) = self.find(root) else {
+            return Ok(Vec::new());
+        };
+        let (kind, nodes) = Self::context_at(&root_rule.kind, &cst.roots, offset, 0);
+        let mut result = BTreeSet::new();
+        Self::collect_direct_completion(kind, nodes, prefix, &mut result);
+        Ok(result.into_iter().collect())
+    }
+
+    /// Return direct field documentation for the deepest rule clause at `offset`.
+    ///
+    /// # Errors
+    /// Returns [`QueryError::InvalidOffset`] for a non-boundary offset and
+    /// [`QueryError::ParseFailed`] when `source` is not a complete script.
+    pub fn info_at(
+        &self,
+        root: &str,
+        source: &str,
+        offset: usize,
+        field: &str,
+    ) -> Result<Option<String>, QueryError> {
+        if offset > source.len() || !source.is_char_boundary(offset) {
+            return Err(QueryError::InvalidOffset);
+        }
+        let cst = syntax::parse(source).map_err(|_| QueryError::ParseFailed)?;
+        let Some(root_rule) = self.find(root) else {
+            return Ok(None);
+        };
+        let (kind, _) = Self::context_at(&root_rule.kind, &cst.roots, offset, 0);
+        Ok(Self::find_direct_info(kind, field))
+    }
+    fn context_at<'a>(
+        kind: &'a RuleKind,
+        nodes: &'a [CstNode],
+        offset: usize,
+        depth: usize,
+    ) -> (&'a RuleKind, &'a [CstNode]) {
+        if depth >= MAX_DEPTH {
+            return (kind, nodes);
+        }
+        for node in nodes {
+            let CstNode::Assignment {
+                key, value, range, ..
+            } = node
+            else {
+                continue;
+            };
+            if !(range.start <= offset && offset <= range.end) {
+                continue;
+            }
+            let key = bare(key);
+            let Some(rule) = Self::direct_rules(kind)
+                .find(|rule| field_name(&rule.kind).eq_ignore_ascii_case(&key))
+            else {
+                continue;
+            };
+            if let CstNode::Clause { children, .. } = value.as_ref() {
+                return Self::context_at(&rule.kind, children, offset, depth + 1);
+            }
+        }
+        (kind, nodes)
+    }
+
+    fn direct_rules(kind: &RuleKind) -> impl Iterator<Item = &NewRule> {
+        let rules = match kind {
+            RuleKind::Node { rules, .. }
+            | RuleKind::ValueClause { rules }
+            | RuleKind::Subtype { rules, .. } => rules.as_slice(),
+            _ => &[],
+        };
+        rules.iter().flat_map(|rule| match &rule.kind {
+            RuleKind::Subtype { rules, .. } => rules.as_slice(),
+            _ => std::slice::from_ref(rule),
+        })
+    }
+
+    fn collect_direct_completion(
+        kind: &RuleKind,
+        nodes: &[CstNode],
+        prefix: &str,
+        out: &mut BTreeSet<String>,
+    ) {
+        for rule in Self::direct_rules(kind) {
+            let name = field_name(&rule.kind);
+            let count = nodes
+                .iter()
+                .filter(|node| {
+                    assignment_key(node).is_some_and(|key| key.eq_ignore_ascii_case(&name))
+                })
+                .count();
+            if !name.is_empty()
+                && name.starts_with(prefix)
+                && i32::try_from(count).map_or(true, |count| count < rule.options.max)
+            {
+                out.insert(name);
+            }
+        }
+    }
+
+    fn find_direct_info(kind: &RuleKind, field: &str) -> Option<String> {
+        let rules = match kind {
+            RuleKind::Node { rules, .. }
+            | RuleKind::ValueClause { rules }
+            | RuleKind::Subtype { rules, .. } => rules.as_slice(),
+            _ => return None,
+        };
+        rules
+            .iter()
+            .flat_map(|rule| match &rule.kind {
+                RuleKind::Subtype { rules, .. } => rules.as_slice(),
+                _ => std::slice::from_ref(rule),
+            })
+            .find(|rule| field_name(&rule.kind).eq_ignore_ascii_case(field))
+            .and_then(|rule| rule.options.description.clone())
+    }
+
     fn collect_completion(&self, kind: &RuleKind, prefix: &str, out: &mut BTreeSet<String>) {
         let (RuleKind::Node { rules, .. }
         | RuleKind::ValueClause { rules }
@@ -1059,6 +1197,13 @@ fn bare(n: &CstNode) -> String {
         _ => String::new(),
     }
 }
+fn assignment_key(node: &CstNode) -> Option<String> {
+    let CstNode::Assignment { key, .. } = node else {
+        return None;
+    };
+    Some(bare(key))
+}
+
 fn n_range(n: &CstNode) -> ByteRange {
     match n {
         CstNode::Assignment { range, .. }
