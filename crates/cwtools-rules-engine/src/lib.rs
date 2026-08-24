@@ -209,7 +209,7 @@ impl RuleCatalog {
         };
         for r in rules {
             let name = field_name(&r.kind);
-            if name.starts_with(prefix) {
+            if !name.is_empty() && name.starts_with(prefix) {
                 out.insert(name);
             }
             if let RuleKind::Leaf { right, .. } | RuleKind::LeafValue { right } = &r.kind {
@@ -235,10 +235,17 @@ impl RuleCatalog {
         else {
             return None;
         };
-        rules
-            .iter()
-            .find(|r| field_name(&r.kind).eq_ignore_ascii_case(field))
-            .and_then(|r| r.options.description.clone())
+        for rule in rules {
+            if field_name(&rule.kind).eq_ignore_ascii_case(field)
+                && let Some(description) = &rule.options.description
+            {
+                return Some(description.clone());
+            }
+            if let Some(description) = Self::find_info(&rule.kind, field) {
+                return Some(description);
+            }
+        }
+        None
     }
     fn find(&self, n: &str) -> Option<&NewRule> {
         let k = n.to_ascii_lowercase();
@@ -273,6 +280,8 @@ impl RuleCatalog {
         else {
             return;
         };
+        let effective_rules = self.active_rules(rules, nodes, seen, depth);
+        let rules = effective_rules.as_slice();
         let mut occurrences: BTreeMap<String, Vec<ByteRange>> = BTreeMap::new();
         for n in nodes {
             if let CstNode::Assignment {
@@ -343,6 +352,62 @@ impl RuleCatalog {
             }
         }
     }
+    fn active_rules(
+        &self,
+        rules: &[NewRule],
+        nodes: &[CstNode],
+        seen: &BTreeSet<String>,
+        depth: usize,
+    ) -> Vec<NewRule> {
+        if depth > MAX_DEPTH {
+            return Vec::new();
+        }
+        let mut active = BTreeMap::new();
+        for rule in rules {
+            if let RuleKind::Subtype {
+                name,
+                primary: true,
+                rules: children,
+            } = &rule.kind
+            {
+                let probe_kind = RuleKind::Node {
+                    left: NewField::Specific("__subtype_probe".into()),
+                    rules: children.clone(),
+                };
+                let mut probe = ValidationResult::default();
+                let mut probe_seen = seen.clone();
+                self.validate_nodes(&probe_kind, nodes, &mut probe, &mut probe_seen, depth + 1);
+                active.insert(
+                    name.to_ascii_lowercase(),
+                    probe
+                        .diagnostics
+                        .iter()
+                        .all(|diagnostic| diagnostic.code == "RULE101"),
+                );
+            }
+        }
+        let mut result = Vec::new();
+        for rule in rules {
+            match &rule.kind {
+                RuleKind::Subtype {
+                    name,
+                    primary,
+                    rules: children,
+                } => {
+                    let primary_active = active
+                        .get(&name.to_ascii_lowercase())
+                        .copied()
+                        .unwrap_or(false);
+                    if (*primary && primary_active) || (!*primary && !primary_active) {
+                        result.extend(self.active_rules(children, nodes, seen, depth + 1));
+                    }
+                }
+                _ => result.push(rule.clone()),
+            }
+        }
+        result
+    }
+
     fn left_alias_rule<'a>(&'a self, kind: &RuleKind, key: &str) -> Option<&'a NewRule> {
         let (RuleKind::Node { left: field, .. } | RuleKind::Leaf { left: field, .. }) = kind else {
             return None;

@@ -415,6 +415,80 @@ fn filter_value(value: &str) -> (Vec<String>, bool) {
         .collect();
     (values, !negated)
 }
+fn directive_value(value: &str) -> String {
+    let value = value.trim();
+    value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+        .unwrap_or(value)
+        .to_owned()
+}
+fn replace_scopes(value: &str) -> ReplaceScopes {
+    let mut result = ReplaceScopes::default();
+    let body = value.trim().trim_start_matches('{').trim_end_matches('}');
+    let mut raw = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    for c in body.chars() {
+        if quote == Some(c) {
+            quote = None;
+        } else if quote.is_none() && (c == '"' || c == '\'') {
+            quote = Some(c);
+        } else if quote.is_none() && c.is_whitespace() {
+            if !current.is_empty() {
+                raw.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(c);
+        }
+    }
+    if !current.is_empty() {
+        raw.push(current);
+    }
+    let mut tokens = raw.into_iter().filter(|x| x != "=");
+    let mut froms = Vec::new();
+    let mut prevs = Vec::new();
+    while let Some(key) = tokens.next() {
+        let Some(value) = tokens.next() else { break };
+        let key = key.to_ascii_lowercase();
+        let value = directive_value(&value);
+        if key == "this" {
+            result.this = Some(value);
+        } else if key == "root" {
+            result.root = Some(value);
+        } else if key == "from" {
+            froms.push((0usize, value));
+        } else if let Some(suffix) = key.strip_prefix("from") {
+            if !suffix.is_empty()
+                && suffix
+                    .chars()
+                    .all(|c| c == 'f' || c == 'r' || c == 'o' || c == 'm')
+            {
+                froms.push((suffix.len(), value));
+            }
+        } else if key == "prev" {
+            prevs.push((0usize, value));
+        } else if let Some(suffix) = key.strip_prefix("prev") {
+            if !suffix.is_empty()
+                && suffix
+                    .chars()
+                    .all(|c| c == 'p' || c == 'r' || c == 'e' || c == 'v')
+            {
+                prevs.push((suffix.len(), value));
+            }
+        }
+    }
+    froms.sort_by_key(|(n, _)| *n);
+    prevs.sort_by_key(|(n, _)| *n);
+    if !froms.is_empty() {
+        result.froms = Some(froms.into_iter().map(|(_, v)| v).collect());
+    }
+    if !prevs.is_empty() {
+        result.prevs = Some(prevs.into_iter().map(|(_, v)| v).collect());
+    }
+    result
+}
 fn directive(line: &str, o: &mut Options) {
     let x = line
         .trim()
@@ -422,9 +496,9 @@ fn directive(line: &str, o: &mut Options) {
         .trim_start_matches('#')
         .trim();
     let mut p = x.splitn(2, '=');
-    let name = p.next().unwrap_or("").trim();
+    let name = p.next().unwrap_or("").trim().to_ascii_lowercase();
     let value = p.next().unwrap_or("").trim();
-    match name {
+    match name.as_str() {
         "cardinality" => {
             let mut q = value.split("..");
             o.min = number(q.next().unwrap_or(""), 0);
@@ -438,22 +512,26 @@ fn directive(line: &str, o: &mut Options) {
         "required" => o.required_scopes.extend(
             value
                 .split(',')
-                .map(|s| s.trim().to_owned())
+                .flat_map(str::split_whitespace)
+                .map(str::to_owned)
                 .filter(|s| !s.is_empty()),
         ),
         "severity" => {
-            o.severity = Some(match value {
+            o.severity = Some(match value.to_ascii_lowercase().as_str() {
                 "hint" => Severity::Hint,
                 "info" => Severity::Info,
                 "warning" => Severity::Warning,
                 "error" => Severity::Error,
-                x => Severity::Opaque(x.to_owned()),
+                _ => Severity::Opaque(directive_value(value)),
             })
         }
-        "scope" => o.push_scope = Some(value.to_owned()),
-        "comparison" => o.comparison = !matches!(value, "false" | "0"),
-        "description" => o.description = Some(value.to_owned()),
-        "inject" => o.inject = Some(value.to_owned()),
+        "scope" | "push_scope" => o.push_scope = Some(directive_value(value)),
+        "replace_scope" | "replace_scopes" => o.replace_scopes = Some(replace_scopes(value)),
+        "comparison" => {
+            o.comparison = !matches!(value.to_ascii_lowercase().as_str(), "false" | "0")
+        }
+        "description" => o.description = Some(directive_value(value)),
+        "inject" => o.inject = Some(directive_value(value)),
         _ => {}
     }
 }
@@ -501,9 +579,27 @@ fn make_rule(n: &CstNode, pending: Vec<String>) -> Option<(String, NewRule)> {
                     .into_iter()
                     .filter_map(|(c, x)| make_rule(x, c).map(|(_, r)| r))
                     .collect();
-                RuleKind::Node {
-                    left: field(k),
-                    rules: rs,
+                if let Some(subtype) = name
+                    .strip_prefix("subtype[")
+                    .and_then(|x| x.strip_suffix(']'))
+                {
+                    if subtype.is_empty() {
+                        RuleKind::Node {
+                            left: field(k),
+                            rules: rs,
+                        }
+                    } else {
+                        RuleKind::Subtype {
+                            name: subtype.trim_start_matches('!').to_owned(),
+                            primary: !subtype.starts_with('!'),
+                            rules: rs,
+                        }
+                    }
+                } else {
+                    RuleKind::Node {
+                        left: field(k),
+                        rules: rs,
+                    }
                 }
             }
             _ => RuleKind::Leaf {
@@ -790,17 +886,31 @@ fn type_def(name: &str, clause: &CstNode) -> TypeDefinition {
                                 .trim_start_matches('#')
                                 .trim_start_matches('#')
                                 .trim();
-                            if let Some(value) = body
-                                .strip_prefix("push_scope")
-                                .and_then(|rest| rest.trim().strip_prefix('='))
-                            {
-                                s.push_scope = Some(value.trim().to_owned());
+                            let mut parsed = Options::default();
+                            directive(body, &mut parsed);
+                            if parsed.push_scope.is_some() {
+                                s.push_scope = parsed.push_scope;
                             }
-                            if let Some(value) = body
-                                .strip_prefix("starts_with")
-                                .and_then(|rest| rest.trim().strip_prefix('='))
-                            {
-                                s.starts_with = Some(value.trim().to_owned());
+                            if parsed.replace_scopes.is_some() {
+                                s.replace_scopes = parsed.replace_scopes;
+                            }
+                            if body.to_ascii_lowercase().starts_with("starts_with") {
+                                if let Some(value) = body.split_once('=').map(|x| x.1) {
+                                    s.starts_with = Some(directive_value(value));
+                                }
+                            }
+                            if body.to_ascii_lowercase().starts_with("only_if_not") {
+                                if let Some(value) = body.split_once('=').map(|x| x.1) {
+                                    s.only_if_not.extend(
+                                        value
+                                            .trim()
+                                            .trim_matches('{')
+                                            .trim_matches('}')
+                                            .split(|c: char| c == ',' || c.is_whitespace())
+                                            .map(directive_value)
+                                            .filter(|v| !v.is_empty()),
+                                    );
+                                }
                             }
                         }
                         if let CstNode::Clause {
@@ -1058,6 +1168,181 @@ mod tests {
         let d = parse_document("x", "alias[x] = scalar\nsingle_alias[y] = bool").unwrap();
         assert!(matches!(d.rules[0], RootRule::Alias(..)));
         assert!(matches!(d.rules[1], RootRule::SingleAlias(..)))
+    }
+    #[test]
+    fn replace_scope_directive() {
+        let d = parse_document("x", "## replace_scope = { this = country root = system from = fleet fromfrom = ship prev = planet prevprev = moon }\na = scalar").unwrap();
+        let r = rule_options(&d.rules[0]).replace_scopes.as_ref().unwrap();
+        assert_eq!(r.this.as_deref(), Some("country"));
+        assert_eq!(r.root.as_deref(), Some("system"));
+        assert_eq!(
+            r.froms.as_deref(),
+            Some(["fleet".into(), "ship".into()].as_slice())
+        );
+        assert_eq!(
+            r.prevs.as_deref(),
+            Some(["planet".into(), "moon".into()].as_slice())
+        );
+    }
+    #[test]
+    fn replace_scope_case_quotes_and_alias() {
+        let d = parse_document("x", "## RePlAcE_ScOpEs = { ROOT = \"system\" THIS = \"country\" FROMFROM = ship FROM = fleet PREV = planet }\n## PUSH_SCOPE = \"ship\"\na = scalar").unwrap();
+        let o = rule_options(&d.rules[0]);
+        let r = o.replace_scopes.as_ref().unwrap();
+        assert_eq!(r.root.as_deref(), Some("system"));
+        assert_eq!(
+            r.froms.as_deref(),
+            Some(["fleet".into(), "ship".into()].as_slice())
+        );
+        assert_eq!(o.push_scope.as_deref(), Some("ship"));
+    }
+    #[test]
+    fn subtype_scope_comments() {
+        let d = parse_document("x", "types = {\n type[event] = {\n  ## replace_scope = { this = country root = system from = fleet }\n  ## only_if_not = one two three\n  subtype[ship] = {\n   x = scalar\n  }\n }\n}").unwrap();
+        let s = &d.types[0].subtypes[0];
+        assert_eq!(s.only_if_not, ["one", "two", "three"]);
+        assert_eq!(
+            s.replace_scopes.as_ref().and_then(|r| r.this.as_deref()),
+            Some("country")
+        );
+    }
+    #[test]
+    fn push_scope_alias() {
+        let d = parse_document("x", "## push_scope = ship\na = scalar").unwrap();
+        assert_eq!(
+            rule_options(&d.rules[0]).push_scope.as_deref(),
+            Some("ship")
+        );
+    }
+    #[test]
+    fn replace_scope_defaults() {
+        let d = parse_document("x", "## replace_scope = {}\na = scalar").unwrap();
+        assert_eq!(
+            rule_options(&d.rules[0]).replace_scopes,
+            Some(ReplaceScopes::default())
+        );
+    }
+    #[test]
+    fn replace_scope_prev_order() {
+        let d = parse_document(
+            "x",
+            "## replace_scope = { prevprev = b prev = a }\na = scalar",
+        )
+        .unwrap();
+        assert_eq!(
+            rule_options(&d.rules[0])
+                .replace_scopes
+                .as_ref()
+                .unwrap()
+                .prevs
+                .as_deref(),
+            Some(["a".into(), "b".into()].as_slice())
+        );
+    }
+    #[test]
+    fn replace_scope_from_order() {
+        let d = parse_document(
+            "x",
+            "## replace_scope = { fromfromfrom = c from = a fromfrom = b }\na = scalar",
+        )
+        .unwrap();
+        assert_eq!(
+            rule_options(&d.rules[0])
+                .replace_scopes
+                .as_ref()
+                .unwrap()
+                .froms
+                .as_deref(),
+            Some(["a".into(), "b".into(), "c".into()].as_slice())
+        );
+    }
+    #[test]
+    fn replace_scope_missing_value() {
+        let d = parse_document(
+            "x",
+            "## replace_scope = { this = country root }\na = scalar",
+        )
+        .unwrap();
+        assert_eq!(
+            rule_options(&d.rules[0])
+                .replace_scopes
+                .as_ref()
+                .unwrap()
+                .this
+                .as_deref(),
+            Some("country")
+        );
+    }
+    #[test]
+    fn only_if_not_commas() {
+        let d = parse_document(
+            "x",
+            "types = {\n type[x] = {\n  ## only_if_not = a,b,c\n  subtype[y] = {\n   z = scalar\n  }\n }\n}",
+        )
+        .unwrap();
+        assert_eq!(d.types[0].subtypes[0].only_if_not, ["a", "b", "c"]);
+    }
+    #[test]
+    fn only_if_not_spaces() {
+        let d = parse_document(
+            "x",
+            "types = {\n type[x] = {\n  ## only_if_not = a b c\n  subtype[y] = {\n   z = scalar\n  }\n }\n}",
+        )
+        .unwrap();
+        assert_eq!(d.types[0].subtypes[0].only_if_not, ["a", "b", "c"]);
+    }
+    #[test]
+    fn quoted_push_scope() {
+        let d = parse_document("x", "## scope = \"ship\"\na = scalar").unwrap();
+        assert_eq!(
+            rule_options(&d.rules[0]).push_scope.as_deref(),
+            Some("ship")
+        );
+    }
+    #[test]
+    fn mixed_key_case() {
+        let d =
+            parse_document("x", "## REPLACE_SCOPE = { ThIs = a RoOt = b }\na = scalar").unwrap();
+        assert!(rule_options(&d.rules[0]).replace_scopes.is_some());
+    }
+    #[test]
+    fn replace_scopes_plural() {
+        let d = parse_document("x", "## replace_scopes = { this = a }\na = scalar").unwrap();
+        assert!(rule_options(&d.rules[0]).replace_scopes.is_some());
+    }
+    #[test]
+    fn replace_scope_values_quoted() {
+        let d = parse_document("x", "## replace_scope = { this = \"a b\" }\na = scalar").unwrap();
+        assert_eq!(
+            rule_options(&d.rules[0])
+                .replace_scopes
+                .as_ref()
+                .unwrap()
+                .this
+                .as_deref(),
+            Some("a b")
+        );
+    }
+    #[test]
+    fn only_if_not_empty() {
+        let d = parse_document(
+            "x",
+            "types = {\n type[x] = {\n  ## only_if_not =\n  subtype[y] = {\n   z = scalar\n  }\n }\n}",
+        )
+        .unwrap();
+        assert!(d.types[0].subtypes[0].only_if_not.is_empty());
+    }
+    #[test]
+    fn replace_scope_root_only() {
+        let d = parse_document("x", "## replace_scope = { root = country }\na = scalar").unwrap();
+        assert_eq!(
+            rule_options(&d.rules[0])
+                .replace_scopes
+                .as_ref()
+                .unwrap()
+                .this,
+            None
+        );
     }
     #[test]
     fn comparison() {

@@ -360,7 +360,10 @@ fn unicode_values_preserve_byte_ranges() {
 fn diagnostics_are_deterministically_sorted() {
     let c = catalog("root = { a = bool\nb = int[1..2] }");
     let r = c.validate_source("root", "b = 9\na = maybe");
-    assert!(r.diagnostics.windows(2).all(|w| (w[0].range.start,w[0].code.clone()) <= (w[1].range.start,w[1].code.clone())));
+    assert!(r
+        .diagnostics
+        .windows(2)
+        .all(|w| (w[0].range.start, w[0].code.clone()) <= (w[1].range.start, w[1].code.clone())));
 }
 #[test]
 fn scope_universe_is_deterministic() {
@@ -828,4 +831,182 @@ fn parse_newfield_complex_variant() {
 fn parse_newfield_scope_variant() {
     let d = parse_document("x", "root = { p = scope[a,b] }").unwrap();
     assert!(format!("{d:?}").contains("Scope"));
+}
+
+#[test]
+fn subtype_primary_required_field_present_activates() {
+    let c = catalog("root = { subtype[mode] = { marker = scalar } }");
+    assert!(codes(&c, "root", "marker = yes").is_empty());
+}
+
+#[test]
+fn subtype_primary_absent_does_not_activate_or_report_child_missing() {
+    let c = catalog("root = { subtype[mode] = { marker = scalar } }");
+    let diagnostics = codes(&c, "root", "other = yes");
+    assert!(!diagnostics.contains(&"RULE110".to_string()));
+    assert!(diagnostics.contains(&"RULE101".to_string()));
+}
+
+#[test]
+fn subtype_primary_specific_value_selects_branch() {
+    let c = catalog("root = { subtype[mode] = { mode = on\nmarker = scalar } }");
+    assert!(codes(&c, "root", "mode = on\nmarker = yes").is_empty());
+    assert!(has(&c, "root", "mode = off\nmarker = yes", "RULE101"));
+}
+
+#[test]
+fn subtype_primary_shape_selects_node_branch() {
+    let c = catalog("root = { subtype[config] = { config = { value = scalar } } }");
+    assert!(codes(&c, "root", "config = { value = yes }").is_empty());
+    assert!(has(&c, "root", "config = yes", "RULE101"));
+}
+
+#[test]
+fn negated_same_name_activates_when_primary_is_inactive() {
+    let c = catalog(
+        "root = { subtype[mode] = { mode = on\npositive = scalar } subtype[!mode] = { negative = scalar } }",
+    );
+    assert!(codes(&c, "root", "negative = yes").is_empty());
+}
+
+#[test]
+fn negated_same_name_is_suppressed_when_primary_is_active() {
+    let c = catalog(
+        "root = { subtype[mode] = { mode = on\npositive = scalar } subtype[!mode] = { negative = scalar } }",
+    );
+    assert!(has(&c, "root", "mode = on\nnegative = yes", "RULE101"));
+}
+
+#[test]
+fn multiple_independent_primary_subtypes_can_activate() {
+    let c = catalog(
+        "root = { subtype[a] = { a = yes\nfrom_a = scalar } subtype[b] = { b = yes\nfrom_b = scalar } }",
+    );
+    assert!(codes(&c, "root", "a = yes\nb = yes\nfrom_a = x\nfrom_b = y").is_empty());
+}
+
+#[test]
+fn independent_subtype_inactive_branch_does_not_require_children() {
+    let c = catalog(
+        "root = { subtype[a] = { a = yes\nfrom_a = scalar } subtype[b] = { b = yes\nfrom_b = scalar } }",
+    );
+    let d = codes(&c, "root", "a = yes\nfrom_a = x");
+    assert!(!d.contains(&"RULE110".to_string()));
+}
+
+#[test]
+fn ordinary_and_active_subtype_fields_merge() {
+    let c = catalog("root = { ordinary = scalar subtype[mode] = { mode = on\nactive = scalar } }");
+    assert!(codes(&c, "root", "ordinary = x\nmode = on\nactive = y").is_empty());
+}
+
+#[test]
+fn ordinary_and_active_subtype_cardinality_is_enforced() {
+    let c = catalog(
+        "root = { ## cardinality = 1..1\nvalue = scalar subtype[mode] = { mode = on\n## cardinality = 1..1\nvalue = scalar } }",
+    );
+    assert!(has(
+        &c,
+        "root",
+        "mode = on\nvalue = a\nvalue = b",
+        "RULE111"
+    ));
+}
+
+#[test]
+fn nested_subtype_activates_inside_active_subtype() {
+    let c = catalog(
+        "root = { subtype[outer] = { outer = yes\nsubtype[inner] = { inner = yes\nleaf = scalar } } }",
+    );
+    assert!(codes(&c, "root", "outer = yes\ninner = yes\nleaf = x").is_empty());
+}
+
+#[test]
+fn inactive_nested_subtype_does_not_report_missing_child() {
+    let c = catalog(
+        "root = { subtype[outer] = { outer = yes\nsubtype[inner] = { inner = yes\nleaf = scalar } } }",
+    );
+    let d = codes(&c, "root", "outer = no");
+    assert!(!d.contains(&"RULE110".to_string()));
+}
+
+#[test]
+fn subtype_wrapper_is_not_reported_as_unknown_field() {
+    let d = parse_document("x", "root = { subtype[mode] = { value = scalar } }").unwrap();
+    assert!(format!("{d:?}").contains("Subtype"));
+}
+
+#[test]
+fn malformed_empty_subtype_name_is_an_ordinary_node() {
+    let d = parse_document("x", "root = { subtype[] = { value = scalar } }").unwrap();
+    let text = format!("{d:?}");
+    assert!(!text.contains("Subtype {"));
+    assert!(text.contains("subtype[]"));
+}
+
+#[test]
+fn malformed_subtype_name_validates_as_normal_node() {
+    let c = catalog("root = { subtype[] = { value = scalar } }");
+    assert!(codes(&c, "root", "subtype[] = { value = x }").is_empty());
+}
+
+#[test]
+fn completion_traverses_subtype_children() {
+    let c = catalog("root = { subtype[mode] = { branch_value = scalar } }");
+    assert!(
+        c.completion("root", "branch")
+            .contains(&"branch_value".to_string())
+    );
+}
+
+#[test]
+fn info_traverses_subtype_children() {
+    let c = catalog(
+        "root = { subtype[mode] = { ## description = Branch detail\nbranch_value = scalar } }",
+    );
+    assert_eq!(
+        c.info("root", "branch_value").as_deref(),
+        Some("Branch detail")
+    );
+}
+
+#[test]
+fn subtype_completion_is_sorted_and_deduplicated() {
+    let c = catalog(
+        "root = { subtype[a] = { zeta = scalar\nalpha = scalar } subtype[b] = { alpha = scalar\nbeta = scalar } }",
+    );
+    assert_eq!(c.completion("root", ""), vec!["alpha", "beta", "zeta"]);
+}
+
+#[test]
+fn subtype_diagnostics_are_deterministic() {
+    let c = catalog("root = { subtype[mode] = { mode = on\nvalue = bool } }");
+    let a = codes(&c, "root", "mode = on\nvalue = maybe");
+    let b = codes(&c, "root", "mode = on\nvalue = maybe");
+    assert_eq!(a, b);
+}
+
+#[test]
+fn subtype_diagnostic_order_is_deterministic_by_range() {
+    let c = catalog("root = { subtype[mode] = { mode = on\na = bool\nb = int[1..2] } }");
+    let r = c.validate_source("root", "mode = on\nb = 9\na = maybe");
+    assert!(
+        r.diagnostics
+            .windows(2)
+            .all(|w| w[0].range.start <= w[1].range.start)
+    );
+}
+
+#[test]
+fn subtype_activation_respects_max_validation_depth() {
+    let c = catalog("root = { subtype[mode] = { mode = on\nvalue = scalar } }");
+    let mut source = String::from("mode = on\nvalue = ");
+    for _ in 0..(MAX_DEPTH + 2) {
+        source.push_str("{ value = ");
+    }
+    source.push('x');
+    for _ in 0..(MAX_DEPTH + 2) {
+        source.push_str(" }");
+    }
+    assert!(has(&c, "root", &source, "RULE150") || has(&c, "root", &source, "RULE001"));
 }
