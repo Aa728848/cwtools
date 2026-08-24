@@ -96,6 +96,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cwtools-rules-engine"
+version = "0.1.0"
+dependencies = [
+ "cwtools-domain",
+ "cwtools-rule-ir",
+ "cwtools-scopes",
+ "cwtools-script-syntax",
+]
+
+[[package]]
 name = "cwtools-scopes"
 version = "0.1.0"
 
