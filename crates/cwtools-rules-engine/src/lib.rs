@@ -35,6 +35,7 @@ pub enum CompileError {
     TooManyRules,
     TooDeep,
     DuplicateRoot(String),
+    UnknownScope(String),
 }
 
 #[derive(Clone, Debug)]
@@ -99,7 +100,19 @@ impl RuleCatalog {
                 if map == 3 {
                     c.types.entry(n).or_default().push(x.clone());
                 }
+                if let Some(scope) = x.options.push_scope.as_deref() {
+                    if !c.scopes.names.iter().any(|s| s.eq_ignore_ascii_case(scope)) {
+                        return Err(CompileError::UnknownScope(scope.to_owned()));
+                    }
+                }
                 count_rules(&x.kind, &mut count, limit, 0)?;
+            }
+            for t in &d.types {
+                let entry = c.types.entry(t.name.to_ascii_lowercase()).or_default();
+                entry.extend(t.rules.iter().cloned());
+                for subtype in &t.subtypes {
+                    entry.extend(subtype.rules.iter().cloned());
+                }
             }
             for e in &d.enums {
                 c.enums
@@ -234,6 +247,9 @@ impl RuleCatalog {
             .or_else(|| self.aliases.get(&k))
             .or_else(|| self.single.get(&k))
     }
+    fn type_rules(&self, n: &str) -> Option<&Vec<NewRule>> {
+        self.types.get(&n.to_ascii_lowercase())
+    }
     fn validate_nodes(
         &self,
         kind: &RuleKind,
@@ -366,6 +382,21 @@ impl RuleCatalog {
         seen: &mut BTreeSet<String>,
         depth: usize,
     ) {
+        for required in &r.options.required_scopes {
+            if !self
+                .scopes
+                .names
+                .iter()
+                .any(|scope| scope.eq_ignore_ascii_case(required))
+            {
+                out.diagnostics.push(diag(
+                    "RULE140",
+                    required,
+                    n_range(n),
+                    vec![required.clone()],
+                ));
+            }
+        }
         match &r.kind {
             RuleKind::Node { .. } | RuleKind::ValueClause { .. } | RuleKind::Subtype { .. } => {
                 if let CstNode::Clause { children, .. } = v {
@@ -388,6 +419,81 @@ impl RuleCatalog {
                     out.diagnostics
                         .push(diag("RULE130", a, n_range(n), vec![a.clone()]));
                 }
+            }
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn validate_type(
+        &self,
+        name: &str,
+        raw: &str,
+        v: &CstNode,
+        out: &mut ValidationResult,
+        seen: &mut BTreeSet<String>,
+        depth: usize,
+        _prefix: &str,
+    ) {
+        let key = name.to_ascii_lowercase();
+        if !seen.insert(format!("type:{key}")) {
+            return;
+        }
+        if let Some(rules) = self.type_rules(name) {
+            for r in rules {
+                self.validate_rule_value(r, raw, v, out, seen, depth);
+            }
+        } else {
+            out.diagnostics
+                .push(diag("RULE130", name, n_range(v), vec![name.to_owned()]));
+        }
+        seen.remove(&format!("type:{key}"));
+    }
+    fn validate_rule_value(
+        &self,
+        r: &NewRule,
+        raw: &str,
+        v: &CstNode,
+        out: &mut ValidationResult,
+        _seen: &mut BTreeSet<String>,
+        _depth: usize,
+    ) {
+        if let RuleKind::Leaf { right, .. } | RuleKind::LeafValue { right } = &r.kind {
+            self.validate_value_text(right, raw, n_range(v), out);
+        }
+    }
+    fn validate_value_text(
+        &self,
+        f: &NewField,
+        raw: &str,
+        range: ByteRange,
+        out: &mut ValidationResult,
+    ) {
+        let (ty, key) = match f {
+            NewField::Value(t) => (Some(t), raw),
+            NewField::Scalar => (Some(&ValueType::Scalar), raw),
+            _ => return,
+        };
+        if let Some(t) = ty {
+            let bad = match t {
+                ValueType::Bool => !matches!(
+                    key.to_ascii_lowercase().as_str(),
+                    "yes" | "no" | "true" | "false"
+                ),
+                ValueType::Int(a, b) => key.parse::<i64>().map_or(true, |x| x < *a || x > *b),
+                ValueType::Float(a, b) => key.parse::<f64>().map_or(true, |x| x < *a || x > *b),
+                ValueType::Percent => key
+                    .parse::<f64>()
+                    .map_or(true, |x| !(0.0..=100.0).contains(&x)),
+                ValueType::Date => !valid_date(key),
+                ValueType::DateTime => !valid_datetime(key),
+                ValueType::Enum(name) => self
+                    .enums
+                    .get(&name.to_ascii_lowercase())
+                    .is_none_or(|values| !values.contains(key)),
+                _ => false,
+            };
+            if bad {
+                out.diagnostics
+                    .push(diag("RULE120", key, range, vec![key.into()]));
             }
         }
     }
@@ -430,6 +536,41 @@ impl RuleCatalog {
                 }
                 return;
             }
+            NewField::Parameter | NewField::LocalisationParameter => {
+                if !valid_parameter(&raw) {
+                    out.diagnostics
+                        .push(diag("RULE120", &raw, n_range(v), vec![raw.clone()]));
+                }
+                return;
+            }
+            NewField::ParameterValue => {
+                if !valid_parameter_value(&raw) {
+                    out.diagnostics
+                        .push(diag("RULE120", &raw, n_range(v), vec![raw.clone()]));
+                }
+                return;
+            }
+            NewField::Type(ir::TypeType::Simple(name)) => {
+                self.validate_type(name, &raw, v, out, seen, depth, "");
+                return;
+            }
+            NewField::Type(ir::TypeType::Complex {
+                prefix,
+                name,
+                suffix,
+            }) => {
+                if !raw.starts_with(prefix)
+                    || !raw.ends_with(suffix)
+                    || raw.len() <= prefix.len() + suffix.len()
+                {
+                    out.diagnostics
+                        .push(diag("RULE120", &raw, n_range(v), vec![name.clone()]));
+                } else {
+                    let inner = &raw[prefix.len()..raw.len() - suffix.len()];
+                    self.validate_type(name, inner, v, out, seen, depth, "");
+                }
+                return;
+            }
             _ => return,
         };
         if let Some(t) = ty {
@@ -457,6 +598,25 @@ impl RuleCatalog {
             }
         }
     }
+}
+fn valid_parameter(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('|').collect();
+    (parts.len() == 1 || parts.len() == 2)
+        && parts[0].starts_with('$')
+        && parts[0].ends_with('$')
+        && {
+            let n = &parts[0][1..parts[0].len() - 1];
+            let mut chars = n.chars();
+            chars
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        && (parts.len() == 1 || !parts[1].is_empty())
+}
+fn valid_parameter_value(s: &str) -> bool {
+    !s.is_empty()
+        && (valid_parameter(s) || s.parse::<f64>().is_ok() || !s.contains(char::is_whitespace))
 }
 fn count_rules(
     k: &RuleKind,

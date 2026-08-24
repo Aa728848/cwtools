@@ -118,6 +118,9 @@ pub enum NewField {
     },
     Aliases(String),
     SingleAlias(String),
+    Parameter,
+    ParameterValue,
+    LocalisationParameter,
     Opaque(String),
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -181,6 +184,8 @@ pub struct TypeDefinition {
     pub conditions: Option<String>,
 
     pub subtypes: Vec<SubtypeDefinition>,
+    /// Rules declared directly in the type clause.
+    pub rules: Vec<NewRule>,
     pub type_key_filter: Option<(Vec<String>, bool)>,
     pub type_key_regex: Option<String>,
     pub root_completion_from_subtypes: bool,
@@ -283,6 +288,12 @@ fn typed(s: &str) -> NewField {
     let s = s.trim();
     if s == "scalar" {
         return NewField::Scalar;
+    }
+    match s {
+        "$parameter" => return NewField::Parameter,
+        "$parameter_value" => return NewField::ParameterValue,
+        "$localisation_parameter" => return NewField::LocalisationParameter,
+        _ => {}
     }
     if s == "bool" {
         return NewField::Value(ValueType::Bool);
@@ -732,6 +743,36 @@ fn type_def(name: &str, clause: &CstNode) -> TypeDefinition {
     if let CstNode::Clause { children, .. } = clause {
         // Only explicit subtype[...] assignments define subtypes. Ordinary
         // properties belong to the type itself and must never be reclassified.
+        let mut rule_comments = Vec::new();
+        t.rules = comments_children(children, &mut rule_comments)
+            .iter()
+            .filter_map(|(comments, n)| {
+                let CstNode::Assignment { key, .. } = n else {
+                    return None;
+                };
+                let name = crate::key(key);
+                (!name.starts_with("subtype[")
+                    && !matches!(
+                        name.as_str(),
+                        "path"
+                            | "path_file"
+                            | "name_field"
+                            | "starts_with"
+                            | "skip_root_key"
+                            | "type_key_filter"
+                            | "type_key_regex"
+                            | "type_per_file"
+                            | "unique"
+                            | "warning_only"
+                            | "root_completion_from_subtypes"
+                            | "key_prefix"
+                            | "should_be_referenced"
+                            | "unknown_key_handling"
+                    ))
+                .then(|| make_rule(n, comments.clone()).map(|(_, r)| r))
+                .flatten()
+            })
+            .collect();
         let mut declaration_comments = Vec::new();
         for (comments, n) in comments_children(children, &mut declaration_comments) {
             if let CstNode::Assignment { key: k, value, .. } = n {

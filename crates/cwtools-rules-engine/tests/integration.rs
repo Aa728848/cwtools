@@ -592,3 +592,240 @@ fn cardinality_overflow_range_covers_rule_source_occurrence() {
     assert_eq!(diagnostic.range.start, third);
     assert!(diagnostic.range.end > diagnostic.range.start);
 }
+
+#[test]
+fn parameter_accepts_named_dollar_value() {
+    assert!(codes(&catalog("root = { p = $parameter }"), "root", "p = $name$").is_empty());
+}
+#[test]
+fn parameter_accepts_underscore_name() {
+    assert!(codes(&catalog("root = { p = $parameter }"), "root", "p = $_name$").is_empty());
+}
+#[test]
+fn parameter_accepts_fallback() {
+    assert!(
+        codes(
+            &catalog("root = { p = $parameter }"),
+            "root",
+            "p = $name$|fallback"
+        )
+        .is_empty()
+    );
+}
+#[test]
+fn parameter_rejects_missing_closing_dollar() {
+    assert!(has(
+        &catalog("root = { p = $parameter }"),
+        "root",
+        "p = $name",
+        "RULE120"
+    ));
+}
+#[test]
+fn parameter_rejects_digit_initial_name() {
+    assert!(has(
+        &catalog("root = { p = $parameter }"),
+        "root",
+        "p = $1name$",
+        "RULE120"
+    ));
+}
+#[test]
+fn parameter_rejects_empty_fallback() {
+    assert!(has(
+        &catalog("root = { p = $parameter }"),
+        "root",
+        "p = $name$|",
+        "RULE120"
+    ));
+}
+#[test]
+fn parameter_rejects_whitespace_name() {
+    assert!(has(
+        &catalog("root = { p = $parameter }"),
+        "root",
+        "p = $bad name$",
+        "RULE120"
+    ));
+}
+#[test]
+fn parameter_value_accepts_literal() {
+    assert!(
+        codes(
+            &catalog("root = { p = $parameter_value }"),
+            "root",
+            "p = literal"
+        )
+        .is_empty()
+    );
+}
+#[test]
+fn parameter_value_accepts_parameter() {
+    assert!(
+        codes(
+            &catalog("root = { p = $parameter_value }"),
+            "root",
+            "p = $value$"
+        )
+        .is_empty()
+    );
+}
+#[test]
+fn parameter_value_accepts_number() {
+    assert!(
+        codes(
+            &catalog("root = { p = $parameter_value }"),
+            "root",
+            "p = -1.25"
+        )
+        .is_empty()
+    );
+}
+#[test]
+fn parameter_value_rejects_empty() {
+    assert!(has(
+        &catalog("root = { p = $parameter_value }"),
+        "root",
+        "p = ",
+        "RULE001"
+    ));
+}
+#[test]
+fn parameter_value_accepts_first_loose_expression_token() {
+    assert!(
+        codes(
+            &catalog("root = { p = $parameter_value }"),
+            "root",
+            "p = two words"
+        )
+        .is_empty()
+    );
+}
+#[test]
+fn localisation_parameter_accepts_parameter() {
+    assert!(
+        codes(
+            &catalog("root = { p = $localisation_parameter }"),
+            "root",
+            "p = $loc$"
+        )
+        .is_empty()
+    );
+}
+#[test]
+fn localisation_parameter_rejects_invalid_parameter() {
+    assert!(has(
+        &catalog("root = { p = $localisation_parameter }"),
+        "root",
+        "p = loc",
+        "RULE120"
+    ));
+}
+#[test]
+fn simple_type_accepts_value() {
+    let c = catalog("types = { type[id] = { value = scalar } }\nroot = { id = <id> }");
+    assert!(codes(&c, "root", "id = x").is_empty());
+}
+#[test]
+fn simple_type_rejects_missing_type() {
+    let c = catalog("root = { id = <missing> }");
+    assert!(has(&c, "root", "id = x", "RULE130"));
+}
+#[test]
+fn simple_type_rejects_bad_value() {
+    let c = catalog("types = { type[id] = { value = bool } }\nroot = { id = <id> }");
+    assert!(has(&c, "root", "id = maybe", "RULE120"));
+}
+#[test]
+fn simple_type_cycle_is_terminating() {
+    let c = catalog(
+        "types = { type[a] = { value = <b> } type[b] = { value = <a> } }\nroot = { value = <a> }",
+    );
+    assert!(codes(&c, "root", "value = x").is_empty());
+}
+#[test]
+fn simple_type_int_constraint_is_enforced() {
+    let c = catalog("types = { type[small] = { value = int[1..3] } }\nroot = { value = <small> }");
+    assert!(has(&c, "root", "value = 9", "RULE120"));
+}
+#[test]
+fn simple_type_int_constraint_accepts_edge() {
+    let c = catalog("types = { type[small] = { value = int[1..3] } }\nroot = { value = <small> }");
+    assert!(codes(&c, "root", "value = 3").is_empty());
+}
+#[test]
+fn complex_type_accepts_prefix_suffix() {
+    let c = catalog("types = { type[id] = { value = scalar } }\nroot = { value = pre<id>suf }");
+    assert!(codes(&c, "root", "value = preXsuf").is_empty());
+}
+#[test]
+fn complex_type_rejects_prefix() {
+    let c = catalog("types = { type[id] = { value = scalar } }\nroot = { value = pre<id>suf }");
+    assert!(has(&c, "root", "value = Xsuf", "RULE120"));
+}
+#[test]
+fn complex_type_rejects_suffix() {
+    let c = catalog("types = { type[id] = { value = scalar } }\nroot = { value = pre<id>suf }");
+    assert!(has(&c, "root", "value = preX", "RULE120"));
+}
+#[test]
+fn complex_type_rejects_empty_inner() {
+    let c = catalog("types = { type[id] = { value = scalar } }\nroot = { value = pre<id>suf }");
+    assert!(has(&c, "root", "value = presuf", "RULE120"));
+}
+#[test]
+fn complex_type_reports_missing_inner_type() {
+    let c = catalog("root = { value = pre<missing>suf }");
+    assert!(has(&c, "root", "value = preXsuf", "RULE130"));
+}
+#[test]
+fn compile_error_unknown_scope_for_root_option() {
+    let d = parse_document("x", "## scope = galaxy\nroot = scalar").unwrap();
+    assert!(
+        matches!(RuleCatalog::compile(&[d], ScopeUniverse::new(["country".into()])), Err(CompileError::UnknownScope(s)) if s == "galaxy")
+    );
+}
+#[test]
+fn compile_scope_option_accepts_known_scope() {
+    let d = parse_document("x", "## scope = country\nroot = scalar").unwrap();
+    assert!(RuleCatalog::compile(&[d], ScopeUniverse::new(["country".into()])).is_ok());
+}
+#[test]
+fn nested_required_scopes_accept_matching_scope() {
+    let c = catalog(
+        "## required = country\nroot = { nested = { ## required = planet\nvalue = scalar } }",
+    );
+    assert!(!has(&c, "root", "nested = { value = x }", "RULE140"));
+}
+#[test]
+fn nested_required_scopes_reject_missing_scope() {
+    let c = catalog(
+        "## required = country\nroot = { nested = { ## required = galaxy\nvalue = scalar } }",
+    );
+    assert!(has(&c, "root", "nested = { value = x }", "RULE140"));
+}
+#[test]
+fn parse_newfield_parameter_variant() {
+    let d = parse_document("x", "root = { p = $parameter }").unwrap();
+    assert!(format!("{d:?}").contains("Parameter"));
+}
+#[test]
+fn parse_newfield_parameter_value_variant() {
+    let d = parse_document("x", "root = { p = $parameter_value }").unwrap();
+    assert!(format!("{d:?}").contains("ParameterValue"));
+}
+#[test]
+fn parse_newfield_localisation_parameter_variant() {
+    let d = parse_document("x", "root = { p = $localisation_parameter }").unwrap();
+    assert!(format!("{d:?}").contains("LocalisationParameter"));
+}
+#[test]
+fn parse_newfield_complex_variant() {
+    let d = parse_document("x", "root = { p = pre<id>suf }").unwrap();
+    assert!(format!("{d:?}").contains("Complex"));
+}
+#[test]
+fn parse_newfield_scope_variant() {
+    let d = parse_document("x", "root = { p = scope[a,b] }").unwrap();
+    assert!(format!("{d:?}").contains("Scope"));
+}
