@@ -18,6 +18,7 @@ members = [
     "crates/cwtools-metadata",
     "crates/cwtools-structural-diff-cli",
     "crates/cwtools-cwt-projection-cli",
+    "crates/cwtools-rules-projection-cli",
 ]
 
 [workspace.package]

@@ -106,6 +106,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cwtools-rules-projection-cli"
+version = "0.1.0"
+dependencies = [
+ "cwtools-rule-ir",
+ "cwtools-rules-engine",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cwtools-scopes"
 version = "0.1.0"
 
