@@ -40,6 +40,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cwtools-process"
+version = "0.1.0"
+dependencies = [
+ "cwtools-domain",
+ "cwtools-script-syntax",
+]
+
+[[package]]
 name = "cwtools-protocol"
 version = "0.1.0"
 dependencies = [
