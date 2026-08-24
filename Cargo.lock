@@ -12,6 +12,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cwtools-cwt-syntax"
+version = "0.1.0"
+dependencies = [
+ "cwtools-script-syntax",
+]
+
+[[package]]
 name = "cwtools-docs"
 version = "0.1.0"
 dependencies = [
@@ -53,6 +60,13 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "cwtools-rule-ir"
+version = "0.1.0"
+dependencies = [
+ "cwtools-cwt-syntax",
 ]
 
 [[package]]

@@ -145,6 +145,15 @@ fn error(src: &str, msg: &str, at: usize) -> ParseError {
 }
 
 pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
+    lex_with_mode(src, false)
+}
+
+/// Lex CWT syntax, where an unbroken `<...>` segment is part of an identifier.
+pub fn lex_cwt(src: &str) -> Result<Vec<Token>, ParseError> {
+    lex_with_mode(src, true)
+}
+
+fn lex_with_mode(src: &str, cwt_mode: bool) -> Result<Vec<Token>, ParseError> {
     if src.len() > MAX_INPUT_BYTES {
         return Err(error(src, "input exceeds 16 MiB limit", MAX_INPUT_BYTES));
     }
@@ -253,6 +262,13 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
             out.push(tok(src, TokenKind::Identifier, s, i, raw));
             continue;
         }
+        if cwt_mode {
+            if let Some(end) = cwt_identifier_end(src, s) {
+                i = end;
+                out.push(tok(src, TokenKind::Identifier, s, i, src[s..i].to_owned()));
+                continue;
+            }
+        }
         let mut found = None;
         for (op, k) in OPS {
             if src[i..].starts_with(op) {
@@ -265,11 +281,24 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
             out.push(tok(src, TokenKind::Operator(k), s, i, op.into()));
             continue;
         }
-        while i < bytes.len()
-            && !bytes[i].is_ascii_whitespace()
-            && !b"{}#\"<>!=+-".contains(&bytes[i])
-        {
-            i += 1;
+        if cwt_mode {
+            if let Some(end) = cwt_identifier_end(src, s) {
+                i = end;
+            } else {
+                while i < bytes.len()
+                    && !bytes[i].is_ascii_whitespace()
+                    && !b"{}#\"<>!=+-".contains(&bytes[i])
+                {
+                    i += 1;
+                }
+            }
+        } else {
+            while i < bytes.len()
+                && !bytes[i].is_ascii_whitespace()
+                && !b"{}#\"<>!=+-".contains(&bytes[i])
+            {
+                i += 1;
+            }
         }
         if i == s {
             i += 1;
@@ -288,6 +317,22 @@ pub fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
     ));
     Ok(out)
 }
+fn cwt_identifier_end(src: &str, start: usize) -> Option<usize> {
+    let mut end = start;
+    for (relative, character) in src[start..].char_indices() {
+        if character.is_whitespace() || matches!(character, '{' | '}' | '#' | '"' | '=') {
+            break;
+        }
+        end = start + relative + character.len_utf8();
+    }
+    if end == start {
+        return None;
+    }
+    let token = &src[start..end];
+    let operator_only = matches!(token, "<" | ">" | "!" | "<=" | ">=" | "!=" | "==" | "?=");
+    (!operator_only).then_some(end)
+}
+
 fn tok(src: &str, kind: TokenKind, s: usize, e: usize, value: String) -> Token {
     Token {
         kind,
@@ -349,7 +394,19 @@ impl Cst {
 }
 
 pub fn parse(src: &str) -> Result<Cst, Vec<ParseError>> {
-    let tokens = match lex(src) {
+    parse_with_lexer(src, lex)
+}
+
+/// Parse CWT-compatible syntax using the dedicated angle-expression lexer.
+pub fn parse_cwt_compatible(src: &str) -> Result<Cst, Vec<ParseError>> {
+    parse_with_lexer(src, lex_cwt)
+}
+
+fn parse_with_lexer(
+    src: &str,
+    lexer: fn(&str) -> Result<Vec<Token>, ParseError>,
+) -> Result<Cst, Vec<ParseError>> {
+    let tokens = match lexer(src) {
         Ok(t) => t,
         Err(e) => return Err(vec![e]),
     };
