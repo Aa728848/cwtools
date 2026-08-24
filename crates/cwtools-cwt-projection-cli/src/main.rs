@@ -1,13 +1,23 @@
 #![forbid(unsafe_code)]
+use cwtools_cwt_project::build_snapshot_from_texts;
 use cwtools_cwt_service::{
     AnalysisResult, CompletionArgument, Diagnostic, Range, Reference, Symbol, analyze_document,
 };
 use serde::{Deserialize, Serialize};
-use std::io::{self, Read};
+use std::{
+    io::{self, Read},
+    path::Path,
+};
 
 #[derive(Debug, Deserialize)]
 struct Input {
     files: Vec<InputFile>,
+    #[serde(default = "default_mode")]
+    mode: String,
+}
+
+fn default_mode() -> String {
+    "document".into()
 }
 #[derive(Debug, Deserialize)]
 struct InputFile {
@@ -17,6 +27,27 @@ struct InputFile {
 #[derive(Debug, Serialize)]
 struct Output {
     files: Vec<FileOutput>,
+}
+#[derive(Debug, Serialize)]
+struct ProjectOutput {
+    mode: String,
+    diagnostics: Vec<ProjectDiagnostic>,
+    summary: ProjectSummary,
+}
+#[derive(Debug, Serialize)]
+struct ProjectDiagnostic {
+    path: String,
+    code: String,
+    #[serde(rename = "messageKey")]
+    message_key: String,
+    phase: String,
+}
+#[derive(Debug, Serialize)]
+struct ProjectSummary {
+    partial: bool,
+    skipped: usize,
+    #[serde(rename = "parseFailed")]
+    parse_failed: usize,
 }
 #[derive(Debug, Serialize)]
 struct FileOutput {
@@ -132,6 +163,43 @@ fn file_output(path: String, analysis: &AnalysisResult) -> FileOutput {
             .collect(),
     }
 }
+fn run_project(input: &Input) -> ProjectOutput {
+    let entries: Vec<_> = input
+        .files
+        .iter()
+        .map(|f| (f.path.clone(), f.text.clone()))
+        .collect();
+    let snapshot = build_snapshot_from_texts(&entries, Path::new("."));
+    let mut diagnostics = snapshot
+        .diagnostics
+        .iter()
+        .chain(snapshot.semantic_diagnostics.iter())
+        .map(|d| ProjectDiagnostic {
+            path: d.file.clone(),
+            code: d.code.clone(),
+            message_key: d.message_key.clone(),
+            phase: d.phase.clone(),
+        })
+        .collect::<Vec<_>>();
+    diagnostics.sort_by(|a, b| {
+        (&a.path, &a.phase, &a.code, &a.message_key).cmp(&(
+            &b.path,
+            &b.phase,
+            &b.code,
+            &b.message_key,
+        ))
+    });
+    ProjectOutput {
+        mode: "project".into(),
+        diagnostics,
+        summary: ProjectSummary {
+            partial: snapshot.partial,
+            skipped: snapshot.skipped.len(),
+            parse_failed: snapshot.parse_failed.len(),
+        },
+    }
+}
+
 fn run(input: Input) -> Output {
     let mut files = input.files;
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -149,10 +217,17 @@ fn main() {
     let mut text = String::new();
     io::stdin().read_to_string(&mut text).expect("read stdin");
     let input: Input = serde_json::from_str(&text).expect("invalid JSON input");
-    println!(
-        "{}",
-        serde_json::to_string(&run(input)).expect("serialize output")
-    );
+    if input.mode == "project" {
+        println!(
+            "{}",
+            serde_json::to_string(&run_project(&input)).expect("serialize output")
+        );
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string(&run(input)).expect("serialize output")
+        );
+    }
 }
 
 #[cfg(test)]
@@ -223,5 +298,39 @@ mod tests {
             .find(|d| d.code == "CWT101")
             .unwrap();
         assert_eq!((d.range.start_line, d.range.start_column), (1, 0));
+    }
+    fn project(s: &str) -> ProjectOutput {
+        run_project(&serde_json::from_str(s).unwrap())
+    }
+    #[test]
+    fn project_reports_cwt301() {
+        let o = project(
+            r#"{"mode":"project","files":[{"path":"defs.cwt","text":"type[known] = {}"},{"path":"a.cwt","text":"rule = <missing>"}]}"#,
+        );
+        assert!(
+            o.diagnostics
+                .iter()
+                .any(|d| d.code == "CWT301" && d.path == "a.cwt")
+        );
+    }
+    #[test]
+    fn project_reports_cwt302() {
+        let o = project(
+            r#"{"mode":"project","files":[{"path":"a.cwt","text":"type[same] = {}\ntype[same] = {}"}]}"#,
+        );
+        assert!(o.diagnostics.iter().any(|d| d.code == "CWT302"));
+    }
+    #[test]
+    fn project_reports_cwt401() {
+        let o = project(r#"{"mode":"project","files":[{"path":"a.cwt","text":"inject = a.cwt"}]}"#);
+        assert!(o.diagnostics.iter().any(|d| d.code == "CWT401"));
+    }
+    #[test]
+    fn project_diagnostics_are_sorted() {
+        let o = project(
+            r#"{"mode":"project","files":[{"path":"b.cwt","text":"rule = value[missing]"},{"path":"a.cwt","text":"rule = value[missing]"}]}"#,
+        );
+        let paths: Vec<_> = o.diagnostics.iter().map(|d| d.path.as_str()).collect();
+        assert!(paths.windows(2).all(|pair| pair[0] <= pair[1]));
     }
 }

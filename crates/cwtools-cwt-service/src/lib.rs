@@ -725,9 +725,23 @@ fn scan_directives(source: &str, result: &mut AnalysisResult) {
 fn scan_injects(source: &str, result: &mut AnalysisResult) {
     for line in source.lines() {
         let t = line.trim();
-        if t.starts_with("inject") {
-            if let Some(v) = t.split('=').nth(1) {
-                result.model.injects.push(v.trim().trim_matches('"').into());
+        let value = if t.starts_with("##") {
+            t.trim_start_matches('#')
+                .trim()
+                .strip_prefix("inject")
+                .and_then(|rest| rest.trim().strip_prefix('='))
+        } else {
+            t.strip_prefix("inject")
+                .and_then(|rest| rest.trim().strip_prefix('='))
+        };
+        if let Some(value) = value {
+            let path = value
+                .trim()
+                .trim_matches('"')
+                .split_once('@')
+                .map_or(value.trim().trim_matches('"'), |(path, _)| path.trim());
+            if !path.is_empty() {
+                result.model.injects.push(path.into());
             }
         }
     }

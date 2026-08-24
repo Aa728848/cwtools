@@ -106,7 +106,7 @@ fn diag(file: &str, code: &str, message: String, error: bool, blocking: bool) ->
         code: code.into(),
         message,
         message_key: message_key(code).into(),
-        phase: "semantic".into(),
+        phase: "project".into(),
         file: file.into(),
         error,
         blocking,
@@ -179,7 +179,7 @@ pub fn build_snapshot_from_texts(entries: &[(String, String)], root: &Path) -> P
         by_kind_name,
         references,
     };
-    let semantic_diagnostics = Vec::new();
+    let semantic_diagnostics = assemble_semantic(&docs, &symbols, root);
     let content_hash = ordered_content_hash(&docs);
     ProjectSnapshot {
         version: content_hash,
@@ -193,6 +193,126 @@ pub fn build_snapshot_from_texts(entries: &[(String, String)], root: &Path) -> P
         parse_failed,
         content_hash,
     }
+}
+
+fn assemble_semantic(
+    docs: &[ProjectDocument],
+    symbols: &SymbolIndex,
+    root: &Path,
+) -> Vec<Diagnostic> {
+    let mut semantic = Vec::new();
+    let defined_kinds: BTreeSet<SymbolKind> =
+        symbols.by_kind_name.keys().map(|(kind, _)| *kind).collect();
+    for document in docs {
+        let mut type_counts = BTreeMap::<String, usize>::new();
+        for symbol in &document.model.symbols {
+            if symbol.kind == SymbolKind::Type {
+                *type_counts.entry(symbol.name.clone()).or_default() += 1;
+            }
+        }
+        for (name, count) in type_counts {
+            if count > 1 {
+                for _ in 0..count {
+                    semantic.push(diag(
+                        &document.path,
+                        "CWT302",
+                        format!("duplicate Type {name}"),
+                        true,
+                        true,
+                    ));
+                }
+            }
+        }
+        for reference in &document.model.references {
+            let builtin = (reference.kind == SymbolKind::Type
+                && matches!(reference.name.as_str(), "target" | "modifier"))
+                || (reference.kind == SymbolKind::ModifierCategory && reference.name == "modifier");
+            let enum_defined = reference.kind == SymbolKind::Enum
+                && (symbols
+                    .by_kind_name
+                    .contains_key(&(SymbolKind::Enum, reference.name.clone()))
+                    || symbols
+                        .by_kind_name
+                        .contains_key(&(SymbolKind::Complex, reference.name.clone())));
+            let project_kind = defined_kinds.contains(&reference.kind)
+                || (reference.kind == SymbolKind::Enum
+                    && symbols
+                        .by_kind_name
+                        .keys()
+                        .any(|(kind, _)| *kind == SymbolKind::Complex));
+            if !builtin
+                && project_kind
+                && !enum_defined
+                && !symbols
+                    .by_kind_name
+                    .contains_key(&(reference.kind, reference.name.clone()))
+            {
+                semantic.push(diag(
+                    &document.path,
+                    "CWT301",
+                    format!("undefined {:?} {}", reference.kind, reference.name),
+                    true,
+                    true,
+                ));
+            }
+        }
+    }
+    let mut edges = BTreeMap::<String, Vec<String>>::new();
+    let document_keys = docs
+        .iter()
+        .map(|d| normalize_path(&d.path))
+        .collect::<BTreeSet<_>>();
+    for document in docs {
+        for inject in &document.model.injects {
+            let base = Path::new(&document.path).parent().unwrap_or(Path::new("."));
+            if let Some(path) = safe_inject_resolution(root, base, inject) {
+                let absolute = normalize_path(&path.to_string_lossy());
+                let relative = normalize_path(&root.join(&path).to_string_lossy());
+                let target = if document_keys.contains(&absolute) {
+                    absolute
+                } else if document_keys.contains(&relative) {
+                    relative
+                } else if document_keys.contains(&normalize_path(inject)) {
+                    normalize_path(inject)
+                } else {
+                    continue;
+                };
+                edges
+                    .entry(normalize_path(&document.path))
+                    .or_default()
+                    .push(target);
+            }
+        }
+    }
+    fn visit(
+        n: &str,
+        edges: &BTreeMap<String, Vec<String>>,
+        state: &mut BTreeMap<String, u8>,
+        depth: usize,
+    ) -> bool {
+        if depth > 2048 {
+            return true;
+        }
+        match state.get(n).copied().unwrap_or(0) {
+            1 => true,
+            2 => false,
+            _ => {
+                state.insert(n.into(), 1);
+                let hit = edges
+                    .get(n)
+                    .is_some_and(|next| next.iter().any(|x| visit(x, edges, state, depth + 1)));
+                state.insert(n.into(), 2);
+                hit
+            }
+        }
+    }
+    let mut state = BTreeMap::new();
+    for node in edges.keys() {
+        if visit(node, &edges, &mut state, 0) {
+            semantic.push(diag(node, "CWT401", "inject cycle".into(), true, true));
+        }
+    }
+    semantic
 }
 
 pub fn build_snapshot(
@@ -257,7 +377,6 @@ pub fn build_snapshot(
         references: BTreeSet::new(),
     };
     let mut diagnostics = Vec::new();
-    let mut semantic = Vec::new();
     for d in &docs {
         let result = analyze_document(&d.source);
         for x in &result.diagnostics {
@@ -277,86 +396,7 @@ pub fn build_snapshot(
     for p in &parse_failed {
         diagnostics.push(diag(p, "CWT001", "parse failed".into(), true, true));
     }
-    for ((kind, name), files) in &symbols.by_kind_name {
-        if *kind == SymbolKind::Type && files.len() > 1 {
-            let mut unique = files.clone();
-            unique.sort();
-            unique.dedup();
-            if unique.len() > 1 {
-                semantic.push(diag(
-                    &unique[1],
-                    "CWT302",
-                    format!("duplicate Type {name}"),
-                    true,
-                    true,
-                ));
-            }
-        }
-    }
-    let kinds: BTreeSet<SymbolKind> = symbols.by_kind_name.keys().map(|(k, _)| *k).collect();
-    for (kind, name) in &symbols.references {
-        let builtin = (*kind == SymbolKind::Scope || *kind == SymbolKind::ModifierCategory)
-            && !kinds.contains(kind);
-        let enum_defined = *kind == SymbolKind::Enum
-            && (symbols
-                .by_kind_name
-                .contains_key(&(SymbolKind::Enum, name.clone()))
-                || symbols
-                    .by_kind_name
-                    .contains_key(&(SymbolKind::Complex, name.clone())));
-        if !builtin && !enum_defined && !symbols.by_kind_name.contains_key(&(*kind, name.clone())) {
-            semantic.push(diag(
-                &root.to_string_lossy(),
-                "CWT301",
-                format!("undefined {kind:?} {name}"),
-                true,
-                true,
-            ));
-        }
-    }
-    let mut edges = BTreeMap::<String, Vec<String>>::new();
-    for d in &docs {
-        for inj in &d.model.injects {
-            if let Some(p) = safe_inject_resolution(
-                root,
-                Path::new(&d.path).parent().unwrap_or(Path::new(".")),
-                inj,
-            ) {
-                let k = normalize_path(&p.to_string_lossy());
-                if docs.iter().any(|x| x.path == k) {
-                    edges.entry(d.path.clone()).or_default().push(k)
-                }
-            }
-        }
-    }
-    fn visit(
-        n: &str,
-        edges: &BTreeMap<String, Vec<String>>,
-        state: &mut BTreeMap<String, u8>,
-        depth: usize,
-    ) -> bool {
-        if depth > 2048 {
-            return true;
-        }
-        match state.get(n).copied().unwrap_or(0) {
-            1 => true,
-            2 => false,
-            _ => {
-                state.insert(n.into(), 1);
-                let hit = edges
-                    .get(n)
-                    .is_some_and(|v| v.iter().any(|x| visit(x, edges, state, depth + 1)));
-                state.insert(n.into(), 2);
-                hit
-            }
-        }
-    }
-    let mut state = BTreeMap::new();
-    for n in edges.keys() {
-        if visit(n, &edges, &mut state, 0) {
-            semantic.push(diag(n, "CWT401", "inject cycle".into(), true, true));
-        }
-    }
+    let semantic = assemble_semantic(&docs, &symbols, root);
     docs.sort_by(|a, b| a.path.cmp(&b.path));
     for v in symbols.by_kind_name.values_mut() {
         v.sort();
@@ -647,9 +687,9 @@ enum[color] = { red }",
         );
     }
     #[test]
-    fn cwt301_reports_undefined_reference() {
+    fn cwt301_does_not_report_value_without_project_definitions() {
         let s = snapshot(&[("a.cwt", "rule = value[missing]")]);
-        assert!(s.semantic_diagnostics.iter().any(|d| d.code == "CWT301"));
+        assert!(!s.semantic_diagnostics.iter().any(|d| d.code == "CWT301"));
     }
     #[test]
     fn cwt301_defined_reference_is_clean() {
@@ -674,18 +714,24 @@ rule = value[known]",
         assert!(!s.semantic_diagnostics.iter().any(|d| d.code == "CWT301"));
     }
     #[test]
-    fn cwt302_same_file_duplicate_is_not_cross_file_duplicate() {
+    fn cwt302_same_file_duplicate_reports_each_declaration() {
         let s = snapshot(&[(
             "a.cwt",
             "type[same] = {}
 type[same] = {}",
         )]);
-        assert!(!s.semantic_diagnostics.iter().any(|d| d.code == "CWT302"));
+        assert_eq!(
+            s.semantic_diagnostics
+                .iter()
+                .filter(|d| d.code == "CWT302")
+                .count(),
+            2
+        );
     }
     #[test]
-    fn cwt302_cross_file_duplicate_reports() {
+    fn cwt302_cross_file_duplicate_is_allowed() {
         let s = snapshot(&[("a.cwt", "type[same] = {}"), ("b.cwt", "type[same] = {}")]);
-        assert!(s.semantic_diagnostics.iter().any(|d| d.code == "CWT302"));
+        assert!(!s.semantic_diagnostics.iter().any(|d| d.code == "CWT302"));
     }
     #[test]
     fn cwt401_self_cycle_reports() {
