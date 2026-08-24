@@ -6,6 +6,7 @@ members = [
     "crates/cwtools-transport",
     "crates/cwtools-leaf",
     "crates/cwtools-script-syntax",
+    "crates/cwtools-domain",
 ]
 
 [workspace.package]

@@ -12,6 +12,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cwtools-domain"
+version = "0.1.0"
+dependencies = [
+ "cwtools-script-syntax",
+]
+
+[[package]]
 name = "cwtools-leaf"
 version = "0.1.0"
 dependencies = [
