@@ -177,7 +177,9 @@ pub struct TypeDefinition {
     pub name: String,
     pub name_field: Option<String>,
     pub path: Option<String>,
+    pub path_file: Option<String>,
     pub conditions: Option<String>,
+
     pub subtypes: Vec<SubtypeDefinition>,
     pub type_key_filter: Option<(Vec<String>, bool)>,
     pub type_key_regex: Option<String>,
@@ -207,6 +209,7 @@ pub struct ComplexEnumDef {
     pub name: String,
     pub description: String,
     pub path: Option<String>,
+    pub path_file: Option<String>,
     pub start_from_root: bool,
     pub opaque: String,
     /// The optional name tree, retained as parsed rules rather than flattened text.
@@ -295,7 +298,18 @@ fn typed(s: &str) -> NewField {
             let a = p.next().unwrap_or("");
             let b = p.next().unwrap_or("");
             return if is_float {
-                NewField::Value(ValueType::Float(number(a, f64::MIN), number(b, f64::MAX)))
+                NewField::Value(ValueType::Float(
+                    if a.eq_ignore_ascii_case("-inf") {
+                        -f64::MAX
+                    } else {
+                        number(a, f64::MIN)
+                    },
+                    if b.eq_ignore_ascii_case("inf") {
+                        f64::MAX
+                    } else {
+                        number(b, f64::MAX)
+                    },
+                ))
             } else {
                 NewField::Value(ValueType::Int(number(a, i64::MIN), number(b, i64::MAX)))
             };
@@ -351,14 +365,15 @@ fn typed(s: &str) -> NewField {
         return NewField::Aliases(x.to_owned());
     }
     if let Some(x) = s
-        .strip_prefix("single_alias[")
+        .strip_prefix("single_alias_right[")
+        .or_else(|| s.strip_prefix("single_alias["))
         .and_then(|x| x.strip_suffix(']'))
     {
         return NewField::SingleAlias(x.to_owned());
     }
     match s {
-        "date" => NewField::Value(ValueType::Date),
-        "datetime" => NewField::Value(ValueType::DateTime),
+        "date" | "date_field" => NewField::Value(ValueType::Date),
+        "datetime" | "datetime_field" => NewField::Value(ValueType::DateTime),
         "CK2DNA" => NewField::Value(ValueType::CK2DNA),
         _ => NewField::Specific(s.to_owned()),
     }
@@ -368,6 +383,19 @@ fn field(n: &CstNode) -> NewField {
         CstNode::Bare { token } => typed(&token.value),
         _ => NewField::Opaque(text(n)),
     }
+}
+fn yes(value: Option<String>) -> bool {
+    value.is_some_and(|x| matches!(x.as_str(), "yes" | "true" | "1"))
+}
+fn filter_value(value: &str) -> (Vec<String>, bool) {
+    let negated = value.contains("<>");
+    let values = value
+        .trim_matches('{')
+        .trim_matches('}')
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    (values, !negated)
 }
 fn directive(line: &str, o: &mut Options) {
     let x = line
@@ -478,6 +506,22 @@ fn make_rule(n: &CstNode, pending: Vec<String>) -> Option<(String, NewRule)> {
         None
     }
 }
+fn props(clause: &CstNode, name: &str) -> Vec<String> {
+    match clause {
+        CstNode::Clause { children, .. } => children
+            .iter()
+            .filter_map(|n| match n {
+                CstNode::Assignment {
+                    key: field_key,
+                    value,
+                    ..
+                } if key(field_key) == name => Some(text(value).trim_matches('"').to_owned()),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    }
+}
 fn prop(clause: &CstNode, name: &str) -> Option<String> {
     if let CstNode::Clause { children, .. } = clause {
         for n in children {
@@ -534,6 +578,7 @@ fn complex_enum(name: &str, clause: &CstNode, range: Option<ByteRange>) -> Compl
         name: name.to_owned(),
         description: prop(clause, "description").unwrap_or_default(),
         path: prop(clause, "path"),
+        path_file: prop(clause, "path_file"),
         start_from_root: prop(clause, "start_from_root").is_some_and(|x| x == "yes" || x == "true"),
         opaque: text(clause),
         name_tree,
@@ -547,15 +592,19 @@ fn type_def(name: &str, clause: &CstNode) -> TypeDefinition {
         ..Default::default()
     };
     t.path = prop(clause, "path");
+    t.path_file = prop(clause, "path_file");
     t.name_field = prop(clause, "name_field");
     t.starts_with = prop(clause, "starts_with");
-    t.type_per_file = prop(clause, "type_per_file").is_some_and(|x| x == "true");
-    t.unique = prop(clause, "unique").is_some_and(|x| x == "true");
-    t.warning_only = prop(clause, "warning_only").is_some_and(|x| x == "true");
+    t.skip_root_key = props(clause, "skip_root_key");
+    t.type_key_filter = prop(clause, "type_key_filter").map(|v| filter_value(&v));
+    t.type_per_file = yes(prop(clause, "type_per_file"));
+    t.unique = yes(prop(clause, "unique"));
+    t.warning_only = yes(prop(clause, "warning_only"));
     if let CstNode::Clause { children, .. } = clause {
         // Only explicit subtype[...] assignments define subtypes. Ordinary
         // properties belong to the type itself and must never be reclassified.
-        for n in children {
+        let mut declaration_comments = Vec::new();
+        for (comments, n) in comments_children(children, &mut declaration_comments) {
             if let CstNode::Assignment { key: k, value, .. } = n {
                 let k = key(k);
                 if let Some(subtype) = k.strip_prefix("subtype[").and_then(|x| x.strip_suffix(']'))
@@ -565,6 +614,25 @@ fn type_def(name: &str, clause: &CstNode) -> TypeDefinition {
                             name: subtype.to_owned(),
                             ..Default::default()
                         };
+                        for comment in &comments {
+                            let body = comment
+                                .trim()
+                                .trim_start_matches('#')
+                                .trim_start_matches('#')
+                                .trim();
+                            if let Some(value) = body
+                                .strip_prefix("push_scope")
+                                .and_then(|rest| rest.trim().strip_prefix('='))
+                            {
+                                s.push_scope = Some(value.trim().to_owned());
+                            }
+                            if let Some(value) = body
+                                .strip_prefix("starts_with")
+                                .and_then(|rest| rest.trim().strip_prefix('='))
+                            {
+                                s.starts_with = Some(value.trim().to_owned());
+                            }
+                        }
                         if let CstNode::Clause {
                             children: subchildren,
                             ..

@@ -2,6 +2,7 @@
 use cwtools_cwt_project::build_snapshot_from_texts;
 use cwtools_cwt_service::{
     AnalysisResult, CompletionArgument, Diagnostic, Range, Reference, Symbol, analyze_document,
+    completions_with_project,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -14,11 +15,17 @@ struct Input {
     files: Vec<InputFile>,
     #[serde(default = "default_mode")]
     mode: String,
+    query: Option<String>,
+    #[serde(rename = "queryLine")]
+    query_line: Option<u32>,
+    #[serde(rename = "queryColumn")]
+    query_column: Option<u32>,
 }
 
 fn default_mode() -> String {
     "document".into()
 }
+
 #[derive(Debug, Deserialize)]
 struct InputFile {
     path: String,
@@ -27,6 +34,18 @@ struct InputFile {
 #[derive(Debug, Serialize)]
 struct Output {
     files: Vec<FileOutput>,
+}
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct CompletionOutput {
+    mode: String,
+    items: Vec<CompletionItem>,
+}
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct CompletionItem {
+    label: String,
+    kind: String,
+    #[serde(rename = "insertText")]
+    insert_text: Option<String>,
 }
 #[derive(Debug, Serialize)]
 struct ProjectOutput {
@@ -200,6 +219,98 @@ fn run_project(input: &Input) -> ProjectOutput {
     }
 }
 
+fn utf16_offset(source: &str, line: u32, column: u32) -> Option<usize> {
+    let line_text = source.split('\n').nth(line as usize)?;
+    let line_text = line_text.strip_suffix('\r').unwrap_or(line_text);
+    let mut units = 0u32;
+    for (offset, ch) in line_text.char_indices() {
+        if units == column {
+            return Some(offset + line as usize /* sentinel removed below */);
+        }
+        let next = units + u32::try_from(ch.len_utf16()).expect("UTF-16 width is at most two");
+        if column < next {
+            return None;
+        }
+        units = next;
+    }
+    (units == column).then_some(line_text.len())
+}
+
+fn absolute_utf16_offset(source: &str, line: u32, column: u32) -> Option<usize> {
+    let start = source
+        .split_inclusive('\n')
+        .take(line as usize)
+        .map(str::len)
+        .sum::<usize>();
+    let line_text = source.get(start..)?.split('\n').next().unwrap_or("");
+    let line_text = line_text.strip_suffix('\r').unwrap_or(line_text);
+    let local = utf16_offset(line_text, 0, column)?;
+    Some(start + local)
+}
+
+fn completion_output(input: &Input) -> CompletionOutput {
+    let Some(query_path) = input.query.as_deref() else {
+        return CompletionOutput {
+            mode: "completion".into(),
+            items: vec![],
+        };
+    };
+    let Some(line) = input.query_line else {
+        return CompletionOutput {
+            mode: "completion".into(),
+            items: vec![],
+        };
+    };
+    let Some(column) = input.query_column else {
+        return CompletionOutput {
+            mode: "completion".into(),
+            items: vec![],
+        };
+    };
+    let Some(query_file) = input.files.iter().find(|f| f.path == query_path) else {
+        return CompletionOutput {
+            mode: "completion".into(),
+            items: vec![],
+        };
+    };
+    let Some(offset) = absolute_utf16_offset(&query_file.text, line, column) else {
+        return CompletionOutput {
+            mode: "completion".into(),
+            items: vec![],
+        };
+    };
+    let entries: Vec<_> = input
+        .files
+        .iter()
+        .map(|f| (f.path.clone(), f.text.clone()))
+        .collect();
+    let snapshot = build_snapshot_from_texts(&entries, Path::new("."));
+    let symbols: Vec<_> = snapshot
+        .documents
+        .iter()
+        .flat_map(|d| d.model.symbols.iter().cloned())
+        .collect();
+    let args: Vec<_> = snapshot
+        .documents
+        .iter()
+        .flat_map(|d| d.model.completion_arguments.iter().cloned())
+        .collect();
+    let mut items: Vec<_> = completions_with_project(&query_file.text, offset, &symbols, &args)
+        .into_iter()
+        .map(|c| CompletionItem {
+            label: c.label,
+            kind: c.detail.unwrap_or_else(|| kind_name(c.kind)),
+            insert_text: None,
+        })
+        .collect();
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    items.dedup_by(|a, b| a.label == b.label && a.kind == b.kind);
+    CompletionOutput {
+        mode: "completion".into(),
+        items,
+    }
+}
+
 fn run(input: Input) -> Output {
     let mut files = input.files;
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -221,6 +332,11 @@ fn main() {
         println!(
             "{}",
             serde_json::to_string(&run_project(&input)).expect("serialize output")
+        );
+    } else if input.mode == "completion" {
+        println!(
+            "{}",
+            serde_json::to_string(&completion_output(&input)).expect("serialize output")
         );
     } else {
         println!(

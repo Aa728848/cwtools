@@ -749,42 +749,314 @@ fn scan_injects(source: &str, result: &mut AnalysisResult) {
 /// Return deterministic completions for the current prefix/context.
 #[must_use]
 pub fn completions(source: &str, offset: usize) -> Vec<CompletionArgument> {
-    let prefix = &source[..offset.min(source.len())];
-    let mut values = if prefix.trim_end().ends_with('@') {
-        vec!["@clear", "@hide", "@include", "@replace", "@trigger"]
-            .into_iter()
-            .map(|x| CompletionArgument {
-                label: x.into(),
-                detail: Some("directive".into()),
-                kind: SymbolKind::Directive,
-            })
-            .collect()
-    } else if prefix.trim_end().ends_with('=') {
-        [
-            "type",
-            "subtype",
-            "enum",
-            "complex",
-            "value",
-            "alias",
-            "single_alias",
-            "scope",
-            "scope_group",
-            "link",
-            "modifier_category",
-        ]
-        .into_iter()
-        .map(|x| CompletionArgument {
-            label: x.into(),
-            detail: Some("declaration".into()),
-            kind: SymbolKind::Field,
-        })
-        .collect()
+    completions_with_project(source, offset, &[], &[])
+}
+
+/// Complete using document text plus project symbols and observed arguments.
+#[must_use]
+pub fn completions_with_project(
+    source: &str,
+    offset: usize,
+    symbols: &[Symbol],
+    args: &[CompletionArgument],
+) -> Vec<CompletionArgument> {
+    let mut end = offset.min(source.len());
+    while end > 0 && !source.is_char_boundary(end) {
+        end -= 1;
+    }
+    let prefix = &source[..end];
+    let line_start = prefix.rfind('\n').map_or(0, |i| i + 1);
+    let line = &prefix[line_start..];
+    let trimmed = line.trim_start();
+    let typed = token_prefix(line);
+    let context_kind = if is_directive_comment(trimmed) {
+        "Directive"
+    } else if brace_depth(prefix) == 0 && !line.contains('=') && !line.contains('[') {
+        "RootBlock"
+    } else if line.rfind('=').is_some() {
+        "FieldExpression"
     } else {
-        Vec::new()
+        "Symbol"
     };
-    values.sort_by(|a, b| a.label.cmp(&b.label));
-    values
+    let mut items = if is_directive_comment(trimmed) {
+        directive_items()
+    } else if brace_depth(prefix) == 0 && !line.contains('=') && !line.contains('[') {
+        root_items()
+    } else if line.rfind('=').is_some() {
+        let rhs = line.rfind('=').map_or("", |i| &line[i + 1..]);
+        let field_prefix = rhs.trim_start();
+        let field_typed = token_prefix(field_prefix);
+        let mut result = field_items();
+        result.extend(concrete_items(symbols, args));
+        filter_items(result, field_typed)
+    } else {
+        declaration_items(line, symbols)
+    };
+    if is_directive_comment(trimmed) {
+        let before = trimmed.strip_prefix("##").unwrap_or("").trim_start();
+        items = filter_items(items, before);
+    } else if brace_depth(prefix) == 0 && !line.contains('=') && !line.contains('[') {
+        items = filter_items(items, typed);
+    }
+    for completion in &mut items {
+        completion.detail = Some(context_kind.into());
+    }
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    items.dedup_by(|a, b| a.label == b.label);
+    items.truncate(2000);
+    items
+}
+
+fn item(label: &str, kind: SymbolKind, detail: Option<String>) -> CompletionArgument {
+    CompletionArgument {
+        label: label.to_owned(),
+        detail,
+        kind,
+    }
+}
+fn filter_items(mut items: Vec<CompletionArgument>, prefix: &str) -> Vec<CompletionArgument> {
+    items.retain(|x| x.label.to_lowercase().starts_with(&prefix.to_lowercase()));
+    items
+}
+fn token_prefix(text: &str) -> &str {
+    let start = text
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| {
+            c.is_alphanumeric() || *c == '_' || *c == '$' || *c == '<' || *c == ']' || *c == '['
+        })
+        .last()
+        .map_or(text.len(), |(i, _)| i);
+    &text[start..]
+}
+fn is_directive_comment(line: &str) -> bool {
+    line.starts_with("##") && !line.starts_with("###")
+}
+fn brace_depth(text: &str) -> usize {
+    let mut depth = 0usize;
+    let mut string = false;
+    let mut comment = false;
+    for c in text.chars() {
+        if c == '\n' {
+            comment = false;
+            continue;
+        }
+        if comment {
+            continue;
+        }
+        if c == '#' {
+            comment = true;
+            continue;
+        }
+        if c == '"' {
+            string = !string;
+            continue;
+        }
+        if !string {
+            if c == '{' {
+                depth += 1;
+            } else if c == '}' {
+                depth = depth.saturating_sub(1);
+            }
+        }
+    }
+    depth
+}
+fn directive_items() -> Vec<CompletionArgument> {
+    [
+        "abbreviation",
+        "cardinality",
+        "color_type",
+        "completion_type",
+        "display_name",
+        "error_if_only_match",
+        "event_type",
+        "file_extensions",
+        "forbid_quoted_values",
+        "graph_related_types",
+        "hint",
+        "incomingReferenceLabel",
+        "inject",
+        "optional",
+        "outgoingReferenceLabel",
+        "primary",
+        "push_scope",
+        "replace_scope",
+        "replace_scopes",
+        "required",
+        "root_completion",
+        "scope",
+        "severity",
+        "starts_with",
+        "supported_scopes",
+        "type_key_filter",
+        "type_key_regex",
+        "type_prefix_from",
+        "type_suffix_pattern",
+        "type_suffix_patterns",
+    ]
+    .into_iter()
+    .map(|x| item(x, SymbolKind::Directive, Some("CWT directive".into())))
+    .collect()
+}
+fn root_items() -> Vec<CompletionArgument> {
+    [
+        "types",
+        "enums",
+        "complex_enums",
+        "values",
+        "aliases",
+        "scopes",
+        "scope_groups",
+        "links",
+        "modifier_categories",
+        "localisation_commands",
+        "localisation_links",
+        "priorities",
+        "locales",
+        "on_actions",
+    ]
+    .into_iter()
+    .map(|x| {
+        item(
+            x,
+            SymbolKind::RootDeclaration,
+            Some("CWT root block".into()),
+        )
+    })
+    .collect()
+}
+fn field_items() -> Vec<CompletionArgument> {
+    [
+        "scalar",
+        "wildcard_scalar",
+        "$any",
+        "bool",
+        "int",
+        "float",
+        "date_field",
+        "datetime_field",
+        "percentage_field",
+        "localisation",
+        "localisation_synced",
+        "localisation_inline",
+        "enum[…]",
+        "complex_enum[…]",
+        "value[…]",
+        "value_set[…]",
+        "dynamic_value[…]",
+        "value_field",
+        "value_field[…]",
+        "int_value_field",
+        "int_value_field[…]",
+        "variable_field",
+        "variable_field[…]",
+        "int_variable_field",
+        "int_variable_field[…]",
+        "variable_field_32",
+        "variable_field_32[…]",
+        "int_variable_field_32",
+        "int_variable_field_32[…]",
+        "<type…>",
+        "prefix<type>suffix",
+        "prefix_field[…]",
+        "alias_name[…]",
+        "alias_match_left[…]",
+        "single_alias_right[…]",
+        "alias_keys_field[…]",
+        "alias_params_field[…]",
+        "scope[…]",
+        "scope_field",
+        "scope_group[…]",
+        "event_target[…]",
+        "colour_field",
+        "color_field",
+        "colour[…]",
+        "color[…]",
+        "filepath[…]",
+        "filename[…]",
+        "abs_filepath",
+        "icon[…]",
+        "$localisation_parameter",
+        "$script_value_reference",
+        "$define_reference",
+        "$array_define_reference",
+        "$database_object",
+        "$tags[…]",
+        "$tags_condition[…]",
+        "$shader_effect",
+        "$mesh_locator",
+        "$technology_with_level",
+        "name_format[…]",
+        "stellaris_name_format[…]",
+        "portrait_dna_field",
+        "portrait_properties_field",
+        "ir_country_tag_field",
+        "ir_family_name_field",
+        "glob:pattern",
+        "glob.i:pattern",
+        "ant:pattern",
+        "ant.i:pattern",
+        "re:pattern",
+        "re.i:pattern",
+        "ignore_field",
+    ]
+    .into_iter()
+    .map(|x| item(x, SymbolKind::Field, Some("field expression".into())))
+    .collect()
+}
+fn family_items(family: &str, name: &str, kind: SymbolKind) -> Vec<CompletionArgument> {
+    let label = if family == "type" {
+        format!("<{name}>")
+    } else {
+        format!("{family}[{name}]")
+    };
+    vec![item(&label, kind, Some(family.into()))]
+}
+fn concrete_items(symbols: &[Symbol], args: &[CompletionArgument]) -> Vec<CompletionArgument> {
+    let mut out = Vec::new();
+    for s in symbols {
+        let family = match s.kind {
+            SymbolKind::Type => "type",
+            SymbolKind::Enum => "enum",
+            SymbolKind::Complex => "complex_enum",
+            SymbolKind::Value => "value",
+            SymbolKind::Alias => "alias_name",
+            SymbolKind::SingleAlias => "single_alias_right",
+            SymbolKind::Scope => "scope",
+            SymbolKind::ScopeGroup => "scope_group",
+            _ => continue,
+        };
+        out.extend(family_items(family, &s.name, s.kind));
+    }
+    for a in args {
+        out.push(item(&a.label, a.kind, a.detail.clone()));
+    }
+    out
+}
+fn declaration_items(line: &str, symbols: &[Symbol]) -> Vec<CompletionArgument> {
+    let Some(open) = line.rfind('[') else {
+        return Vec::new();
+    };
+    let family = line[..open].split_whitespace().last().unwrap_or("");
+    let kind = match family {
+        "type" => SymbolKind::Type,
+        "subtype" => SymbolKind::Subtype,
+        "enum" => SymbolKind::Enum,
+        "complex_enum" => SymbolKind::Complex,
+        "value" => SymbolKind::Value,
+        "alias" => SymbolKind::Alias,
+        "single_alias" => SymbolKind::SingleAlias,
+        "scope" => SymbolKind::Scope,
+        "scope_group" => SymbolKind::ScopeGroup,
+        _ => return Vec::new(),
+    };
+    let typed = &line[open + 1..];
+    symbols
+        .iter()
+        .filter(|s| s.kind == kind && s.name.to_lowercase().starts_with(&typed.to_lowercase()))
+        .map(|s| item(&s.name, SymbolKind::Field, s.detail.clone()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -984,10 +1256,10 @@ enum[z] = { c }",
 
     #[test]
     fn completion_directives_remain_stable() {
-        let labels: Vec<_> = completions("@", 1).into_iter().map(|x| x.label).collect();
-        assert_eq!(
-            labels,
-            vec!["@clear", "@hide", "@include", "@replace", "@trigger"]
-        );
+        let labels: Vec<_> = completions("## car", 6)
+            .into_iter()
+            .map(|x| x.label)
+            .collect();
+        assert_eq!(labels, vec!["cardinality"]);
     }
 }
