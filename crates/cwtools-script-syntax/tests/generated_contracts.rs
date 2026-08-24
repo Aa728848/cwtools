@@ -6,7 +6,7 @@ fn contract_simple() {
     let parsed = parse(source).expect("fixture should parse");
     assert_eq!(
         print_canonical(&parsed),
-        "key = value\nlabel = {\n\tvaluea\n\tvalueb\n}"
+        "key = value\nlabel = {\n\tvaluea\n\tvalueb\n}\n"
     );
 }
 

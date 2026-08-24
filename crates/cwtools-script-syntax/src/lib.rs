@@ -32,6 +32,7 @@ pub struct Position {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParseError {
+    pub code: &'static str,
     pub message: String,
     pub offset: usize,
     pub line: usize,
@@ -123,7 +124,19 @@ fn position(src: &str, offset: usize) -> Position {
 }
 fn error(src: &str, msg: &str, at: usize) -> ParseError {
     let p = position(src, at);
+    let code = match msg {
+        "unclosed quote" => "SYNTAX_UNCLOSED_QUOTE",
+        "unclosed clause" => "SYNTAX_UNCLOSED_CLAUSE",
+        "unexpected token '}'" => "SYNTAX_UNEXPECTED_RBRACE",
+        "MissingValue" => "SYNTAX_MISSING_VALUE",
+        "invalid colour literal" => "SYNTAX_INVALID_COLOUR_LITERAL",
+        "invalid colour components" => "SYNTAX_INVALID_COLOUR_COMPONENTS",
+        "maximum nesting depth exceeded" => "SYNTAX_DEPTH_LIMIT",
+        "input exceeds 16 MiB limit" => "SYNTAX_INPUT_LIMIT",
+        _ => "SYNTAX_UNEXPECTED_TOKEN",
+    };
     ParseError {
+        code,
         message: msg.into(),
         offset: at,
         line: p.line,
@@ -496,10 +509,6 @@ impl<'a> Parser<'a> {
             self.skip();
             let k = self.tokens[self.at].kind.clone();
             if matches!(k, TokenKind::Eof) {
-                if in_clause {
-                    self.errors
-                        .push(error(self.src, "unclosed clause", self.src.len()));
-                }
                 break;
             }
             if matches!(k, TokenKind::RBrace) {
@@ -832,7 +841,7 @@ fn decode_windows_1252(byte: u8) -> char {
 pub fn print_canonical(cst: &Cst) -> String {
     let mut output = String::new();
     print_canonical_nodes(&cst.roots, 0, &mut output);
-    output.trim_end().to_owned()
+    output
 }
 
 fn print_canonical_nodes(nodes: &[CstNode], depth: usize, output: &mut String) {
@@ -861,6 +870,28 @@ fn print_canonical_nodes(nodes: &[CstNode], depth: usize, output: &mut String) {
                     CstNode::Clause { children, .. } => {
                         output.push_str("{\n");
                         print_canonical_nodes(children, depth + 1, output);
+                        output.push_str(&"\t".repeat(depth));
+                        output.push_str("}\n");
+                    }
+                    CstNode::ColourLiteral { typed, .. } => {
+                        output.push_str("{\n");
+                        match typed.as_ref() {
+                            TypedValue::Rgb(values) => {
+                                for value in values {
+                                    output.push_str(&"\t".repeat(depth + 1));
+                                    output.push_str(&value.to_string());
+                                    output.push('\n');
+                                }
+                            }
+                            TypedValue::Hsv { components, .. } => {
+                                for value in components {
+                                    output.push_str(&"\t".repeat(depth + 1));
+                                    output.push_str(value);
+                                    output.push('\n');
+                                }
+                            }
+                            _ => {}
+                        }
                         output.push_str(&"\t".repeat(depth));
                         output.push_str("}\n");
                     }
@@ -937,6 +968,22 @@ mod tests {
     fn escaped() {
         assert_eq!(lex("a=\"x\\\"y\"").unwrap()[2].value, "x\"y")
     }
+    #[test]
+    fn diagnostics_have_stable_codes_and_single_clause_error() {
+        let cases = [
+            ("x = \"unterminated", "SYNTAX_UNCLOSED_QUOTE"),
+            ("x = { y = 1", "SYNTAX_UNCLOSED_CLAUSE"),
+            ("}", "SYNTAX_UNEXPECTED_RBRACE"),
+            ("x =", "SYNTAX_MISSING_VALUE"),
+            ("x = rgb { 1 2 }", "SYNTAX_INVALID_COLOUR_COMPONENTS"),
+        ];
+        for (source, code) in cases {
+            let errors = parse(source).expect_err("fixture must fail");
+            assert_eq!(errors.len(), 1, "{source}");
+            assert_eq!(errors[0].code, code, "{source}");
+        }
+    }
+
     #[test]
     fn errors() {
         assert!(parse("a=\"x").is_err());
@@ -1111,7 +1158,7 @@ mod tests {
         let parsed = parse("key=value label={ valuea valueb }").unwrap();
         assert_eq!(
             print_canonical(&parsed),
-            "key = value\nlabel = {\n\tvaluea\n\tvalueb\n}"
+            "key = value\nlabel = {\n\tvaluea\n\tvalueb\n}\n"
         );
     }
 

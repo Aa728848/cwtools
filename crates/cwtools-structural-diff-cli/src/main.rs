@@ -1,4 +1,6 @@
-use cwtools_script_syntax::{CstNode, TokenKind, TypedValue, classify_scalar, parse};
+use cwtools_script_syntax::{
+    CstNode, TokenKind, TypedValue, classify_scalar, parse, print_canonical,
+};
 use serde_json::{Value, json};
 use std::io::{self, Read};
 use std::process::ExitCode;
@@ -86,10 +88,10 @@ fn main() -> ExitCode {
     }
     let output = match parse(&source) {
         Ok(cst) => {
-            json!({ "schemaVersion": "cwtools.structural-projection/v1", "parser": "rust", "sourceName": "stdin", "ok": true, "errors": [], "nodes": cst.roots.iter().map(node).collect::<Vec<_>>() })
+            json!({ "schemaVersion": "cwtools.structural-projection/v1", "parser": "rust", "sourceName": "stdin", "ok": true, "errors": [], "nodes": cst.roots.iter().map(node).collect::<Vec<_>>(), "canonical": print_canonical(&cst) })
         }
         Err(errors) => {
-            json!({ "schemaVersion": "cwtools.structural-projection/v1", "parser": "rust", "sourceName": "stdin", "ok": false, "errors": errors.iter().map(|error| json!({ "message": error.message, "line": error.line, "utf16Column": error.utf16_column })).collect::<Vec<_>>(), "nodes": [] })
+            json!({ "schemaVersion": "cwtools.structural-projection/v1", "parser": "rust", "sourceName": "stdin", "ok": false, "errors": errors.iter().map(|error| json!({ "code": error.code, "message": error.message, "line": error.line, "utf16Column": error.utf16_column })).collect::<Vec<_>>(), "nodes": [], "canonical": Value::Null })
         }
     };
     println!("{output}");
