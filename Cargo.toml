@@ -19,10 +19,6 @@ members = [
     "crates/cwtools-scopes",
     "crates/cwtools-docs",
     "crates/cwtools-metadata",
-    "crates/cwtools-structural-diff-cli",
-    "crates/cwtools-cwt-projection-cli",
-    "crates/cwtools-rules-projection-cli",
-    "crates/cwtools-workspace-projection-cli",
     "crates/cwtools-shader",
     "crates/cwtools-semantic",
 ]
