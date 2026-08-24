@@ -27,6 +27,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cwtools-script-syntax"
+version = "0.1.0"
+
+[[package]]
 name = "cwtools-source"
 version = "0.1.0"
 
