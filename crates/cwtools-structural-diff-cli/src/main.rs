@@ -58,13 +58,10 @@ fn key_value(value: &CstNode) -> String {
 fn typed_projection(value: &TypedValue) -> Value {
     match value {
         TypedValue::Rgb(values) => {
-            json!({ "kind": "rgb", "raw": values.iter().map(i64::to_string).collect::<Vec<_>>().join(" "), "children": [] })
+            json!({ "kind": "clause", "raw": "", "children": values.iter().map(|value| json!({ "kind": "bare", "value": { "kind": "int", "raw": value.to_string(), "children": [] } })).collect::<Vec<_>>() })
         }
-        TypedValue::Hsv {
-            components,
-            degrees,
-        } => {
-            json!({ "kind": if *degrees { "hsv360" } else { "hsv" }, "raw": components.join(" "), "children": [] })
+        TypedValue::Hsv { components, .. } => {
+            json!({ "kind": "clause", "raw": "", "children": components.iter().map(|value| json!({ "kind": "bare", "value": { "kind": "float", "raw": value, "children": [] } })).collect::<Vec<_>>() })
         }
         _ => json!({ "kind": "unknown", "raw": "", "children": [] }),
     }
