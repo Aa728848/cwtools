@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
-use cwtools_cwt_project::build_snapshot_from_texts;
+use cwtools_cwt_project::{build_snapshot_from_texts, definition_at, references_at};
 use cwtools_cwt_service::{
-    AnalysisResult, CompletionArgument, Diagnostic, Range, Reference, Symbol, analyze_document,
-    completions_with_project,
+    AnalysisResult, CompletionArgument, Diagnostic, Position, Range, Reference, Symbol,
+    analyze_document, completions_with_project,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -20,6 +20,7 @@ struct Input {
     query_line: Option<u32>,
     #[serde(rename = "queryColumn")]
     query_column: Option<u32>,
+    operation: Option<String>,
 }
 
 fn default_mode() -> String {
@@ -46,6 +47,19 @@ struct CompletionItem {
     kind: String,
     #[serde(rename = "insertText")]
     insert_text: Option<String>,
+}
+#[derive(Debug, Serialize)]
+struct NavigationOutput {
+    mode: String,
+    locations: Vec<NavigationLocation>,
+}
+#[derive(Debug, Serialize)]
+struct NavigationLocation {
+    path: String,
+    kind: String,
+    name: String,
+    #[serde(flatten)]
+    range: WireRange,
 }
 #[derive(Debug, Serialize)]
 struct ProjectOutput {
@@ -311,6 +325,45 @@ fn completion_output(input: &Input) -> CompletionOutput {
     }
 }
 
+fn navigation_output(input: &Input) -> NavigationOutput {
+    let empty = || NavigationOutput {
+        mode: "navigation".into(),
+        locations: vec![],
+    };
+    let (Some(path), Some(line), Some(character), Some(operation)) = (
+        input.query.as_deref(),
+        input.query_line,
+        input.query_column,
+        input.operation.as_deref(),
+    ) else {
+        return empty();
+    };
+    let entries: Vec<_> = input
+        .files
+        .iter()
+        .map(|f| (f.path.clone(), f.text.clone()))
+        .collect();
+    let snapshot = build_snapshot_from_texts(&entries, Path::new("."));
+    let position = Position { line, character };
+    let locations = match operation {
+        "definition" => definition_at(&snapshot, path, position),
+        "references" => references_at(&snapshot, path, position),
+        _ => return empty(),
+    };
+    NavigationOutput {
+        mode: "navigation".into(),
+        locations: locations
+            .into_iter()
+            .map(|location| NavigationLocation {
+                path: location.path,
+                kind: kind_name(location.kind),
+                name: location.name,
+                range: wire_range(&location.range),
+            })
+            .collect(),
+    }
+}
+
 fn run(input: Input) -> Output {
     let mut files = input.files;
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -332,6 +385,11 @@ fn main() {
         println!(
             "{}",
             serde_json::to_string(&run_project(&input)).expect("serialize output")
+        );
+    } else if input.mode == "navigation" {
+        println!(
+            "{}",
+            serde_json::to_string(&navigation_output(&input)).expect("serialize output")
         );
     } else if input.mode == "completion" {
         println!(

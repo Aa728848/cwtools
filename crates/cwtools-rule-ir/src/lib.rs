@@ -219,6 +219,13 @@ pub struct ComplexEnumDef {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct MetadataEntry {
+    /// The lossless logical key of this metadata node.
+    pub key: String,
+    /// Scalar value, when this node is a leaf.
+    pub value: Option<String>,
+    /// Deterministically flattened descendant fields (path -> scalar value).
+    pub fields: BTreeMap<String, String>,
+    /// Legacy/list representation retained for callers that consume value lists.
     pub values: Vec<String>,
     pub value_ranges: Vec<ByteRange>,
     pub range: Option<ByteRange>,
@@ -265,7 +272,7 @@ fn text(n: &CstNode) -> String {
 }
 fn key(n: &CstNode) -> String {
     match n {
-        CstNode::Bare { token } => token.value.clone(),
+        CstNode::Bare { token } => token.value.trim_matches('"').to_owned(),
         _ => text(n),
     }
 }
@@ -586,6 +593,128 @@ fn complex_enum(name: &str, clause: &CstNode, range: Option<ByteRange>) -> Compl
     }
 }
 
+fn metadata_scalar(n: &CstNode) -> Option<String> {
+    match n {
+        CstNode::Bare { token } => Some(token.value.trim_matches('"').to_owned()),
+        CstNode::ColourLiteral { raw, .. } => Some(raw.clone()),
+        _ => None,
+    }
+}
+
+#[allow(clippy::items_after_statements)]
+fn metadata_entry(name: &str, node: &CstNode) -> MetadataEntry {
+    let mut entry = MetadataEntry {
+        key: name.to_owned(),
+        value: match node {
+            CstNode::Assignment { value, .. } => metadata_scalar(value),
+            _ => metadata_scalar(node),
+        },
+        ..Default::default()
+    };
+    fn visit(
+        node: &CstNode,
+        prefix: &str,
+        out: &mut BTreeMap<String, String>,
+        ranges: &mut Vec<ByteRange>,
+    ) {
+        match node {
+            CstNode::Assignment {
+                key: k,
+                value,
+                range,
+                ..
+            } => {
+                let child = key(k);
+                let path = if prefix.is_empty() {
+                    child
+                } else {
+                    format!("{prefix}.{child}")
+                };
+                ranges.push(*range);
+                if let Some(value) = metadata_scalar(value) {
+                    out.insert(path, value);
+                } else {
+                    visit(value, &path, out, ranges);
+                }
+            }
+            CstNode::Clause { children, .. } => {
+                for child in children {
+                    if !matches!(child, CstNode::Comment { .. } | CstNode::Trivia { .. }) {
+                        visit(child, prefix, out, ranges);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    match node {
+        CstNode::Assignment { value, range, .. } => {
+            entry.value_ranges.push(*range);
+            if entry.value.is_none() {
+                visit(value, "", &mut entry.fields, &mut entry.value_ranges);
+            }
+        }
+        _ => visit(node, "", &mut entry.fields, &mut entry.value_ranges),
+    }
+    if entry.value.is_some() {
+        if let Some(value) = entry.value.clone() {
+            entry.values.push(value);
+        }
+    }
+    entry.range = match node {
+        CstNode::Assignment { range, .. } | CstNode::Clause { range, .. } => Some(*range),
+        CstNode::Bare { token } => Some(token.range),
+        _ => None,
+    };
+    entry
+}
+
+fn parse_metadata_section(
+    name: &str,
+    value: &CstNode,
+    metadata: &mut ExtendedMetadata,
+    root_range: ByteRange,
+) {
+    metadata
+        .raw_ranges
+        .entry(name.to_owned())
+        .or_default()
+        .push(root_range);
+    let CstNode::Clause { children, .. } = value else {
+        return;
+    };
+    let mut entries = Vec::new();
+    for child in children {
+        if let CstNode::Assignment { key: k, .. } = child {
+            entries.push((key(k), metadata_entry(&key(k), child)));
+            if let CstNode::Assignment { range, .. } = child {
+                metadata
+                    .raw_ranges
+                    .entry(name.to_owned())
+                    .or_default()
+                    .push(*range);
+            }
+        }
+    }
+    let target = match name {
+        "priorities" => {
+            metadata
+                .priorities
+                .extend(entries.into_iter().map(|(_, e)| e));
+            return;
+        }
+        "override_modes_info" => &mut metadata.override_modes_info,
+        "system_scopes" => &mut metadata.system_scopes,
+        "locales" => &mut metadata.locales,
+        "database_object_types" => &mut metadata.database_object_types,
+        "on_actions" => &mut metadata.on_actions,
+        _ => return,
+    };
+    for (key, entry) in entries {
+        target.insert(key, entry);
+    }
+}
+
 fn type_def(name: &str, clause: &CstNode) -> TypeDefinition {
     let mut t = TypeDefinition {
         name: name.to_owned(),
@@ -678,8 +807,38 @@ pub fn parse_document(file: &str, source: &str) -> Result<Document, Vec<String>>
                 d.comments.push(token.value.clone());
                 pending.push(token.value.clone())
             }
-            CstNode::Assignment { key: k, value, .. } => {
+            CstNode::Assignment {
+                key: k,
+                value,
+                range,
+                ..
+            } => {
                 let name = key(k);
+                if matches!(
+                    name.as_str(),
+                    "priorities"
+                        | "override_modes_info"
+                        | "system_scopes"
+                        | "locales"
+                        | "database_object_types"
+                        | "on_actions"
+                ) {
+                    parse_metadata_section(&name, value, &mut d.metadata, *range);
+                    if let CstNode::Clause { children, .. } = value.as_ref() {
+                        let flat = children
+                            .iter()
+                            .filter_map(|child| {
+                                if let CstNode::Assignment { key, value, .. } = child {
+                                    Some((crate::key(key), text(value)))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        d.metadata.sections.insert(name, flat);
+                    }
+                    continue;
+                }
                 if name == "enums" {
                     if let CstNode::Clause { children, .. } = value.as_ref() {
                         for x in children {

@@ -8,7 +8,9 @@
     clippy::semicolon_if_nothing_returned
 )]
 
-use cwtools_cwt_service::{DiagnosticSeverity, DocumentModel, SymbolKind, analyze_document};
+use cwtools_cwt_service::{
+    DiagnosticSeverity, DocumentModel, Position, Range, SymbolKind, analyze_document,
+};
 use cwtools_rule_ir::{Document as RuleDocument, parse_document};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -57,6 +59,135 @@ pub struct ProjectSnapshot {
     pub skipped: Vec<String>,
     pub parse_failed: Vec<String>,
     pub content_hash: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Location {
+    pub path: String,
+    pub kind: SymbolKind,
+    pub name: String,
+    pub range: Range,
+}
+
+fn position_cmp(a: Position, b: Position) -> std::cmp::Ordering {
+    (a.line, a.character).cmp(&(b.line, b.character))
+}
+fn contains(range: &Range, position: Position) -> bool {
+    position_cmp(range.start, position) != std::cmp::Ordering::Greater
+        && position_cmp(position, range.end) == std::cmp::Ordering::Less
+}
+fn navigation_kind(kind: SymbolKind) -> SymbolKind {
+    if kind == SymbolKind::Complex {
+        SymbolKind::Enum
+    } else {
+        kind
+    }
+}
+fn matching_kind(left: SymbolKind, right: SymbolKind) -> bool {
+    navigation_kind(left) == navigation_kind(right)
+}
+
+/// Find definitions for the reference at a document position.
+#[must_use]
+pub fn definition_at(snapshot: &ProjectSnapshot, path: &str, position: Position) -> Vec<Location> {
+    let Some(document) = snapshot
+        .documents
+        .iter()
+        .find(|d| normalize_path(&d.path) == normalize_path(path))
+    else {
+        return Vec::new();
+    };
+    let Some(reference) = document
+        .model
+        .references
+        .iter()
+        .find(|r| contains(&r.range, position))
+    else {
+        return Vec::new();
+    };
+    let mut result = snapshot
+        .documents
+        .iter()
+        .flat_map(|d| d.model.symbols.iter().map(move |s| (d, s)))
+        .filter(|(_, s)| matching_kind(s.kind, reference.kind) && s.name == reference.name)
+        .map(|(d, s)| Location {
+            path: d.path.clone(),
+            kind: s.kind,
+            name: s.name.clone(),
+            range: s.range,
+        })
+        .collect::<Vec<_>>();
+    result.sort_by(|a, b| {
+        (
+            &a.path,
+            a.range.start.line,
+            a.range.start.character,
+            &a.name,
+        )
+            .cmp(&(
+                &b.path,
+                b.range.start.line,
+                b.range.start.character,
+                &b.name,
+            ))
+    });
+    result
+}
+
+/// Find all references matching the symbol or reference at a document position.
+#[must_use]
+pub fn references_at(snapshot: &ProjectSnapshot, path: &str, position: Position) -> Vec<Location> {
+    let Some(document) = snapshot
+        .documents
+        .iter()
+        .find(|d| normalize_path(&d.path) == normalize_path(path))
+    else {
+        return Vec::new();
+    };
+    let target = document
+        .model
+        .references
+        .iter()
+        .find(|r| contains(&r.range, position))
+        .map(|r| (r.kind, r.name.clone()))
+        .or_else(|| {
+            document
+                .model
+                .symbols
+                .iter()
+                .find(|s| contains(&s.range, position))
+                .map(|s| (s.kind, s.name.clone()))
+        });
+    let Some((kind, name)) = target else {
+        return Vec::new();
+    };
+    let mut result = snapshot
+        .documents
+        .iter()
+        .flat_map(|d| d.model.references.iter().map(move |r| (d, r)))
+        .filter(|(_, r)| matching_kind(r.kind, kind) && r.name == name)
+        .map(|(d, r)| Location {
+            path: d.path.clone(),
+            kind: r.kind,
+            name: r.name.clone(),
+            range: r.range,
+        })
+        .collect::<Vec<_>>();
+    result.sort_by(|a, b| {
+        (
+            &a.path,
+            a.range.start.line,
+            a.range.start.character,
+            &a.name,
+        )
+            .cmp(&(
+                &b.path,
+                b.range.start.line,
+                b.range.start.character,
+                &b.name,
+            ))
+    });
+    result
 }
 
 pub fn normalize_path(path: &str) -> String {

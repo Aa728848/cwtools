@@ -279,6 +279,7 @@ fn scan_value_refs(
 
 /// Analyze one CWT document without workspace state.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn analyze_document(source: &str) -> AnalysisResult {
     let parsed = parse_cwt_loss_aware(source);
     let mut result = AnalysisResult {
@@ -356,14 +357,17 @@ pub fn analyze_document(source: &str) -> AnalysisResult {
     result
         .diagnostics
         .dedup_by(|a, b| a.code == b.code && a.message_key == b.message_key && a.range == b.range);
+    result.model.references.sort_by(|a, b| {
+        a.kind
+            .cmp(&b.kind)
+            .then(a.name.cmp(&b.name))
+            .then(a.range.start.line.cmp(&b.range.start.line))
+            .then(a.range.start.character.cmp(&b.range.start.character))
+    });
     result
         .model
         .references
-        .sort_by(|a, b| a.kind.cmp(&b.kind).then(a.name.cmp(&b.name)));
-    result
-        .model
-        .references
-        .dedup_by(|a, b| a.kind == b.kind && a.name == b.name);
+        .dedup_by(|a, b| a.kind == b.kind && a.name == b.name && a.range == b.range);
     result
         .model
         .symbols
