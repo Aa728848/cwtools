@@ -120,6 +120,32 @@ impl IncrementalStore {
             limits,
         })
     }
+    /// Restores a previously validated full snapshot without reparsing its sources.
+    ///
+    /// # Errors
+    /// Returns an error for duplicate source paths or source-count bounds.
+    pub fn from_snapshot(
+        sources: Vec<SnapshotSource>,
+        snapshot: FullSnapshot,
+        limits: SnapshotLimits,
+    ) -> Result<Self, IncrementalError> {
+        if sources.len() > limits.max_sources {
+            return Err(IncrementalError::Snapshot(SnapshotError::TooManySources {
+                limit: limits.max_sources,
+            }));
+        }
+        let disk = map_sources(sources)?;
+        let fingerprint = semantic_fingerprint(&snapshot);
+        Ok(Self {
+            epoch: 0,
+            disk,
+            overlays: BTreeMap::new(),
+            snapshot,
+            fingerprint,
+            limits,
+        })
+    }
+
     #[must_use]
     pub const fn epoch(&self) -> u64 {
         self.epoch

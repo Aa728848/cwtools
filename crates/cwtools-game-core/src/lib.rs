@@ -801,6 +801,47 @@ impl GameSession {
         self.catalog = Some(catalog);
     }
 
+    pub fn install_cached_snapshot(
+        &mut self,
+        snapshot: SessionSnapshot,
+    ) -> Result<(), SessionError> {
+        if snapshot.source_fingerprint
+            != fingerprint_sources(
+                self.sources
+                    .values()
+                    .map(|source| (source.logical_path.as_str(), source.text.as_str())),
+            )
+        {
+            return Err(SessionError::Cache(
+                "cached snapshot source fingerprint mismatch".to_owned(),
+            ));
+        }
+        let inputs = self
+            .sources
+            .values()
+            .map(|source| SnapshotSource {
+                scope: source.scope.clone(),
+                path: source.path.clone(),
+                logical_path: source.logical_path.clone(),
+                text: source.text.clone(),
+                overwrite: source.overwrite,
+            })
+            .collect::<Vec<_>>();
+        self.incremental = Some(
+            IncrementalStore::from_snapshot(
+                inputs,
+                snapshot.full.clone(),
+                self.config.snapshot_limits,
+            )
+            .map_err(|error| SessionError::Snapshot(error.to_string()))?,
+        );
+        self.localisation = snapshot.localisation.clone();
+        self.cache
+            .insert(snapshot.source_fingerprint, snapshot.game_data.clone());
+        self.snapshot = Some(snapshot);
+        Ok(())
+    }
+
     pub fn set_scope_catalog(&mut self, catalog: ValueScopeCatalog) {
         self.scopes = catalog;
     }
