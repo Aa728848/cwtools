@@ -312,7 +312,9 @@ fn lex_with_mode(src: &str, cwt_mode: bool) -> Result<Vec<Token>, ParseError> {
         {
             i += 1;
             while i < bytes.len() {
-                let Some(ch) = src[i..].chars().next() else { break };
+                let Some(ch) = src[i..].chars().next() else {
+                    break;
+                };
                 if ch.is_whitespace() || matches!(ch, '{' | '}' | '#' | '=') {
                     break;
                 }

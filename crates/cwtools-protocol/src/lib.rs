@@ -30,6 +30,28 @@ pub struct Message {
     pub error: Option<JsonRpcError>,
 }
 
+impl Message {
+    /// Validates the JSON-RPC envelope independently of method-specific schemas.
+    ///
+    /// # Errors
+    /// Returns a stable reason when version or request/response shape is invalid.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.jsonrpc != JSON_RPC_VERSION {
+            return Err("jsonrpc must be 2.0");
+        }
+        if self.method.is_none() && self.id.is_none() {
+            return Err("message must be a request, notification, or response");
+        }
+        if self.method.is_some() && (self.result.is_some() || self.error.is_some()) {
+            return Err("request cannot contain result or error");
+        }
+        if self.method.is_none() && self.result.is_some() == self.error.is_some() {
+            return Err("response must contain exactly one of result or error");
+        }
+        Ok(())
+    }
+}
+
 fn json_rpc_version() -> String {
     JSON_RPC_VERSION.to_owned()
 }

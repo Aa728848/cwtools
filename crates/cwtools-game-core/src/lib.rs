@@ -15,12 +15,12 @@ use cwtools_cache::{
     fingerprint_sources,
 };
 use cwtools_rule_ir::Document;
-use cwtools_script_syntax::{ScriptEncoding, decode_script_bytes};
 use cwtools_rules_engine::{RuleCatalog, ScopeUniverse};
 use cwtools_scopes::{
     ScopeContext, ValueScopeCatalog,
     game::{self, GameScopeFamily},
 };
+use cwtools_script_syntax::{ScriptEncoding, decode_script_bytes};
 use cwtools_workspace::{
     FullSnapshot, GameComputedData, Overwrite, SnapshotLimits, SnapshotSource,
     compute_full_snapshot, compute_rule_game_data, compute_snapshot_diagnostics,
@@ -364,9 +364,12 @@ impl LocalisationIndex {
                     .entry(format!("{}:{}", entry.language.tag(), entry.key))
                     .or_default() += 1;
             }
-            self.values_by_language.insert(identity, entry.value.clone());
+            self.values_by_language
+                .insert(identity, entry.value.clone());
             self.keys.insert(entry.key.clone());
-            self.values.entry(entry.key.clone()).or_insert_with(|| entry.value.clone());
+            self.values
+                .entry(entry.key.clone())
+                .or_insert_with(|| entry.value.clone());
             if self.keys.len() > MAX_LOCALISATION_ENTRIES {
                 return Err(SessionError::LimitExceeded("localisation entries"));
             }
@@ -419,14 +422,17 @@ pub fn parse_localisation_bytes(
     };
     let mut file = parse_localisation(path, &text, profile);
     if profile.encoding == TextEncoding::Utf8Bom && !has_bom {
-        file.errors.insert(0, LocalisationDiagnostic {
-            code: "WrongEncoding".to_owned(),
-            message: "UTF-8 BOM is required for this localisation format".to_owned(),
-            path: path.to_owned(),
-            line: 1,
-            column: 1,
-            key: None,
-        });
+        file.errors.insert(
+            0,
+            LocalisationDiagnostic {
+                code: "WrongEncoding".to_owned(),
+                message: "UTF-8 BOM is required for this localisation format".to_owned(),
+                path: path.to_owned(),
+                line: 1,
+                column: 1,
+                key: None,
+            },
+        );
     }
     file
 }

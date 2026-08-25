@@ -251,7 +251,23 @@ pub fn export_project_knowledge(
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let temp = parent.join(format!(".knowledge-{}.tmp", std::process::id()));
     let conn = rusqlite::Connection::open(&temp).map_err(|e| e.to_string())?;
-    conn.execute_batch("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL); DELETE FROM metadata;").map_err(|e| e.to_string())?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS definitions (id TEXT NOT NULL, entity_type TEXT NOT NULL, file TEXT NOT NULL, line INTEGER NOT NULL); DELETE FROM metadata; DELETE FROM definitions;").map_err(|e| e.to_string())?;
+    for (file, text) in texts {
+        for (line, source) in text.lines().enumerate() {
+            let Some((left, _)) = source.split_once('=') else {
+                continue;
+            };
+            let id = left.trim();
+            if id.is_empty() {
+                continue;
+            }
+            conn.execute(
+                "INSERT INTO definitions(id,entity_type,file,line) VALUES (?1,'definition',?2,?3)",
+                rusqlite::params![id, file, i64::try_from(line + 1).unwrap_or(i64::MAX)],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
     conn.execute(
         "INSERT INTO metadata(key,value) VALUES ('schema_version','7')",
         [],
@@ -272,6 +288,74 @@ pub fn export_project_knowledge(
         status: "fresh".into(),
         database_path: path.to_string_lossy().into(),
         generated_at_unix_ms: 0,
+    })
+}
+
+/// Queries a schema-V7 knowledge database with bounded deterministic output.
+///
+/// # Errors
+/// Returns an error for invalid schema, SQLite errors, or an unreadable database.
+pub fn query_project_knowledge(
+    path: &std::path::Path,
+    query: &KnowledgeQuery,
+) -> Result<KnowledgeResult, String> {
+    let conn = rusqlite::Connection::open(path).map_err(|e| e.to_string())?;
+    let schema: String = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if schema != KNOWLEDGE_SCHEMA_VERSION.to_string() {
+        return Err(format!("unsupported knowledge schema {schema}"));
+    }
+    let mut statement = conn
+        .prepare("SELECT id,entity_type,file,line FROM definitions ORDER BY id,file,line")
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(GraphNode {
+                id: row.get(0)?,
+                entity_type: row.get(1)?,
+                file: row.get(2)?,
+                line: row.get::<_, usize>(3)?,
+                score: 100,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let limit = query.limit.clamp(1, 500);
+    let mut evidence = Vec::new();
+    for row in rows {
+        let node = row.map_err(|e| e.to_string())?;
+        if query
+            .identifier
+            .as_ref()
+            .is_some_and(|id| !node.id.eq_ignore_ascii_case(id))
+            || query
+                .entity_type
+                .as_ref()
+                .is_some_and(|kind| !node.entity_type.eq_ignore_ascii_case(kind))
+        {
+            continue;
+        }
+        if evidence.len() >= limit {
+            break;
+        }
+        evidence.push(node);
+    }
+    Ok(KnowledgeResult {
+        ok: true,
+        status: "fresh".to_owned(),
+        schema_version: KNOWLEDGE_SCHEMA_VERSION,
+        manifest: KnowledgeManifest {
+            schema_version: KNOWLEDGE_SCHEMA_VERSION,
+            status: "fresh".to_owned(),
+            database_path: path.to_string_lossy().into_owned(),
+            generated_at_unix_ms: 0,
+        },
+        truncated: evidence.len() == limit,
+        evidence,
     })
 }
 
