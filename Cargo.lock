@@ -92,6 +92,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 
 [[package]]
+name = "cwtools-analysis"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "cwtools-cache"
 version = "0.1.0"
 dependencies = [
@@ -106,16 +113,6 @@ version = "0.1.0"
 dependencies = [
  "cwtools-cwt-service",
  "cwtools-rule-ir",
-]
-
-[[package]]
-name = "cwtools-cwt-projection-cli"
-version = "0.1.0"
-dependencies = [
- "cwtools-cwt-project",
- "cwtools-cwt-service",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -145,6 +142,15 @@ name = "cwtools-domain"
 version = "0.1.0"
 dependencies = [
  "cwtools-script-syntax",
+]
+
+[[package]]
+name = "cwtools-game"
+version = "0.1.0"
+dependencies = [
+ "cwtools-cache",
+ "cwtools-game-core",
+ "cwtools-workspace",
 ]
 
 [[package]]
@@ -210,23 +216,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "cwtools-rules-projection-cli"
-version = "0.1.0"
-dependencies = [
- "cwtools-rule-ir",
- "cwtools-rules-engine",
- "cwtools-source",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "cwtools-scopes"
 version = "0.1.0"
 
 [[package]]
 name = "cwtools-script-syntax"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "cwtools-semantic"
@@ -254,14 +252,6 @@ name = "cwtools-source"
 version = "0.1.0"
 
 [[package]]
-name = "cwtools-structural-diff-cli"
-version = "0.1.0"
-dependencies = [
- "cwtools-script-syntax",
- "serde_json",
-]
-
-[[package]]
 name = "cwtools-transport"
 version = "0.1.0"
 dependencies = [
@@ -278,16 +268,8 @@ dependencies = [
  "cwtools-script-syntax",
  "globset",
  "regex",
- "zip",
-]
-
-[[package]]
-name = "cwtools-workspace-projection-cli"
-version = "0.1.0"
-dependencies = [
- "cwtools-workspace",
  "serde",
- "serde_json",
+ "zip",
 ]
 
 [[package]]

@@ -12,12 +12,13 @@
     clippy::unnecessary_semicolon
 )]
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub const MAX_INPUT_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_DEPTH: usize = 256;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ByteRange {
     pub start: usize,
     pub end: usize,
@@ -246,6 +247,41 @@ fn lex_with_mode(src: &str, cwt_mode: bool) -> Result<Vec<Token>, ParseError> {
         }
         // A sign belongs to a numeric literal when it is immediately followed by a digit
         // (or a decimal point and a digit).  It must not become an Unknown token.
+        if bytes[i] == b'@' && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+            i += 2;
+            let body_start = i;
+            let mut escaped = false;
+            let mut closed = false;
+            while i < bytes.len() {
+                if escaped {
+                    escaped = false;
+                    i += 1;
+                    continue;
+                }
+                if bytes[i] == b'\\' {
+                    escaped = true;
+                    i += 1;
+                    continue;
+                }
+                if bytes[i] == b']' {
+                    closed = true;
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            if !closed {
+                return Err(error(src, "unclosed metaprogram", s));
+            }
+            out.push(tok(
+                src,
+                TokenKind::Identifier,
+                s,
+                i,
+                src[body_start..i - 1].to_owned(),
+            ));
+            continue;
+        }
         if matches!(bytes[i], b'+' | b'-')
             && i + 1 < bytes.len()
             && (bytes[i + 1].is_ascii_digit()
@@ -268,6 +304,26 @@ fn lex_with_mode(src: &str, cwt_mode: bool) -> Result<Vec<Token>, ParseError> {
                 out.push(tok(src, TokenKind::Identifier, s, i, src[s..i].to_owned()));
                 continue;
             }
+        }
+        if bytes[i] == b'+'
+            || bytes[i].is_ascii_alphanumeric()
+            || bytes[i] == b'_'
+            || bytes[i] == b'.'
+        {
+            i += 1;
+            while i < bytes.len() {
+                let Some(ch) = src[i..].chars().next() else { break };
+                if ch.is_whitespace() || matches!(ch, '{' | '}' | '#' | '=') {
+                    break;
+                }
+                if OPS.iter().any(|(op, _)| src[i..].starts_with(op)) {
+                    break;
+                }
+                i += ch.len_utf8();
+            }
+            let raw = src[s..i].to_owned();
+            out.push(tok(src, TokenKind::Identifier, s, i, raw));
+            continue;
         }
         let mut found = None;
         for (op, k) in OPS {

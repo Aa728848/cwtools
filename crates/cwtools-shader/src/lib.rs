@@ -45,10 +45,12 @@ fn is_ident_start(c: char) -> bool {
     c.is_alphabetic() || matches!(c, '_' | '$' | '@')
 }
 fn is_ident_part(c: char) -> bool {
-    c.is_alphanumeric() || matches!(c, '_' | '$' | '@' | '.' | ':' | '/' | '\\' | '-' | '!')
+    c.is_alphanumeric()
+        || matches!(c, '_' | '$' | '@' | '.' | ':' | '/' | '-' | '!')
+        || c == char::from(92)
 }
-fn is_newline(b: u8) -> bool {
-    b == b'\r' || b == b'\n'
+fn is_newline(byte: u8) -> bool {
+    matches!(byte, 10 | 13)
 }
 fn line_end(text: &[u8], mut i: usize) -> usize {
     while i < text.len() && !is_newline(text[i]) {
@@ -197,7 +199,7 @@ pub mod syntax {
             return false;
         }
         let mut i = offset + 1;
-        while i < bytes.len() && matches!(bytes[i], b' ' | b'\t') {
+        while i < bytes.len() && matches!(bytes[i], b' ' | 9) {
             i += 1;
         }
         let start = i;
@@ -235,16 +237,16 @@ pub mod syntax {
             let start = i;
             if is_newline(bytes[i]) {
                 i += 1;
-                if bytes[start] == b'\r' && i < bytes.len() && bytes[i] == b'\n' {
+                if bytes[start] == 13 && i < bytes.len() && bytes[i] == 10 {
                     i += 1;
                 }
                 add(&mut tokens, text, ShaderTokenKind::NewLine, start, i);
                 line_content = false;
                 continue;
             }
-            if matches!(bytes[i], b' ' | b'\t' | 0x0c) {
+            if matches!(bytes[i], b' ' | 9 | 12) {
                 i += 1;
-                while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | 0x0c) {
+                while i < bytes.len() && matches!(bytes[i], b' ' | 9 | 12) {
                     i += 1;
                 }
                 add(&mut tokens, text, ShaderTokenKind::Whitespace, start, i);
@@ -445,7 +447,7 @@ pub mod syntax {
     fn unquote(value: &str) -> String {
         if value.len() >= 2
             && ((value.starts_with('"') && value.ends_with('"'))
-                || (value.starts_with('\'') && value.ends_with('\'')))
+                || (value.starts_with(char::from(39)) && value.ends_with(char::from(39))))
         {
             value[1..value.len() - 1].to_owned()
         } else {
@@ -1761,7 +1763,7 @@ pub mod hlsl {
     fn stable_id(file: &str, kind: HlslSymbolKind, name: &str, offset: usize) -> String {
         format!(
             "shader:{}:{kind:?}:{name}:{offset}",
-            file.replace('\\', "/").to_ascii_lowercase()
+            file.replace(char::from(92), "/").to_ascii_lowercase()
         )
     }
     fn significant(tree: &ShaderSyntaxTree) -> Vec<ShaderToken> {
@@ -2190,7 +2192,7 @@ pub mod project {
         let value = std::fs::canonicalize(&value)
             .unwrap_or(value)
             .to_string_lossy()
-            .replace('\\', "/")
+            .replace(char::from(92), "/")
             .trim_end_matches('/')
             .to_owned();
         if cfg!(windows) {
@@ -2200,7 +2202,10 @@ pub mod project {
         }
     }
     pub fn normalize_logical_path(path: &str) -> String {
-        let value = path.replace('\\', "/").trim_start_matches('/').to_owned();
+        let value = path
+            .replace(char::from(92), "/")
+            .trim_start_matches('/')
+            .to_owned();
         if cfg!(windows) {
             value.to_ascii_lowercase()
         } else {
@@ -2218,10 +2223,12 @@ pub mod project {
     }
     pub fn pos_from_offset(text: &str, offset: usize) -> (usize, usize) {
         let value = &text[..offset.min(text.len())];
-        let line = value.bytes().filter(|byte| *byte == b'\n').count() + 1;
-        let column = value.rsplit_once('\n').map_or(value.len(), |(_, rest)| {
-            rest.trim_end_matches('\r').encode_utf16().count()
-        });
+        let line = value.bytes().filter(|byte| *byte == 10).count() + 1;
+        let column = value
+            .rsplit_once(char::from(10))
+            .map_or(value.len(), |(_, rest)| {
+                rest.trim_end_matches(char::from(13)).encode_utf16().count()
+            });
         (line, column)
     }
     #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2643,3 +2650,1102 @@ pub mod project {
 }
 
 pub use project::*;
+
+pub mod runtime {
+    use super::*;
+    use crate::hlsl::HlslSymbolKind;
+    use crate::project::{self, CompileUnit, ShaderOrigin, ShaderSnapshot};
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub enum ShaderCallKind {
+        ShaderAssignment,
+        EffectFileSelection,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub struct ShaderCallEvidence {
+        pub kind: ShaderCallKind,
+        pub value: String,
+        pub source_file: String,
+        pub logical_path: String,
+        pub origin: ShaderOrigin,
+        pub span: TextSpan,
+        pub enclosing_block: Option<String>,
+        pub interface_sprite: Option<String>,
+        pub renderer_subtype: Option<String>,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub struct InterfaceSpriteInput {
+        pub field: String,
+        pub value: String,
+        pub span: TextSpan,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub struct InterfaceSpriteInvocation {
+        pub sprite_name: Option<String>,
+        pub renderer_type: String,
+        pub renderer_subtype: String,
+        pub shader_file: String,
+        pub source_file: String,
+        pub logical_path: String,
+        pub origin: ShaderOrigin,
+        pub shader_file_span: TextSpan,
+        pub block_range: TextSpan,
+        pub resource_inputs: Vec<InterfaceSpriteInput>,
+        pub frame_count: Option<i32>,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub struct GuiSpriteUse {
+        pub sprite_name: String,
+        pub source_file: String,
+        pub logical_path: String,
+        pub origin: ShaderOrigin,
+        pub span: TextSpan,
+        pub enclosing_block: Option<String>,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub struct SpriteRendererContract {
+        pub game: String,
+        pub game_version: String,
+        pub renderer_subtype: String,
+        pub shader_file: String,
+        pub effects: Vec<String>,
+        pub required_inputs: Vec<String>,
+        pub evidence: String,
+        pub stale: bool,
+        pub notes: Option<String>,
+    }
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub enum AbiEvidenceKind {
+        ManualRuntimeTest,
+        ExecutableObservation,
+        OfficialVanillaContract,
+        AutomaticInventory,
+    }
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub enum AbiRenamePolicy {
+        CatalogForbidden,
+        CatalogAllowed,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub struct AbiCatalogEntry {
+        pub game: String,
+        pub game_version: String,
+        pub entry_kind: String,
+        pub name: String,
+        pub shader_file: Option<String>,
+        pub evidence: AbiEvidenceKind,
+        pub rename_policy: AbiRenamePolicy,
+        pub stale: bool,
+        pub notes: Option<String>,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub struct AbiCandidate {
+        pub name: String,
+        pub shader_file: String,
+        pub classification: String,
+        pub review_reason: String,
+    }
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub enum ShaderDeclarationKind {
+        EffectDeclaration,
+        VertexMainCodeDeclaration,
+        PixelMainCodeDeclaration,
+        GeometryMainCodeDeclaration,
+        VertexStructDeclaration,
+        ConstantBufferDeclaration,
+        SamplerDeclaration,
+        ShaderResourceDeclaration,
+        HlslTypeDeclaration,
+        HlslFunctionDeclaration,
+        HlslVariableDeclaration,
+        MacroDeclaration,
+        BlendStateDeclaration,
+        DepthStencilStateDeclaration,
+        RasterizerStateDeclaration,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub struct ShaderDeclaration {
+        pub stable_id: String,
+        pub name: String,
+        pub kind: ShaderDeclarationKind,
+        pub file: String,
+        pub logical_path: String,
+        pub origin: ShaderOrigin,
+        pub range: TextSpan,
+        pub selection_range: TextSpan,
+        pub presence_condition: String,
+        pub detail: Option<String>,
+    }
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub enum ShaderSemanticReferenceKind {
+        EffectUsesVertexMainCode,
+        EffectUsesPixelMainCode,
+        EffectUsesGeometryMainCode,
+        EffectUsesRenderState,
+        MainCodeUsesConstantBuffer,
+        HlslCallsFunction,
+        HlslUsesSymbol,
+        HlslUsesType,
+        HlslUsesMember,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub struct ShaderSemanticReference {
+        pub source_id: Option<String>,
+        pub source_name: Option<String>,
+        pub target_name: String,
+        pub target_ids: Vec<String>,
+        pub kind: ShaderSemanticReferenceKind,
+        pub file: String,
+        pub logical_path: String,
+        pub origin: ShaderOrigin,
+        pub span: TextSpan,
+        pub presence_condition: String,
+        pub stage: String,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub enum EffectReachability {
+        DataExplicit { evidence: Vec<ShaderCallEvidence> },
+        EffectFileConvention { evidence: Vec<ShaderCallEvidence> },
+        EffectFileConventionCandidate { evidence: Vec<ShaderCallEvidence> },
+        EngineHardcoded { entry: AbiCatalogEntry },
+        EngineOrUnreferenced,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub enum RenamePolicyDecision {
+        RenameAllowed { reason: String },
+        RenameRequiresExplicitForce { reason: String },
+        RenameDenied { reason: String },
+    }
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub struct EffectInfo {
+        pub declaration: ShaderDeclaration,
+        pub reachability: EffectReachability,
+        pub all_evidence: Vec<ShaderCallEvidence>,
+    }
+    #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+    pub struct ShaderRuntimeModel {
+        pub game_version: String,
+        pub snapshots: Vec<ShaderSnapshot>,
+        pub declarations: Vec<ShaderDeclaration>,
+        pub semantic_references: Vec<ShaderSemanticReference>,
+        pub effects: Vec<EffectInfo>,
+        pub evidence: Vec<ShaderCallEvidence>,
+        pub interface_sprites: Vec<InterfaceSpriteInvocation>,
+        pub gui_sprite_uses: Vec<GuiSpriteUse>,
+        pub renderer_contracts: Vec<SpriteRendererContract>,
+        pub catalog: Vec<AbiCatalogEntry>,
+        pub stale_catalog_count: usize,
+        pub script_files_scanned: usize,
+        pub script_files_skipped: usize,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub struct ScriptSource {
+        pub filepath: String,
+        pub logicalpath: String,
+        pub scope: String,
+        pub text: String,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub struct VanillaComparison {
+        pub name: String,
+        pub effective: Vec<ShaderDeclaration>,
+        pub overridden_vanilla: Vec<ShaderDeclaration>,
+    }
+    pub fn create_script_source(
+        filepath: &str,
+        logicalpath: &str,
+        scope: &str,
+        text: &str,
+    ) -> ScriptSource {
+        ScriptSource {
+            filepath: filepath.into(),
+            logicalpath: logicalpath.into(),
+            scope: scope.into(),
+            text: text.into(),
+        }
+    }
+    fn declaration_kind(kind: crate::syntax::ShaderNodeKind) -> Option<ShaderDeclarationKind> {
+        Some(match kind {
+            crate::syntax::ShaderNodeKind::Effect => ShaderDeclarationKind::EffectDeclaration,
+            crate::syntax::ShaderNodeKind::VertexStruct => {
+                ShaderDeclarationKind::VertexStructDeclaration
+            }
+            crate::syntax::ShaderNodeKind::ConstantBuffer => {
+                ShaderDeclarationKind::ConstantBufferDeclaration
+            }
+            crate::syntax::ShaderNodeKind::Sampler => ShaderDeclarationKind::SamplerDeclaration,
+            crate::syntax::ShaderNodeKind::BlendState => {
+                ShaderDeclarationKind::BlendStateDeclaration
+            }
+            crate::syntax::ShaderNodeKind::DepthStencilState => {
+                ShaderDeclarationKind::DepthStencilStateDeclaration
+            }
+            crate::syntax::ShaderNodeKind::RasterizerState => {
+                ShaderDeclarationKind::RasterizerStateDeclaration
+            }
+            _ => return None,
+        })
+    }
+    pub fn declarations_from_snapshot(snapshot: &ShaderSnapshot) -> Vec<ShaderDeclaration> {
+        let semantic = project::semantic_snapshot(snapshot);
+        let mut result = Vec::new();
+        fn walk(
+            node: &crate::syntax::ShaderSyntaxNode,
+            stage: Option<ShaderDeclarationKind>,
+            snapshot: &ShaderSnapshot,
+            semantic: &project::ShaderSemanticSnapshot,
+            result: &mut Vec<ShaderDeclaration>,
+        ) {
+            let stage = match node.kind {
+                crate::syntax::ShaderNodeKind::VertexShader => {
+                    Some(ShaderDeclarationKind::VertexMainCodeDeclaration)
+                }
+                crate::syntax::ShaderNodeKind::PixelShader => {
+                    Some(ShaderDeclarationKind::PixelMainCodeDeclaration)
+                }
+                crate::syntax::ShaderNodeKind::GeometryShader => {
+                    Some(ShaderDeclarationKind::GeometryMainCodeDeclaration)
+                }
+                _ => stage,
+            };
+            if let (Some(kind), Some(name), Some(selection_range)) = (
+                declaration_kind(node.kind),
+                node.name.as_ref(),
+                node.name_span,
+            ) {
+                result.push(ShaderDeclaration {
+                    stable_id: format!(
+                        "{}:{kind:?}:{name}:{}",
+                        snapshot.canonical_path, selection_range.start_offset
+                    ),
+                    name: name.clone(),
+                    kind,
+                    file: snapshot.display_path.clone(),
+                    logical_path: snapshot.logical_path.clone(),
+                    origin: snapshot.origin.clone(),
+                    range: node.span,
+                    selection_range,
+                    presence_condition: format!(
+                        "{:?}",
+                        crate::preprocessor::condition_at(
+                            selection_range.start_offset,
+                            &semantic.preprocessor
+                        )
+                    ),
+                    detail: None,
+                });
+            }
+            if node.kind == crate::syntax::ShaderNodeKind::MainCode {
+                if let (Some(kind), Some(name), Some(selection_range)) =
+                    (stage, node.name.as_ref(), node.name_span)
+                {
+                    result.push(ShaderDeclaration {
+                        stable_id: format!(
+                            "{}:{kind:?}:{name}:{}",
+                            snapshot.canonical_path, selection_range.start_offset
+                        ),
+                        name: name.clone(),
+                        kind,
+                        file: snapshot.display_path.clone(),
+                        logical_path: snapshot.logical_path.clone(),
+                        origin: snapshot.origin.clone(),
+                        range: node.span,
+                        selection_range,
+                        presence_condition: format!(
+                            "{:?}",
+                            crate::preprocessor::condition_at(
+                                selection_range.start_offset,
+                                &semantic.preprocessor
+                            )
+                        ),
+                        detail: None,
+                    });
+                }
+            }
+            for child in &node.children {
+                walk(child, stage, snapshot, semantic, result);
+            }
+        }
+        walk(
+            &semantic.syntax.root,
+            None,
+            snapshot,
+            &semantic,
+            &mut result,
+        );
+        for symbol in &semantic.hlsl.symbols {
+            let kind = match symbol.kind {
+                HlslSymbolKind::StructSymbol => Some(ShaderDeclarationKind::HlslTypeDeclaration),
+                HlslSymbolKind::FunctionSymbol => {
+                    Some(ShaderDeclarationKind::HlslFunctionDeclaration)
+                }
+                HlslSymbolKind::FieldSymbol
+                | HlslSymbolKind::ParameterSymbol
+                | HlslSymbolKind::GlobalVariableSymbol
+                | HlslSymbolKind::LocalVariableSymbol => {
+                    Some(ShaderDeclarationKind::HlslVariableDeclaration)
+                }
+                HlslSymbolKind::ResourceSymbol => {
+                    Some(ShaderDeclarationKind::ShaderResourceDeclaration)
+                }
+                HlslSymbolKind::SamplerSymbol => Some(ShaderDeclarationKind::SamplerDeclaration),
+                HlslSymbolKind::ConstantBufferSymbol => {
+                    Some(ShaderDeclarationKind::ConstantBufferDeclaration)
+                }
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                result.push(ShaderDeclaration {
+                    stable_id: symbol.id.clone(),
+                    name: symbol.name.clone(),
+                    kind,
+                    file: snapshot.display_path.clone(),
+                    logical_path: snapshot.logical_path.clone(),
+                    origin: snapshot.origin.clone(),
+                    range: symbol.span,
+                    selection_range: symbol.selection_span,
+                    presence_condition: format!("{:?}", symbol.condition),
+                    detail: Some(format!("{:?}", symbol.symbol_type)),
+                });
+            }
+        }
+        for macro_def in &semantic.preprocessor.macros {
+            result.push(ShaderDeclaration {
+                stable_id: format!(
+                    "{}:macro:{}:{}",
+                    snapshot.canonical_path, macro_def.name, macro_def.span.start_offset
+                ),
+                name: macro_def.name.clone(),
+                kind: ShaderDeclarationKind::MacroDeclaration,
+                file: snapshot.display_path.clone(),
+                logical_path: snapshot.logical_path.clone(),
+                origin: snapshot.origin.clone(),
+                range: macro_def.span,
+                selection_range: macro_def.span,
+                presence_condition: format!("{:?}", macro_def.condition),
+                detail: Some(format!("{:?}", macro_def.kind)),
+            });
+        }
+        result.sort_by_key(|value| {
+            (
+                value.name.to_ascii_lowercase(),
+                project::origin_rank(&value.origin),
+                value.file.clone(),
+                value.selection_range.start_offset,
+            )
+        });
+        result.dedup_by(|left, right| left.stable_id == right.stable_id);
+        result
+    }
+    fn script_source(path: &str) -> bool {
+        Path::new(path)
+            .extension()
+            .and_then(|x| x.to_str())
+            .is_some_and(|x| x.eq_ignore_ascii_case("gfx") || x.eq_ignore_ascii_case("asset"))
+    }
+    fn unquote(value: &str) -> String {
+        value.trim().trim_matches('"').to_owned()
+    }
+    fn extract_script_evidence(source: &ScriptSource) -> Vec<ShaderCallEvidence> {
+        if !script_source(&source.filepath) {
+            return Vec::new();
+        }
+        let pattern =
+            regex::Regex::new(r#"(?i)\b(shader|effectFile)\s*=\s*\"((?:\\.|[^\"\\])*)\""#)
+                .expect("static shader evidence expression");
+        let mut direct = Vec::new();
+        for captures in pattern.captures_iter(&source.text) {
+            let key = captures.get(1).expect("capture one");
+            let value = captures.get(2).expect("capture two");
+            direct.push(ShaderCallEvidence {
+                kind: if key.as_str().eq_ignore_ascii_case("shader") {
+                    ShaderCallKind::ShaderAssignment
+                } else {
+                    ShaderCallKind::EffectFileSelection
+                },
+                value: value.as_str().replace(r#"\\\""#, r#"\""#),
+                source_file: source.filepath.clone(),
+                logical_path: source.logicalpath.clone(),
+                origin: ShaderOrigin::Workspace,
+                span: TextSpan::new(value.start(), value.end()),
+                enclosing_block: None,
+                interface_sprite: None,
+                renderer_subtype: None,
+            });
+        }
+        if !direct.is_empty() {
+            return direct;
+        }
+        let mut result = Vec::new();
+        let bytes = source.text.as_bytes();
+        let mut index = 0;
+        let mut blocks = Vec::<String>::new();
+        while index < bytes.len() {
+            while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+                index += 1;
+            }
+            let start = index;
+            if index >= bytes.len() {
+                break;
+            }
+            if bytes[index] == b'"' {
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == 92 {
+                        index += 2;
+                    } else if bytes[index] == b'"' {
+                        index += 1;
+                        break;
+                    } else {
+                        index += 1;
+                    }
+                }
+                let value = unquote(&source.text[start..index]);
+                if let Some(key) = blocks.last() {
+                    let kind = if key.eq_ignore_ascii_case("shader") {
+                        Some(ShaderCallKind::ShaderAssignment)
+                    } else if key.eq_ignore_ascii_case("effectfile") {
+                        Some(ShaderCallKind::EffectFileSelection)
+                    } else {
+                        None
+                    };
+                    if let Some(kind) = kind {
+                        result.push(ShaderCallEvidence {
+                            kind,
+                            value,
+                            source_file: source.filepath.clone(),
+                            logical_path: source.logicalpath.clone(),
+                            origin: ShaderOrigin::Workspace,
+                            span: TextSpan::new(start + 1, index.saturating_sub(1)),
+                            enclosing_block: blocks.last().cloned(),
+                            interface_sprite: None,
+                            renderer_subtype: None,
+                        });
+                    }
+                }
+                continue;
+            }
+            if bytes[index] == b'{' {
+                if let Some(value) = source.text[..start].split_whitespace().last() {
+                    blocks.push(
+                        value
+                            .trim_matches(|c: char| !c.is_alphanumeric() && c != '_')
+                            .into(),
+                    );
+                }
+                index += 1;
+                continue;
+            }
+            if bytes[index] == b'}' {
+                blocks.pop();
+                index += 1;
+                continue;
+            }
+            while index < bytes.len()
+                && !bytes[index].is_ascii_whitespace()
+                && !matches!(bytes[index], b'{' | b'}' | b'=')
+            {
+                index += 1;
+            }
+            if index < bytes.len() && bytes[index] == b'=' {
+                index += 1;
+            }
+        }
+        result
+    }
+    pub fn callers_of(model: &ShaderRuntimeModel, name: &str) -> Vec<ShaderCallEvidence> {
+        model
+            .evidence
+            .iter()
+            .filter(|evidence| {
+                (evidence.kind == ShaderCallKind::ShaderAssignment
+                    && evidence.value.eq_ignore_ascii_case(name))
+                    || (evidence.kind == ShaderCallKind::EffectFileSelection
+                        && project::normalize_logical_path(&evidence.value)
+                            == project::normalize_logical_path(name))
+            })
+            .cloned()
+            .collect()
+    }
+    pub fn effect_reachability(model: &ShaderRuntimeModel, name: &str) -> Option<EffectInfo> {
+        model
+            .effects
+            .iter()
+            .find(|effect| effect.declaration.name.eq_ignore_ascii_case(name))
+            .cloned()
+    }
+    pub fn all_effects(model: &ShaderRuntimeModel) -> Vec<(ShaderDeclaration, EffectReachability)> {
+        model
+            .effects
+            .iter()
+            .map(|effect| (effect.declaration.clone(), effect.reachability.clone()))
+            .collect()
+    }
+    pub fn abi_candidate_report(model: &ShaderRuntimeModel) -> Vec<AbiCandidate> {
+        model
+            .effects
+            .iter()
+            .map(|effect| AbiCandidate {
+                name: effect.declaration.name.clone(),
+                shader_file: effect.declaration.logical_path.clone(),
+                classification: match effect.reachability {
+                    EffectReachability::DataExplicit { .. } => "data_explicit",
+                    EffectReachability::EffectFileConvention { .. } => "effect_file_convention",
+                    EffectReachability::EffectFileConventionCandidate { .. } => {
+                        "effect_file_convention_candidate"
+                    }
+                    EffectReachability::EngineHardcoded { .. } => "engine_hardcoded",
+                    EffectReachability::EngineOrUnreferenced => "engine_or_unreferenced",
+                }
+                .into(),
+                review_reason: "conservative Rust shader runtime evidence".into(),
+            })
+            .collect()
+    }
+    pub fn compare_with_vanilla(model: &ShaderRuntimeModel, name: &str) -> VanillaComparison {
+        let mut effective = Vec::new();
+        let mut vanilla = Vec::new();
+        for declaration in model
+            .declarations
+            .iter()
+            .filter(|declaration| declaration.name.eq_ignore_ascii_case(name))
+        {
+            if declaration.origin == ShaderOrigin::Vanilla {
+                vanilla.push(declaration.clone());
+            } else {
+                effective.push(declaration.clone());
+            }
+        }
+        VanillaComparison {
+            name: name.into(),
+            effective,
+            overridden_vanilla: vanilla,
+        }
+    }
+    pub fn rename_policy_for_reachability(
+        reachability: &EffectReachability,
+    ) -> RenamePolicyDecision {
+        match reachability {
+            EffectReachability::DataExplicit { .. } => RenamePolicyDecision::RenameAllowed {
+                reason: "direct data evidence".into(),
+            },
+            EffectReachability::EffectFileConvention { .. }
+            | EffectReachability::EffectFileConventionCandidate { .. } => {
+                RenamePolicyDecision::RenameDenied {
+                    reason: "renderer-convention effectFile evidence".into(),
+                }
+            }
+            EffectReachability::EngineHardcoded { entry } => {
+                if entry.rename_policy == AbiRenamePolicy::CatalogAllowed {
+                    RenamePolicyDecision::RenameAllowed {
+                        reason: "ABI catalog allows rename".into(),
+                    }
+                } else {
+                    RenamePolicyDecision::RenameDenied {
+                        reason: "ABI catalog forbids rename".into(),
+                    }
+                }
+            }
+            EffectReachability::EngineOrUnreferenced => {
+                RenamePolicyDecision::RenameRequiresExplicitForce {
+                    reason: "engine_or_unreferenced is unknown, not dead code".into(),
+                }
+            }
+        }
+    }
+    pub fn rename_policy(model: &ShaderRuntimeModel, name: &str) -> RenamePolicyDecision {
+        let declarations: Vec<_> = model
+            .declarations
+            .iter()
+            .filter(|declaration| {
+                declaration.kind == ShaderDeclarationKind::EffectDeclaration
+                    && declaration.name.eq_ignore_ascii_case(name)
+            })
+            .collect();
+        if declarations.is_empty() {
+            return RenamePolicyDecision::RenameDenied {
+                reason: "Effect is not declared".into(),
+            };
+        }
+        if declarations.len() > 1 {
+            return RenamePolicyDecision::RenameRequiresExplicitForce {
+                reason: format!("{} declarations share this Effect name", declarations.len()),
+            };
+        }
+        rename_policy_for_reachability(
+            &model
+                .effects
+                .iter()
+                .find(|effect| effect.declaration.name.eq_ignore_ascii_case(name))
+                .map_or(EffectReachability::EngineOrUnreferenced, |effect| {
+                    effect.reachability.clone()
+                }),
+        )
+    }
+    pub fn reachability_confidence(reachability: &EffectReachability) -> &'static str {
+        match reachability {
+            EffectReachability::DataExplicit { .. } => "explicit",
+            EffectReachability::EffectFileConvention { .. } => "confirmed",
+            EffectReachability::EffectFileConventionCandidate { .. } => "candidate",
+            EffectReachability::EngineHardcoded { .. } => "engine",
+            EffectReachability::EngineOrUnreferenced => "unknown",
+        }
+    }
+    pub fn evidence_source_kind(evidence: &ShaderCallEvidence) -> &'static str {
+        match evidence.kind {
+            ShaderCallKind::ShaderAssignment => "shader",
+            ShaderCallKind::EffectFileSelection => "effectFile",
+        }
+    }
+    pub fn evidence_confidence(evidence: &ShaderCallEvidence) -> &'static str {
+        match evidence.kind {
+            ShaderCallKind::ShaderAssignment => "explicit",
+            ShaderCallKind::EffectFileSelection => "derived",
+        }
+    }
+    pub fn load_renderer_contracts_from_text(
+        game_version: Option<&str>,
+        _source: &str,
+        text: &str,
+    ) -> Vec<SpriteRendererContract> {
+        let value: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+        value
+            .get("contracts")
+            .and_then(|x| x.as_array())
+            .map_or_else(Vec::new, |items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        let version = item.get("game_version")?.as_str()?.to_owned();
+                        Some(SpriteRendererContract {
+                            game: item
+                                .get("game")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("stellaris")
+                                .into(),
+                            game_version: version.clone(),
+                            renderer_subtype: item.get("renderer_subtype")?.as_str()?.into(),
+                            shader_file: item.get("shader_file")?.as_str()?.into(),
+                            effects: item
+                                .get("effects")
+                                .and_then(|x| x.as_array())
+                                .map(|items| {
+                                    items
+                                        .iter()
+                                        .filter_map(|x| x.as_str().map(str::to_owned))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                            required_inputs: item
+                                .get("required_inputs")
+                                .and_then(|x| x.as_array())
+                                .map(|items| {
+                                    items
+                                        .iter()
+                                        .filter_map(|x| x.as_str().map(str::to_owned))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                            evidence: item
+                                .get("evidence")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("unknown")
+                                .into(),
+                            stale: game_version.is_some_and(|expected| expected != version),
+                            notes: item
+                                .get("notes")
+                                .and_then(|x| x.as_str())
+                                .map(str::to_owned),
+                        })
+                    })
+                    .collect()
+            })
+    }
+    pub fn validate_renderer_invocation(
+        model: &ShaderRuntimeModel,
+        invocation: &InterfaceSpriteInvocation,
+    ) -> Vec<String> {
+        let Some(contract) = model.renderer_contracts.iter().find(|contract| {
+            !contract.stale
+                && contract.renderer_subtype == invocation.renderer_subtype
+                && project::normalize_logical_path(&contract.shader_file)
+                    == project::normalize_logical_path(&invocation.shader_file)
+        }) else {
+            return vec![format!(
+                "No active renderer contract for {} / {}",
+                invocation.renderer_subtype, invocation.shader_file
+            )];
+        };
+        let mut result = Vec::new();
+        for required in &contract.required_inputs {
+            if !invocation
+                .resource_inputs
+                .iter()
+                .any(|input| input.field.eq_ignore_ascii_case(required))
+            {
+                result.push(format!(
+                    "Renderer input {required} is required by the active contract."
+                ));
+            }
+        }
+        for effect in &contract.effects {
+            if !model.declarations.iter().any(|declaration| {
+                declaration.kind == ShaderDeclarationKind::EffectDeclaration
+                    && declaration.name.eq_ignore_ascii_case(effect)
+            }) {
+                result.push(format!(
+                    "Renderer contract Effect {effect} is not declared in {}.",
+                    contract.shader_file
+                ));
+            }
+        }
+        result
+    }
+    pub fn build_model(
+        game_version: Option<&str>,
+        resources: &[ScriptSource],
+        snapshots: Vec<ShaderSnapshot>,
+    ) -> ShaderRuntimeModel {
+        let mut declarations = Vec::new();
+        for snapshot in &snapshots {
+            declarations.extend(declarations_from_snapshot(snapshot));
+        }
+        let mut evidence = Vec::new();
+        for source in resources {
+            evidence.extend(extract_script_evidence(source));
+        }
+        let mut effects = Vec::new();
+        for declaration in declarations
+            .iter()
+            .filter(|declaration| declaration.kind == ShaderDeclarationKind::EffectDeclaration)
+        {
+            let shader_evidence: Vec<_> = evidence
+                .iter()
+                .filter(|evidence| {
+                    evidence.kind == ShaderCallKind::ShaderAssignment
+                        && evidence.value.eq_ignore_ascii_case(&declaration.name)
+                })
+                .cloned()
+                .collect();
+            let file_evidence: Vec<_> = evidence
+                .iter()
+                .filter(|evidence| {
+                    evidence.kind == ShaderCallKind::EffectFileSelection
+                        && project::normalize_logical_path(&evidence.value)
+                            == project::normalize_logical_path(&declaration.logical_path)
+                })
+                .cloned()
+                .collect();
+            let reachability = if !shader_evidence.is_empty() {
+                EffectReachability::DataExplicit {
+                    evidence: shader_evidence
+                        .iter()
+                        .chain(file_evidence.iter())
+                        .cloned()
+                        .collect(),
+                }
+            } else if !file_evidence.is_empty() {
+                EffectReachability::EffectFileConventionCandidate {
+                    evidence: file_evidence.clone(),
+                }
+            } else {
+                EffectReachability::EngineOrUnreferenced
+            };
+            effects.push(EffectInfo {
+                declaration: declaration.clone(),
+                reachability,
+                all_evidence: shader_evidence.into_iter().chain(file_evidence).collect(),
+            });
+        }
+        ShaderRuntimeModel {
+            game_version: game_version.unwrap_or("").into(),
+            snapshots,
+            declarations,
+            semantic_references: Vec::new(),
+            effects,
+            evidence,
+            interface_sprites: Vec::new(),
+            gui_sprite_uses: Vec::new(),
+            renderer_contracts: Vec::new(),
+            catalog: Vec::new(),
+            stale_catalog_count: 0,
+            script_files_scanned: resources.len(),
+            script_files_skipped: 0,
+        }
+    }
+    pub fn compile_unit_for(snapshots: &[ShaderSnapshot], filepath: &str) -> Option<CompileUnit> {
+        let canonical = project::canonicalize_path(filepath);
+        let root = snapshots
+            .iter()
+            .find(|snapshot| snapshot.canonical_path == canonical)?
+            .clone();
+        Some(project::build_compile_unit(snapshots, &root))
+    }
+    pub fn reverse_includers(snapshots: &[ShaderSnapshot], filepath: &str) -> Vec<String> {
+        project::reverse_include_map(snapshots)
+            .get(&project::canonicalize_path(filepath))
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+pub use runtime::*;
+
+pub mod features {
+    use super::*;
+    use crate::project::{self, ShaderOrigin};
+    use crate::runtime::{ShaderDeclarationKind, declarations_from_snapshot};
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub struct ShaderSource {
+        pub filepath: String,
+        pub logicalpath: String,
+        pub scope: String,
+        pub text: String,
+    }
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub enum ShaderDocumentSymbolKind {
+        Effect,
+        MainCode,
+        VertexStruct,
+        ConstantBuffer,
+        State,
+        Sampler,
+        HlslType,
+        HlslFunction,
+        HlslVariable,
+        Macro,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub struct ShaderDocumentSymbol {
+        pub name: String,
+        pub kind: ShaderDocumentSymbolKind,
+        pub span: TextSpan,
+        pub selection_span: TextSpan,
+        pub detail: Option<String>,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    pub struct ShaderDocumentLink {
+        pub target: String,
+        pub span: TextSpan,
+    }
+    pub fn document_symbols(filepath: &str, text: &str) -> Vec<ShaderDocumentSymbol> {
+        let snapshot =
+            project::create_snapshot(ShaderOrigin::CurrentDocument, filepath, filepath, text);
+        declarations_from_snapshot(&snapshot)
+            .into_iter()
+            .map(|declaration| ShaderDocumentSymbol {
+                name: declaration.name,
+                kind: match declaration.kind {
+                    ShaderDeclarationKind::EffectDeclaration => ShaderDocumentSymbolKind::Effect,
+                    ShaderDeclarationKind::VertexMainCodeDeclaration
+                    | ShaderDeclarationKind::PixelMainCodeDeclaration
+                    | ShaderDeclarationKind::GeometryMainCodeDeclaration => {
+                        ShaderDocumentSymbolKind::MainCode
+                    }
+                    ShaderDeclarationKind::VertexStructDeclaration => {
+                        ShaderDocumentSymbolKind::VertexStruct
+                    }
+                    ShaderDeclarationKind::ConstantBufferDeclaration => {
+                        ShaderDocumentSymbolKind::ConstantBuffer
+                    }
+                    ShaderDeclarationKind::BlendStateDeclaration
+                    | ShaderDeclarationKind::DepthStencilStateDeclaration
+                    | ShaderDeclarationKind::RasterizerStateDeclaration => {
+                        ShaderDocumentSymbolKind::State
+                    }
+                    ShaderDeclarationKind::SamplerDeclaration => ShaderDocumentSymbolKind::Sampler,
+                    ShaderDeclarationKind::HlslTypeDeclaration => {
+                        ShaderDocumentSymbolKind::HlslType
+                    }
+                    ShaderDeclarationKind::HlslFunctionDeclaration => {
+                        ShaderDocumentSymbolKind::HlslFunction
+                    }
+                    ShaderDeclarationKind::MacroDeclaration => ShaderDocumentSymbolKind::Macro,
+                    _ => ShaderDocumentSymbolKind::HlslVariable,
+                },
+                span: declaration.range,
+                selection_span: declaration.selection_range,
+                detail: declaration.detail,
+            })
+            .collect()
+    }
+    pub fn document_links(filepath: &str, text: &str) -> Vec<ShaderDocumentLink> {
+        let snapshot =
+            project::create_snapshot(ShaderOrigin::CurrentDocument, filepath, filepath, text);
+        project::extract_includes(&snapshot)
+            .into_iter()
+            .map(|entry| ShaderDocumentLink {
+                target: entry.target,
+                span: TextSpan::new(entry.start, entry.start + entry.length),
+            })
+            .collect()
+    }
+    pub fn validate_from_resources(
+        resources: &[project::ShaderSnapshot],
+        filepath: &str,
+        text: &str,
+    ) -> Vec<String> {
+        let current =
+            project::create_snapshot(ShaderOrigin::CurrentDocument, filepath, filepath, text);
+        let mut all = resources.to_vec();
+        all.retain(|snapshot| !project::same_file_path(&snapshot.display_path, filepath));
+        all.push(current.clone());
+        let unit = project::build_compile_unit(&all, &current);
+        let semantic = project::semantic_snapshot(&current);
+        let mut diagnostics: Vec<_> = semantic
+            .syntax
+            .diagnostics
+            .iter()
+            .map(|diagnostic| format!("{:?}: {}", diagnostic.kind, diagnostic.message))
+            .collect();
+        diagnostics.extend(
+            semantic
+                .hlsl
+                .diagnostics
+                .into_iter()
+                .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message)),
+        );
+        diagnostics.extend(
+            unit.problems
+                .into_iter()
+                .map(|problem| format!("{problem:?}")),
+        );
+        diagnostics
+    }
+    pub fn validate(filepath: &str, text: &str) -> Vec<String> {
+        validate_from_resources(&[], filepath, text)
+    }
+    pub fn semantic_tokens(filepath: &str, text: &str) -> Vec<(TextSpan, bool, bool)> {
+        let snapshot =
+            project::create_snapshot(ShaderOrigin::CurrentDocument, filepath, filepath, text);
+        project::semantic_snapshot(&snapshot)
+            .hlsl
+            .symbols
+            .into_iter()
+            .map(|symbol| (symbol.selection_span, true, false))
+            .collect()
+    }
+    pub fn folding_ranges(filepath: &str, text: &str) -> Vec<TextSpan> {
+        let tree = crate::syntax::parse(filepath, text);
+        crate::syntax::descendants(&tree.root)
+            .into_iter()
+            .filter(|node| {
+                node.span.start_offset < node.span.end_offset
+                    && slice_text(text, node.span).contains(char::from(10))
+            })
+            .map(|node| node.span)
+            .collect()
+    }
+}
+
+pub use features::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lossless_and_recovery() {
+        let tree = syntax::parse(
+            "x.shader",
+            r#"Unknown = { }
+Includes = { "a.fxh" nested = { "b.fxh" } }
+Effect First { PixelShader = "P" }
+Effect Last { VertexShader = "V" }
+"#,
+        );
+        assert!(tree.is_lossless());
+        assert_eq!(
+            syntax::nodes_of_kind(&tree, syntax::ShaderNodeKind::IncludeFile).len(),
+            1
+        );
+        assert_eq!(
+            syntax::nodes_of_kind(&tree, syntax::ShaderNodeKind::Effect)
+                .iter()
+                .filter_map(|node| node.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["First", "Last"]
+        );
+    }
+
+    #[test]
+    fn variants_and_macros() {
+        let tree = syntax::parse(
+            "v.fxh",
+            "#if defined(PDX_OPENGL) && !defined(PDX_DIRECTX_11)\nfloat A;\n#else\nfloat B;\n#endif\n#define VALUE 4\n",
+        );
+        let preprocessor = preprocessor::analyze(&tree);
+        let variant = preprocessor::default_platform_variants()
+            .into_iter()
+            .find(|variant| variant.name == "opengl")
+            .unwrap();
+        assert_eq!(
+            preprocessor::evaluate(
+                &variant.environment,
+                &preprocessor::parse_condition("defined(PDX_OPENGL)")
+            ),
+            preprocessor::ConditionValue::ConditionTrue
+        );
+        assert!(
+            preprocessor
+                .macros
+                .iter()
+                .any(|macro_def| macro_def.name == "VALUE")
+        );
+    }
+
+    #[test]
+    fn hlsl_symbols_and_overloads() {
+        let (_, _, analysis) = hlsl::analyze_text(
+            "a.fxh",
+            "struct Light { float3 Color; }; float Shade(float x){return x;} float Shade(float3 x){return x.x;}",
+        );
+        assert!(
+            analysis
+                .symbols
+                .iter()
+                .any(|symbol| symbol.kind == hlsl::HlslSymbolKind::StructSymbol
+                    && symbol.name == "Light")
+        );
+        assert_eq!(
+            analysis
+                .symbols
+                .iter()
+                .filter(|symbol| symbol.kind == hlsl::HlslSymbolKind::FunctionSymbol
+                    && symbol.name == "Shade")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn includes_and_runtime_reachability() {
+        let root = project::create_snapshot(
+            project::ShaderOrigin::Workspace,
+            "C:/mod/gfx/FX/a.shader",
+            "gfx/FX/a.shader",
+            r#"Includes = { "b.fxh" } Effect A { }"#,
+        );
+        let include = project::create_snapshot(
+            project::ShaderOrigin::Workspace,
+            "C:/mod/gfx/FX/b.fxh",
+            "gfx/FX/b.fxh",
+            "float4 B;",
+        );
+        let unit = project::build_compile_unit(&[root.clone(), include], &root);
+        assert_eq!(unit.members.len(), 2);
+        let scripts = [runtime::create_script_source(
+            "C:/mod/interface/x.gfx",
+            "interface/x.gfx",
+            "mod",
+            r#"spriteType = { shader = "A" }"#,
+        )];
+        let model = runtime::build_model(Some("4.4.6"), &scripts, vec![root]);
+        assert!(matches!(
+            runtime::effect_reachability(&model, "A")
+                .unwrap()
+                .reachability,
+            runtime::EffectReachability::DataExplicit { .. }
+        ));
+    }
+}

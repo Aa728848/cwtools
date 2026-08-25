@@ -15,6 +15,7 @@ use cwtools_cache::{
     fingerprint_sources,
 };
 use cwtools_rule_ir::Document;
+use cwtools_script_syntax::{ScriptEncoding, decode_script_bytes};
 use cwtools_rules_engine::{RuleCatalog, ScopeUniverse};
 use cwtools_scopes::{
     ScopeContext, ValueScopeCatalog,
@@ -23,6 +24,7 @@ use cwtools_scopes::{
 use cwtools_workspace::{
     FullSnapshot, GameComputedData, Overwrite, SnapshotLimits, SnapshotSource,
     compute_full_snapshot, compute_rule_game_data, compute_snapshot_diagnostics,
+    incremental::{Change, IncrementalStore},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -124,7 +126,7 @@ pub enum TextEncoding {
     Windows1252,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum LocalisationLanguage {
     English,
     French,
@@ -322,12 +324,13 @@ pub struct LocalisationDiagnostic {
     pub key: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LocalisationIndex {
     pub files: Vec<LocalisationFile>,
     pub values: BTreeMap<String, String>,
     pub keys: BTreeSet<String>,
     pub duplicate_keys: BTreeMap<String, usize>,
+    pub values_by_language: BTreeMap<(LocalisationLanguage, String), String>,
 }
 
 impl LocalisationIndex {
@@ -338,7 +341,15 @@ impl LocalisationIndex {
             values: BTreeMap::new(),
             keys: BTreeSet::new(),
             duplicate_keys: BTreeMap::new(),
+            values_by_language: BTreeMap::new(),
         }
+    }
+
+    #[must_use]
+    pub fn get(&self, language: LocalisationLanguage, key: &str) -> Option<&str> {
+        self.values_by_language
+            .get(&(language, key.to_owned()))
+            .map(String::as_str)
     }
 
     pub fn add_file(&mut self, file: LocalisationFile) -> Result<(), SessionError> {
@@ -346,11 +357,16 @@ impl LocalisationIndex {
             return Err(SessionError::LimitExceeded("localisation files"));
         }
         for entry in &file.entries {
-            if self.keys.contains(&entry.key) {
-                *self.duplicate_keys.entry(entry.key.clone()).or_default() += 1;
+            let identity = (entry.language, entry.key.clone());
+            if self.values_by_language.contains_key(&identity) {
+                *self
+                    .duplicate_keys
+                    .entry(format!("{}:{}", entry.language.tag(), entry.key))
+                    .or_default() += 1;
             }
+            self.values_by_language.insert(identity, entry.value.clone());
             self.keys.insert(entry.key.clone());
-            self.values.insert(entry.key.clone(), entry.value.clone());
+            self.values.entry(entry.key.clone()).or_insert_with(|| entry.value.clone());
             if self.keys.len() > MAX_LOCALISATION_ENTRIES {
                 return Err(SessionError::LimitExceeded("localisation entries"));
             }
@@ -380,6 +396,39 @@ pub fn parse_localisation(
             errors: Vec::new(),
         },
     }
+}
+
+/// Decodes localisation bytes using the profile encoding and validates required BOMs.
+#[must_use]
+pub fn parse_localisation_bytes(
+    path: &str,
+    bytes: &[u8],
+    profile: &LocalisationProfile,
+) -> LocalisationFile {
+    let has_bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF]);
+    let payload = if has_bom { &bytes[3..] } else { bytes };
+    let encoding = match profile.encoding {
+        TextEncoding::Windows1252 => ScriptEncoding::Windows1252,
+        TextEncoding::Utf8 | TextEncoding::Utf8Bom => ScriptEncoding::Utf8,
+    };
+    let decoded = decode_script_bytes(payload, encoding).unwrap_or_default();
+    let text = if has_bom {
+        format!("\u{feff}{decoded}")
+    } else {
+        decoded
+    };
+    let mut file = parse_localisation(path, &text, profile);
+    if profile.encoding == TextEncoding::Utf8Bom && !has_bom {
+        file.errors.insert(0, LocalisationDiagnostic {
+            code: "WrongEncoding".to_owned(),
+            message: "UTF-8 BOM is required for this localisation format".to_owned(),
+            path: path.to_owned(),
+            line: 1,
+            column: 1,
+            key: None,
+        });
+    }
+    file
 }
 
 fn language_from_tag(raw: &str) -> LocalisationLanguage {
@@ -422,8 +471,8 @@ fn parse_yaml_localisation(path: &str, input: &str) -> LocalisationFile {
             current_comment = Some(comment.trim().to_owned());
             continue;
         }
-        if line.starts_with("l_") && !line.contains(':') {
-            language = language_from_tag(line);
+        if line.starts_with("l_") && line.ends_with(':') {
+            language = language_from_tag(line.trim_end_matches(':'));
             continue;
         }
         let Some((key_raw, value_raw)) = line.split_once(':') else {
@@ -454,13 +503,14 @@ fn parse_yaml_localisation(path: &str, input: &str) -> LocalisationFile {
             value.truncate(comment);
             value = value.trim_end().to_owned();
         }
-        let version = value.strip_prefix('0').and_then(|_| None).or_else(|| {
-            value
-                .chars()
-                .next()
-                .and_then(|character| character.to_digit(10))
-                .map(|number| number as u8)
-        });
+        let version = value
+            .chars()
+            .next()
+            .and_then(|character| character.to_digit(10))
+            .map(|number| number as u8);
+        if version.is_some() && value.len() > 1 {
+            value.remove(0);
+        }
         if value.starts_with('"') && !value.ends_with('"') {
             errors.push(LocalisationDiagnostic {
                 code: "LOC003".to_owned(),
@@ -473,7 +523,7 @@ fn parse_yaml_localisation(path: &str, input: &str) -> LocalisationFile {
         }
         entries.push(LocalisationEntry {
             key,
-            value: value.trim_matches('"').to_owned(),
+            value: unescape_localisation_value(value.trim_matches('"')),
             language,
             path: path.to_owned(),
             line: line_number,
@@ -490,6 +540,30 @@ fn parse_yaml_localisation(path: &str, input: &str) -> LocalisationFile {
         entries,
         errors,
     }
+}
+
+fn unescape_localisation_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut escaped = false;
+    for ch in value.chars() {
+        if escaped {
+            out.push(match ch {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                other => other,
+            });
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else {
+            out.push(ch);
+        }
+    }
+    if escaped {
+        out.push('\\');
+    }
+    out
 }
 
 fn parse_csv_localisation(path: &str, input: &str, vic2: bool) -> LocalisationFile {
@@ -516,17 +590,29 @@ fn parse_csv_localisation(path: &str, input: &str, vic2: bool) -> LocalisationFi
         if key.is_empty() {
             continue;
         }
-        let value = cells.get(1).cloned().unwrap_or_default();
-        entries.push(LocalisationEntry {
-            key,
-            value,
-            language: LocalisationLanguage::English,
-            path: path.to_owned(),
-            line: line_number,
-            column: 1,
-            version: None,
-            comment: vic2.then(|| "vic2".to_owned()),
-        });
+        let languages = [
+            LocalisationLanguage::English,
+            LocalisationLanguage::French,
+            LocalisationLanguage::German,
+            LocalisationLanguage::Spanish,
+            LocalisationLanguage::Italian,
+            LocalisationLanguage::Polish,
+        ];
+        for (column, language) in languages.into_iter().enumerate() {
+            let Some(value) = cells.get(column + 1).filter(|value| !value.is_empty()) else {
+                continue;
+            };
+            entries.push(LocalisationEntry {
+                key: key.clone(),
+                value: value.clone(),
+                language,
+                path: path.to_owned(),
+                line: line_number,
+                column: column + 2,
+                version: None,
+                comment: vic2.then(|| "vic2".to_owned()),
+            });
+        }
     }
     LocalisationFile {
         path: path.to_owned(),
@@ -594,7 +680,7 @@ impl fmt::Display for SessionError {
 }
 impl std::error::Error for SessionError {}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SourceInput {
     pub scope: String,
     pub path: String,
@@ -626,7 +712,7 @@ impl Default for GameSessionConfig {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SessionSnapshot {
     pub full: FullSnapshot,
     pub game_data: GameComputedData,
@@ -644,6 +730,7 @@ pub struct GameSession {
     localisation: LocalisationIndex,
     snapshot: Option<SessionSnapshot>,
     cache: BoundedMemoryCache<Fingerprint, GameComputedData>,
+    incremental: Option<IncrementalStore>,
 }
 
 impl GameSession {
@@ -659,6 +746,7 @@ impl GameSession {
             localisation: LocalisationIndex::empty(),
             snapshot: None,
             cache: BoundedMemoryCache::new(4),
+            incremental: None,
         }
     }
 
@@ -744,8 +832,12 @@ impl GameSession {
                 .values()
                 .map(|source| (source.logical_path.as_str(), source.text.as_str())),
         );
-        let mut full = compute_full_snapshot(inputs, self.config.snapshot_limits)
+        let mut full = compute_full_snapshot(inputs.clone(), self.config.snapshot_limits)
             .map_err(|error| SessionError::Snapshot(error.to_string()))?;
+        self.incremental = Some(
+            IncrementalStore::new(inputs, self.config.snapshot_limits)
+                .map_err(|error| SessionError::Snapshot(error.to_string()))?,
+        );
         let root_for = |source: &SnapshotSource| {
             Some(
                 source
@@ -781,13 +873,99 @@ impl GameSession {
         Ok(self.snapshot.as_ref().expect("snapshot installed"))
     }
 
-    /// Incremental hook currently uses an atomic bounded rebuild, matching full semantics.
+    /// Applies changed sources through the workspace prepare/commit transaction.
     pub fn refresh_incremental(
         &mut self,
         changed_paths: &[String],
     ) -> Result<&SessionSnapshot, SessionError> {
-        let _ = changed_paths;
-        self.refresh_full()
+        if self.incremental.is_none() {
+            self.refresh_full()?;
+        }
+        let store = self
+            .incremental
+            .as_ref()
+            .expect("incremental store installed");
+        let previous: BTreeMap<String, SnapshotSource> = store
+            .snapshot()
+            .sources
+            .iter()
+            .map(|source| (source.path.clone(), source.clone()))
+            .collect();
+        let current: BTreeMap<String, SnapshotSource> = self
+            .sources
+            .values()
+            .map(|source| {
+                (
+                    source.path.clone(),
+                    SnapshotSource {
+                        scope: source.scope.clone(),
+                        path: source.path.clone(),
+                        logical_path: source.logical_path.clone(),
+                        text: source.text.clone(),
+                        overwrite: source.overwrite,
+                    },
+                )
+            })
+            .collect();
+        let mut changes = Vec::new();
+        for path in changed_paths {
+            match (previous.get(path), current.get(path)) {
+                (Some(_), Some(source)) => changes.push(Change::Edit {
+                    path: path.clone(),
+                    text: source.text.clone(),
+                }),
+                (Some(_), None) => changes.push(Change::Remove { path: path.clone() }),
+                (None, Some(source)) => changes.push(Change::Add(source.clone())),
+                (None, None) => {}
+            }
+        }
+        if changes.is_empty() {
+            return Ok(self.snapshot.as_ref().expect("snapshot installed"));
+        }
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let prepared = store
+            .prepare(store.epoch(), &changes, &cancelled)
+            .map_err(|error| SessionError::Snapshot(error.to_string()))?;
+        let store = self
+            .incremental
+            .as_mut()
+            .expect("incremental store installed");
+        store
+            .commit(prepared)
+            .map_err(|error| SessionError::Snapshot(error.to_string()))?;
+        let mut full = store.snapshot().clone();
+        let source_fingerprint = fingerprint_sources(
+            self.sources
+                .values()
+                .map(|source| (source.logical_path.as_str(), source.text.as_str())),
+        );
+        let root_for = |source: &SnapshotSource| {
+            Some(
+                source
+                    .logical_path
+                    .split('/')
+                    .next()
+                    .unwrap_or("root")
+                    .to_owned(),
+            )
+        };
+        let game_data = if let Some(catalog) = self.catalog.as_ref() {
+            compute_rule_game_data(&full, catalog, 100_000, root_for)
+                .map_err(|error| SessionError::Snapshot(format!("{error:?}")))?
+        } else {
+            GameComputedData::default()
+        };
+        if let Some(catalog) = self.catalog.as_ref() {
+            compute_snapshot_diagnostics(&mut full, catalog, self.config.max_diagnostics, root_for)
+                .map_err(|error| SessionError::Snapshot(format!("{error:?}")))?;
+        }
+        self.snapshot = Some(SessionSnapshot {
+            full,
+            game_data,
+            localisation: self.localisation.clone(),
+            source_fingerprint,
+        });
+        Ok(self.snapshot.as_ref().expect("snapshot installed"))
     }
 
     pub fn validate_source(&self, path: &str) -> Option<cwtools_rules_engine::ValidationResult> {
@@ -828,7 +1006,8 @@ impl GameSession {
             .cache_key(snapshot.source_fingerprint)
             .map_err(|error| SessionError::Cache(error.to_string()))?;
         let store = CacheStore::with_limits(path, self.config.cache_limits);
-        let payload = snapshot.source_fingerprint.0.to_le_bytes();
+        let payload =
+            serde_json::to_vec(snapshot).map_err(|error| SessionError::Cache(error.to_string()))?;
         store
             .write_bytes(&key, &payload)
             .map(Some)
@@ -844,16 +1023,7 @@ impl GameSession {
             Ok(key) => key,
             Err(_) => return CacheRead::miss(cwtools_cache::CacheMissReason::InvalidGameId),
         };
-        let raw = CacheStore::with_limits(path, self.config.cache_limits).read_bytes(&key);
-        match raw.value {
-            Some(bytes) if bytes.len() == 8 => {
-                CacheRead::miss(cwtools_cache::CacheMissReason::DeserializeFailed)
-            }
-            _ => CacheRead::miss(
-                raw.miss
-                    .unwrap_or(cwtools_cache::CacheMissReason::DeserializeFailed),
-            ),
-        }
+        CacheStore::with_limits(path, self.config.cache_limits).read_json(&key)
     }
 }
 

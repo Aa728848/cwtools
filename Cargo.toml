@@ -16,11 +16,13 @@ members = [
     "crates/cwtools-workspace",
     "crates/cwtools-cache",
     "crates/cwtools-game-core",
+    "crates/cwtools-game",
     "crates/cwtools-scopes",
     "crates/cwtools-docs",
     "crates/cwtools-metadata",
     "crates/cwtools-shader",
     "crates/cwtools-semantic",
+    "crates/cwtools-analysis",
 ]
 
 [workspace.package]

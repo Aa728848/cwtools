@@ -229,7 +229,7 @@ fn token(t: &cwtools_script_syntax::Token) -> LeafValue {
 fn scalar(x: &CstNode) -> LeafValue {
     match x {
         CstNode::Bare { token: t } => token(t),
-        CstNode::ColourLiteral { raw, .. } => LeafValue::Colour(raw.clone()),
+        CstNode::ColourLiteral { raw, .. } => LeafValue::Colour(raw.trim_matches('\"').to_owned()),
         _ => LeafValue::Text(String::new()),
     }
 }
@@ -293,7 +293,7 @@ fn convert_domain(xs: &[Item]) -> Vec<ProcessedItem> {
                     key: key.clone(),
                     operator: *operator,
                     value: if *quoted {
-                        LeafValue::Quoted(raw.clone())
+                        LeafValue::Quoted(raw.trim_matches('\"').to_owned())
                     } else {
                         match typed {
                             cwtools_script_syntax::TypedValue::Integer(v) => LeafValue::Integer(*v),
@@ -323,8 +323,13 @@ fn convert_domain(xs: &[Item]) -> Vec<ProcessedItem> {
 }
 fn render_value(v: &LeafValue) -> String {
     match v {
-        LeafValue::Quoted(x) => format!("\"{x}\""),
-        LeafValue::Text(x) | LeafValue::Decimal(x) | LeafValue::Colour(x) => x.clone(),
+        LeafValue::Quoted(x) => {
+            let inner = x.trim_matches('\"');
+            format!("\"{inner}\"")
+        }
+        LeafValue::Text(x) | LeafValue::Decimal(x) | LeafValue::Colour(x) => {
+            x.trim_matches('\"').to_owned()
+        }
         LeafValue::Integer(x) => x.to_string(),
         LeafValue::Boolean(x) => {
             if *x {

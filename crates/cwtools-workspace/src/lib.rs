@@ -8,6 +8,7 @@ use cwtools_rules_engine::{DynamicTypeReference, QueryError, RuleCatalog};
 use cwtools_scopes::{ReferenceHint, ValueScopeCatalog, ValueScopeResolution};
 use cwtools_script_syntax::{ByteRange, CstNode, ScriptEncoding, decode_script_bytes, parse};
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read};
@@ -21,7 +22,7 @@ pub const MAX_DISCOVERED_FILES: usize = 1_000_000;
 pub const MAX_DIRECTORY_DEPTH: usize = 256;
 pub const MAX_TEXT_BYTES: usize = 64 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Overwrite {
     #[default]
     No,
@@ -378,7 +379,7 @@ pub fn read_text(
     })
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotSource {
     pub scope: String,
     pub path: String,
@@ -387,7 +388,7 @@ pub struct SnapshotSource {
     pub overwrite: Overwrite,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SymbolOccurrence {
     pub name: String,
     pub path: String,
@@ -396,7 +397,7 @@ pub struct SymbolOccurrence {
     pub key_prefix: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotDiagnostic {
     pub path: String,
     pub logical_path: String,
@@ -407,7 +408,7 @@ pub struct SnapshotDiagnostic {
     pub range: ByteRange,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotParseError {
     pub path: String,
     pub code: String,
@@ -415,7 +416,7 @@ pub struct SnapshotParseError {
     pub offset: usize,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ComputedBlock {
     pub key: String,
     pub path: String,
@@ -423,13 +424,13 @@ pub struct ComputedBlock {
     pub range: ByteRange,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ScopedOccurrence {
     pub occurrence: SymbolOccurrence,
     pub scope: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotReferenceDetail {
     pub occurrence: SymbolOccurrence,
     pub type_name: String,
@@ -439,7 +440,7 @@ pub struct SnapshotReferenceDetail {
     pub associated_type: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GameComputedData {
     pub defined_variables: BTreeMap<String, Vec<SymbolOccurrence>>,
     pub saved_event_targets: Vec<ScopedOccurrence>,
@@ -504,7 +505,7 @@ pub fn stellaris_computed_profile() -> GameComputedProfile {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FullSnapshot {
     pub sources: Vec<SnapshotSource>,
     pub typed_definitions: BTreeMap<String, BTreeMap<String, Vec<SymbolOccurrence>>>,
@@ -537,6 +538,7 @@ impl Default for SnapshotLimits {
 pub enum SnapshotError {
     TooManySources { limit: usize },
     TooManyNodes { limit: usize },
+    Cancelled,
 }
 
 impl std::fmt::Display for SnapshotError {
@@ -546,6 +548,7 @@ impl std::fmt::Display for SnapshotError {
             Self::TooManyNodes { limit } => {
                 write!(formatter, "snapshot exceeds {limit} syntax nodes")
             }
+            Self::Cancelled => write!(formatter, "snapshot computation was cancelled"),
         }
     }
 }
@@ -561,9 +564,30 @@ impl std::error::Error for SnapshotError {}
 /// # Errors
 /// Returns an error when source or syntax-node hard limits are exceeded.
 pub fn compute_full_snapshot(
-    mut sources: Vec<SnapshotSource>,
+    sources: Vec<SnapshotSource>,
     limits: SnapshotLimits,
 ) -> Result<FullSnapshot, SnapshotError> {
+    compute_full_snapshot_cancellable(sources, limits, || false)
+}
+
+/// Computes a full snapshot while polling cancellation between sources and syntax nodes.
+///
+/// The candidate remains private to this call; cancellation never exposes a partial snapshot.
+///
+/// # Errors
+/// Returns [`SnapshotError::Cancelled`] when `cancelled` requests cancellation, or a
+/// snapshot bound error when the source or syntax-node limit is exceeded.
+pub fn compute_full_snapshot_cancellable<F>(
+    mut sources: Vec<SnapshotSource>,
+    limits: SnapshotLimits,
+    mut cancelled: F,
+) -> Result<FullSnapshot, SnapshotError>
+where
+    F: FnMut() -> bool,
+{
+    if cancelled() {
+        return Err(SnapshotError::Cancelled);
+    }
     sources.retain(|source| source.overwrite != Overwrite::Overwritten);
     sources.sort_by(|left, right| {
         (&left.logical_path, &left.path).cmp(&(&right.logical_path, &right.path))
@@ -580,11 +604,13 @@ pub fn compute_full_snapshot(
     let mut indexes = SnapshotIndexes {
         node_count: 0,
         max_nodes: limits.max_nodes,
+        cancelled: &mut cancelled,
         definitions: &mut snapshot.definitions,
         references: &mut snapshot.references,
         variables: &mut snapshot.variables,
     };
     for source in &snapshot.sources {
+        indexes.poll_cancelled()?;
         match parse(&source.text) {
             Ok(cst) => {
                 for node in &cst.roots {
@@ -1705,9 +1731,20 @@ impl std::error::Error for SnapshotDiagnosticError {}
 struct SnapshotIndexes<'a> {
     node_count: usize,
     max_nodes: usize,
+    cancelled: &'a mut dyn FnMut() -> bool,
     definitions: &'a mut BTreeMap<String, Vec<SymbolOccurrence>>,
     references: &'a mut BTreeMap<String, Vec<SymbolOccurrence>>,
     variables: &'a mut BTreeMap<String, Vec<SymbolOccurrence>>,
+}
+
+impl SnapshotIndexes<'_> {
+    fn poll_cancelled(&mut self) -> Result<(), SnapshotError> {
+        if (self.cancelled)() {
+            Err(SnapshotError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 fn index_node(
@@ -1716,6 +1753,7 @@ fn index_node(
     top_level: bool,
     indexes: &mut SnapshotIndexes<'_>,
 ) -> Result<(), SnapshotError> {
+    indexes.poll_cancelled()?;
     indexes.node_count = indexes.node_count.saturating_add(1);
     if indexes.node_count > indexes.max_nodes {
         return Err(SnapshotError::TooManyNodes {
