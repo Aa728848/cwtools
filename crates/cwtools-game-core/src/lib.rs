@@ -848,7 +848,13 @@ impl GameSession {
 
     /// Merges mod override sources on top of an installed cached vanilla snapshot
     /// in one batch, without reparsing or revalidating the vanilla sources.
-    pub fn merge_sources(&mut self, project: &[SourceInput]) -> Result<(), SessionError> {
+    /// When `enrich` is false, rule game-data and snapshot diagnostics are skipped
+    /// so a cached-vanilla startup stays fast; per-file validation remains intact.
+    pub fn merge_sources(
+        &mut self,
+        project: &[SourceInput],
+        enrich: bool,
+    ) -> Result<(), SessionError> {
         let Some(snapshot) = self.snapshot.clone() else {
             for source in project {
                 self.upsert_source(source.clone())?;
@@ -903,7 +909,7 @@ impl GameSession {
                     .to_owned(),
             )
         };
-        if let Some(catalog) = self.catalog.as_ref() {
+        if enrich && let Some(catalog) = self.catalog.as_ref() {
             let game_data = compute_rule_game_data(&full, catalog, 100_000, root_for)
                 .map_err(|error| SessionError::Snapshot(format!("{error:?}")))?;
             compute_snapshot_diagnostics(&mut full, catalog, self.config.max_diagnostics, root_for)
