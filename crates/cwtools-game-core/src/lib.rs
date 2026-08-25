@@ -797,6 +797,10 @@ impl GameSession {
         Ok(())
     }
 
+    pub fn set_rule_catalog(&mut self, catalog: RuleCatalog) {
+        self.catalog = Some(catalog);
+    }
+
     pub fn set_scope_catalog(&mut self, catalog: ValueScopeCatalog) {
         self.scopes = catalog;
     }
