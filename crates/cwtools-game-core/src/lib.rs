@@ -846,6 +846,88 @@ impl GameSession {
         self.scopes = catalog;
     }
 
+    /// Merges mod override sources on top of an installed cached vanilla snapshot
+    /// in one batch, without reparsing or revalidating the vanilla sources.
+    pub fn merge_sources(&mut self, project: &[SourceInput]) -> Result<(), SessionError> {
+        let Some(snapshot) = self.snapshot.clone() else {
+            for source in project {
+                self.upsert_source(source.clone())?;
+            }
+            return Ok(());
+        };
+        for source in project {
+            self.upsert_source(source.clone())?;
+        }
+        let mut by_logical: BTreeMap<String, SnapshotSource> = snapshot
+            .full
+            .sources
+            .iter()
+            .cloned()
+            .map(|source| (source.logical_path.clone(), source))
+            .collect();
+        for source in project {
+            by_logical.insert(
+                source.logical_path.clone(),
+                SnapshotSource {
+                    scope: source.scope.clone(),
+                    path: source.path.clone(),
+                    logical_path: source.logical_path.clone(),
+                    text: source.text.clone(),
+                    overwrite: source.overwrite,
+                },
+            );
+        }
+        let mut inputs = by_logical.into_values().collect::<Vec<_>>();
+        inputs.sort_by(|left, right| {
+            (left.logical_path.clone(), left.path.clone())
+                .cmp(&(right.logical_path.clone(), right.path.clone()))
+        });
+        let mut full = compute_full_snapshot(inputs.clone(), self.config.snapshot_limits)
+            .map_err(|error| SessionError::Snapshot(error.to_string()))?;
+        let source_fingerprint = fingerprint_sources(
+            self.sources
+                .values()
+                .map(|source| (source.logical_path.as_str(), source.text.as_str())),
+        );
+        self.incremental = Some(
+            IncrementalStore::from_snapshot(inputs, full.clone(), self.config.snapshot_limits)
+                .map_err(|error| SessionError::Snapshot(error.to_string()))?,
+        );
+        let root_for = |source: &SnapshotSource| {
+            Some(
+                source
+                    .logical_path
+                    .split('/')
+                    .next()
+                    .unwrap_or("root")
+                    .to_owned(),
+            )
+        };
+        if let Some(catalog) = self.catalog.as_ref() {
+            let game_data = compute_rule_game_data(&full, catalog, 100_000, root_for)
+                .map_err(|error| SessionError::Snapshot(format!("{error:?}")))?;
+            compute_snapshot_diagnostics(&mut full, catalog, self.config.max_diagnostics, root_for)
+                .map_err(|error| SessionError::Snapshot(format!("{error:?}")))?;
+            self.cache.insert(source_fingerprint, game_data.clone());
+            self.snapshot = Some(SessionSnapshot {
+                full,
+                game_data,
+                localisation: snapshot.localisation,
+                source_fingerprint,
+            });
+        } else {
+            self.cache
+                .insert(source_fingerprint, GameComputedData::default());
+            self.snapshot = Some(SessionSnapshot {
+                full,
+                game_data: GameComputedData::default(),
+                localisation: snapshot.localisation,
+                source_fingerprint,
+            });
+        }
+        Ok(())
+    }
+
     pub fn upsert_source(&mut self, source: SourceInput) -> Result<(), SessionError> {
         if self.sources.len() >= self.config.snapshot_limits.max_sources
             && !self.sources.contains_key(&source.path)
