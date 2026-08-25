@@ -855,11 +855,16 @@ impl GameSession {
         project: &[SourceInput],
         enrich: bool,
     ) -> Result<(), SessionError> {
-        let Some(snapshot) = self.snapshot.clone() else {
+        let snapshot = if let Some(snapshot) = self.snapshot.clone() {
+            snapshot
+        } else {
             for source in project {
                 self.upsert_source(source.clone())?;
             }
-            return Ok(());
+            // Fresh session without a base snapshot: build the merged snapshot in
+            // one pass so the first run parses and enriches vanilla plus project
+            // exactly once instead of refreshing the base first.
+            return self.refresh_full().map(|_| ());
         };
         for source in project {
             self.upsert_source(source.clone())?;
