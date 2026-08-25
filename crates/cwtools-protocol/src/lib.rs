@@ -24,7 +24,11 @@ pub struct Message {
     pub method: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_result",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<JsonRpcError>,
@@ -50,6 +54,13 @@ impl Message {
         }
         Ok(())
     }
+}
+
+fn deserialize_optional_result<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(Some)
 }
 
 fn json_rpc_version() -> String {
@@ -114,6 +125,20 @@ mod tests {
         let message: Message = serde_json::from_str(input).unwrap();
         assert_eq!(message.id, Some(RequestId::Number(1)));
         assert_eq!(serde_json::to_value(message).unwrap()["method"], "shutdown");
+    }
+
+    #[test]
+    fn null_result_response_is_present_and_valid() {
+        let message: Message =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"result":null}"#).unwrap();
+        assert_eq!(message.result, Some(Value::Null));
+        assert!(message.validate().is_ok());
+    }
+
+    #[test]
+    fn missing_result_and_error_response_is_invalid() {
+        let message: Message = serde_json::from_str(r#"{"jsonrpc":"2.0","id":1}"#).unwrap();
+        assert!(message.validate().is_err());
     }
 
     #[test]
