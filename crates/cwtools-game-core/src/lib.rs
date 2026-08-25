@@ -850,6 +850,7 @@ impl GameSession {
     /// in one batch, without reparsing or revalidating the vanilla sources.
     /// When `enrich` is false, rule game-data and snapshot diagnostics are skipped
     /// so a cached-vanilla startup stays fast; per-file validation remains intact.
+    #[allow(clippy::too_many_lines)]
     pub fn merge_sources(
         &mut self,
         project: &[SourceInput],
@@ -863,8 +864,69 @@ impl GameSession {
             }
             // Fresh session without a base snapshot: build the merged snapshot in
             // one pass so the first run parses and enriches vanilla plus project
-            // exactly once instead of refreshing the base first.
-            return self.refresh_full().map(|_| ());
+            // exactly once instead of refreshing the base first. The parsed
+            // snapshot is reused for the incremental store the same way the
+            // base-snapshot merge does, avoiding a second parse pass.
+            let mut inputs = self
+                .sources
+                .values()
+                .map(|source| SnapshotSource {
+                    scope: source.scope.clone(),
+                    path: source.path.clone(),
+                    logical_path: source.logical_path.clone(),
+                    text: source.text.clone(),
+                    overwrite: source.overwrite,
+                })
+                .collect::<Vec<_>>();
+            inputs.sort_by(|left, right| {
+                (left.logical_path.clone(), left.path.clone())
+                    .cmp(&(right.logical_path.clone(), right.path.clone()))
+            });
+            let source_fingerprint = fingerprint_sources(
+                self.sources
+                    .values()
+                    .map(|source| (source.logical_path.as_str(), source.text.as_str())),
+            );
+            let mut full = compute_full_snapshot(inputs.clone(), self.config.snapshot_limits)
+                .map_err(|error| SessionError::Snapshot(error.to_string()))?;
+            self.incremental = Some(
+                IncrementalStore::from_snapshot(inputs, full.clone(), self.config.snapshot_limits)
+                    .map_err(|error| SessionError::Snapshot(error.to_string()))?,
+            );
+            let root_for = |source: &SnapshotSource| {
+                Some(
+                    source
+                        .logical_path
+                        .split('/')
+                        .next()
+                        .unwrap_or("root")
+                        .to_owned(),
+                )
+            };
+            let game_data = if enrich && let Some(catalog) = self.catalog.as_ref() {
+                let data = compute_rule_game_data(&full, catalog, 100_000, root_for)
+                    .map_err(|error| SessionError::Snapshot(format!("{error:?}")))?;
+                compute_snapshot_diagnostics(
+                    &mut full,
+                    catalog,
+                    self.config.max_diagnostics,
+                    root_for,
+                )
+                .map_err(|error| SessionError::Snapshot(format!("{error:?}")))?;
+                self.cache.insert(source_fingerprint, data.clone());
+                data
+            } else {
+                self.cache
+                    .insert(source_fingerprint, GameComputedData::default());
+                GameComputedData::default()
+            };
+            self.snapshot = Some(SessionSnapshot {
+                full,
+                game_data,
+                localisation: self.localisation.clone(),
+                source_fingerprint,
+            });
+            return Ok(());
         };
         for source in project {
             self.upsert_source(source.clone())?;
