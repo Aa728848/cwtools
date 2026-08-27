@@ -41,6 +41,11 @@ let getTypesFromDefinitions
     (types: TypeDefinition list)
     (entities: Entity seq)
     =
+    let entityArray =
+        entities
+        |> Seq.map (fun e -> struct (e.entity, Path.GetFileNameWithoutExtension e.logicalpath, e.validate, e.logicalpath))
+        |> Array.ofSeq
+
     let getExplicitLocalisationKeys (entity: IClause) (typeDef: TypeDefinition) =
         typeDef.localisation
         |> List.choose (fun ld -> ld.explicitField |> Option.map (fun ef -> ld.name, ef, ld.primary))
@@ -48,10 +53,10 @@ let getTypesFromDefinitions
             entity.Tag field |> Option.map (fun v -> name, v.ToRawString(), primary))
 
     let getTypeInfo (def: TypeDefinition) =
-        entities
-        |> Seq.choose (fun e ->
-            if CSharpHelpers.FieldValidatorsHelper.CheckPathDir(def.pathOptions, e.logicalpath) then
-                Some(e.entity, Path.GetFileNameWithoutExtension e.logicalpath, e.validate)
+        entityArray
+        |> Array.choose (fun struct (e, fileNameWithoutExtension, v, logicalpath) ->
+            if CSharpHelpers.FieldValidatorsHelper.CheckPathDir(def.pathOptions, logicalpath) then
+                Some(e, fileNameWithoutExtension, v)
             else
                 None)
         |> Seq.collect (fun (e, fileNameWithoutExtension, v) ->

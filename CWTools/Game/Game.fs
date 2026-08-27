@@ -808,9 +808,6 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         timer.Restart()
         this.Resources.ForceRecompute()
         log (sprintf "Resource recomputer in %A" timer.ElapsedMilliseconds)
-        timer.Restart()
-        localisationManager.UpdateAllLocalisation()
-        log (sprintf "Loc updated again in %A" timer.ElapsedMilliseconds)
 
     do
         lookup.rootFolders <- settings.rootDirectories

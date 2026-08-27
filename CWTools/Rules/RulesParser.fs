@@ -11,6 +11,7 @@ open CWTools.Process.STLProcess
 open CWTools.Process
 open CWTools.Utilities.Utils
 open System
+open System.IO
 open System.Globalization
 open CWTools.Parser
 open CWTools.Rules
@@ -2241,30 +2242,51 @@ module RulesParser =
         stellarisScopeTriggers
         (files: (string * string) list)
         =
-        let parsedFiles =
-            files
-            |> Seq.map (fun (filename, fileString) ->
-                filename, parseConfigWithMetadata parseScope allScopes anyScope scopeGroup filename fileString)
-            |> Seq.toList
+        let cacheFile =
+            RulesCache.globalRulesCacheDir
+            |> Option.map (fun cd ->
+                let fp = RulesCache.computeFilesFingerprint files
+                Path.Combine(cd, "rules_cache", sprintf "cwt_rules_%s.cwdf" fp))
 
-        let rules, types, enums, complexenums, values, metadata =
-            parsedFiles
-            |> Seq.fold
-                (fun (rs, ts, es, ces, vs, md) (_, (r, t, e, ce, v, fileMd)) ->
-                    r @ rs, t @ ts, e @ es, ce @ ces, v @ vs, ExtendedConfigMetadata.merge md fileMd)
-                ([], [], [], [], [], ExtendedConfigMetadata.empty)
+        match cacheFile |> Option.bind RulesCache.tryLoadRulesCache with
+        | Some cached ->
+            cached.rules, cached.types, cached.enums, cached.complexenums, cached.values, cached.metadata
+        | None ->
+            let parsedFiles =
+                files
+                |> Seq.map (fun (filename, fileString) ->
+                    filename, parseConfigWithMetadata parseScope allScopes anyScope scopeGroup filename fileString)
+                |> Seq.toList
 
-        let sourceRulesByFile =
-            parsedFiles
-            |> List.map (fun (filename, (fileRules, _, _, _, _, _)) -> filename, fileRules)
+            let rules, types, enums, complexenums, values, metadata =
+                parsedFiles
+                |> Seq.fold
+                    (fun (rs, ts, es, ces, vs, md) (_, (r, t, e, ce, v, fileMd)) ->
+                        r @ rs, t @ ts, e @ es, ce @ ces, v @ vs, ExtendedConfigMetadata.merge md fileMd)
+                    ([], [], [], [], [], ExtendedConfigMetadata.empty)
 
-        let rules =
-            rules
-            |> Array.ofList
-            |> applyConfigInjections sourceRulesByFile
-            |> replaceValueMarkerFields useFormulas stellarisScopeTriggers
-            |> replaceSingleAliases
-            |> replaceColourField
-            |> replaceIgnoreMarkerFields
-        // File.AppendAllText ("test.test", sprintf "%O" rules)
-        rules, types, enums, complexenums, values, metadata
+            let sourceRulesByFile =
+                parsedFiles
+                |> List.map (fun (filename, (fileRules, _, _, _, _, _)) -> filename, fileRules)
+
+            let rules =
+                rules
+                |> Array.ofList
+                |> applyConfigInjections sourceRulesByFile
+                |> replaceValueMarkerFields useFormulas stellarisScopeTriggers
+                |> replaceSingleAliases
+                |> replaceColourField
+                |> replaceIgnoreMarkerFields
+
+            cacheFile
+            |> Option.iter (fun cf ->
+                let cacheData =
+                    { rules = rules
+                      types = types
+                      enums = enums
+                      complexenums = complexenums
+                      values = values
+                      metadata = metadata }
+                RulesCache.saveRulesCache cf cacheData)
+
+            rules, types, enums, complexenums, values, metadata

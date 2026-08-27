@@ -995,8 +995,8 @@ type ResourceManager<'T when 'T :> ComputedData>
     let rebuildInlineScriptCallerIndex () =
         inlineScriptCallerIndex.Clear()
         inlineScriptCallerKeysByFile.Clear()
-        for struct (e, _) in entitiesMap.Values do
-            addCallerContributions e
+        entitiesMap.Values
+        |> PSeq.iter (fun struct (e, _) -> addCallerContributions e)
 
     /// 单文件增量更新：先回收旧贡献，再加入当前引用。
     let updateInlineScriptCallerIndexForFile (e: Entity) =
@@ -1357,7 +1357,7 @@ type ResourceManager<'T when 'T :> ComputedData>
                 Some newNode
 
         news
-        |> Seq.map (function
+        |> PSeq.map (function
             | resource, Some struct (oldE, oldLazy) ->
                 // 性能优化：跳过 inline_scripts/ 目录内的文件（它们是模板，不需要被展开）
                 // 大小写不敏感判断（与 FileManager 的 inline_script 识别、addCallerContributions 一致），
@@ -1472,20 +1472,26 @@ type ResourceManager<'T when 'T :> ComputedData>
                 | FileWithContentResource(path, _) -> path
 
         let priorCarrierFingerprints =
-            files
-            |> Array.map (fun input ->
-                let path = inputPath input
-                match entitiesMap.TryGetValue path with
-                | true, struct (entity, _) -> path, carrierSemanticFingerprint entity
-                | _ -> path, None)
-            |> Map.ofArray
+            if entitiesMap.Count = 0 then
+                Map.empty
+            else
+                files
+                |> Array.map (fun input ->
+                    let path = inputPath input
+                    match entitiesMap.TryGetValue path with
+                    | true, struct (entity, _) -> path, carrierSemanticFingerprint entity
+                    | _ -> path, None)
+                |> Map.ofArray
 
         let priorFilePresence =
-            files
-            |> Array.map (fun input ->
-                let path = inputPath input
-                path, fileMap.ContainsKey path)
-            |> Map.ofArray
+            if fileMap.Count = 0 then
+                Map.empty
+            else
+                files
+                |> Array.map (fun input ->
+                    let path = inputPath input
+                    path, fileMap.ContainsKey path)
+                |> Map.ofArray
 
         let news =
             files |> PSeq.map parseFileThenEntity |> Seq.collect saveResults |> Seq.toList

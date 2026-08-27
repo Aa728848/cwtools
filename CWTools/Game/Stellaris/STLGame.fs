@@ -2117,13 +2117,28 @@ module STLGameFunctions =
         let triggers, effects =
             configs
             |> List.tryFind (fun (fn, _) -> Path.GetFileName fn = "trigger_docs.log")
-            |> Option.map (fun (fn, ft) -> DocsParser.parseDocsFile fn)
-            |> Option.bind (function
-                | FParsec.CharParsers.ParserResult.Success(p, _, _) ->
-                    Some(DocsParser.processDocs scopeManager.ParseScopes p)
-                | FParsec.CharParsers.ParserResult.Failure(e, _, _) ->
-                    eprintfn "%A" e
-                    None)
+            |> Option.map (fun (fn, ft) ->
+                let cacheFile =
+                    RulesCache.globalRulesCacheDir
+                    |> Option.map (fun cd ->
+                        let fp = RulesCache.computeFileFingerprint fn ft
+                        Path.Combine(cd, "rules_cache", sprintf "stl_docs_%s.cwdf" fp))
+
+                match cacheFile |> Option.bind RulesCache.tryLoadDocsCache with
+                | Some cached -> cached.triggers, cached.effects
+                | None ->
+                    let parsed =
+                        DocsParser.parseDocsFile fn
+                        |> (function
+                            | FParsec.CharParsers.ParserResult.Success(p, _, _) ->
+                                DocsParser.processDocs scopeManager.ParseScopes p
+                            | FParsec.CharParsers.ParserResult.Failure(e, _, _) ->
+                                eprintfn "%A" e
+                                ([], []))
+                    cacheFile
+                    |> Option.iter (fun cf ->
+                        RulesCache.saveDocsCache cf { triggers = fst parsed; effects = snd parsed })
+                    parsed)
             |> Option.defaultWith (fun () ->
                 Utils.logError "trigger_docs.log was not found in stellaris config"
                 ([], []))
@@ -2133,10 +2148,25 @@ module STLGameFunctions =
             if configs |> List.exists (fun (fn, _) -> Path.GetFileName fn = "modifiers.log") then
                 configs
                 |> List.tryFind (fun (fn, _) -> Path.GetFileName fn = "modifiers.log")
-                |> Option.map (fun (fn, ft) -> StellarisModifierParser.parseLogsFile fn)
-                |> Option.bind (function
-                    | FParsec.CharParsers.ParserResult.Success(p, _, _) -> Some(StellarisModifierParser.processLogs p)
-                    | FParsec.CharParsers.ParserResult.Failure(e, _, _) -> None)
+                |> Option.map (fun (fn, ft) ->
+                    let cacheFile =
+                        RulesCache.globalRulesCacheDir
+                        |> Option.map (fun cd ->
+                            let fp = RulesCache.computeFileFingerprint fn ft
+                            Path.Combine(cd, "rules_cache", sprintf "stl_modifiers_%s.cwdf" fp))
+
+                    match cacheFile |> Option.bind RulesCache.tryLoadModifiersCache with
+                    | Some cached -> cached.modifiers |> Array.toList
+                    | None ->
+                        let parsed =
+                            StellarisModifierParser.parseLogsFile fn
+                            |> (function
+                                | FParsec.CharParsers.ParserResult.Success(p, _, _) -> StellarisModifierParser.processLogs p
+                                | FParsec.CharParsers.ParserResult.Failure(e, _, _) -> [])
+                        cacheFile
+                        |> Option.iter (fun cf ->
+                            RulesCache.saveModifiersCache cf { modifiers = parsed |> List.toArray })
+                        parsed)
                 |> Option.defaultWith (fun () ->
                     Utils.logError "modifiers.log was not found in stellaris config"
                     [])

@@ -64,17 +64,39 @@ let binarySerializer =
 
 let assemblyLocation = Path.GetDirectoryName(Assembly.GetEntryAssembly().Location)
 
+let private cwdfMagic = [| 0x43uy; 0x57uy; 0x44uy; 0x46uy |] // ASCII "CWDF"
+
 let compressAndWrite (input: byte array) (file: string) =
-    use stream = new MemoryStream(input)
     use fileStream = File.Create(file)
-    ICSharpCode.SharpZipLib.BZip2.BZip2.Compress(stream, fileStream, true, 9)
+    fileStream.Write(cwdfMagic, 0, cwdfMagic.Length)
+    use deflateStream = new DeflateStream(fileStream, CompressionLevel.Fastest)
+    deflateStream.Write(input, 0, input.Length)
 
 let decompress (path: string) =
-    use outStream = new MemoryStream()
     let bytes = File.ReadAllBytes(path)
-    use inStream = new MemoryStream(bytes)
-    ICSharpCode.SharpZipLib.BZip2.BZip2.Decompress(inStream, outStream, false)
-    outStream.ToArray()
+    if bytes.Length >= 4 && bytes.[0] = cwdfMagic.[0] && bytes.[1] = cwdfMagic.[1] && bytes.[2] = cwdfMagic.[2] && bytes.[3] = cwdfMagic.[3] then
+        use inStream = new MemoryStream(bytes, 4, bytes.Length - 4)
+        use deflateStream = new DeflateStream(inStream, CompressionMode.Decompress)
+        use outStream = new MemoryStream()
+        deflateStream.CopyTo(outStream)
+        outStream.ToArray()
+    elif bytes.Length >= 2 && bytes.[0] = 0x1fuy && bytes.[1] = 0x8buy then
+        use inStream = new MemoryStream(bytes)
+        use gzipStream = new GZipStream(inStream, CompressionMode.Decompress)
+        use outStream = new MemoryStream()
+        gzipStream.CopyTo(outStream)
+        outStream.ToArray()
+    elif bytes.Length >= 2 && bytes.[0] = 0x42uy && bytes.[1] = 0x5auy then // "BZ"
+        use inStream = new MemoryStream(bytes)
+        use outStream = new MemoryStream()
+        ICSharpCode.SharpZipLib.BZip2.BZip2.Decompress(inStream, outStream, false)
+        outStream.ToArray()
+    else
+        // Fallback to BZip2 for older untagged streams
+        use inStream = new MemoryStream(bytes)
+        use outStream = new MemoryStream()
+        ICSharpCode.SharpZipLib.BZip2.BZip2.Decompress(inStream, outStream, false)
+        outStream.ToArray()
 
 let addDLCs dlcDir (workspaceDirectory: WorkspaceDirectory) =
     let dir = workspaceDirectory.path

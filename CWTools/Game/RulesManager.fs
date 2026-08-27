@@ -943,10 +943,15 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             |> List.map (fun (s, sl) -> s, (sl |> Seq.map (fun s2 -> s2, range.Zero) |> Array.ofSeq))
             |> Map.ofList
 
-        let results =
+        let allComputedEntities =
             allEntitiesList
-            |> PSeq.map (fun struct (e, l) ->
-                (l.Force().Definedvariables
+            |> PSeq.map (fun struct (e, l) -> struct (e, l.Force()))
+            |> Seq.toArray
+
+        let results =
+            allComputedEntities
+            |> PSeq.map (fun struct (e, data) ->
+                (data.Definedvariables
                  |> (Option.defaultWith (fun () -> tempInfoService.GetDefinedVariables e))))
             |> Seq.fold mergeDefinedVariables predefValues
 
@@ -1261,23 +1266,24 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                                 (direct, directEventTargets) :: nested
 
                 let rawReferencedExpansions =
-                    allEntitiesList
-                    |> Seq.collect (fun struct (_, data) ->
-                        data.Force().Referencedtypes
+                    allComputedEntities
+                    |> PSeq.collect (fun struct (_, data) ->
+                        data.Referencedtypes
                         |> Option.bind (Map.tryFind "scripted_effect")
                         |> Option.defaultValue [])
-                    |> Seq.filter (fun reference -> reference.referenceType = ReferenceType.TypeDef)
-                    |> Seq.collect (fun reference ->
+                    |> PSeq.filter (fun reference -> reference.referenceType = ReferenceType.TypeDef)
+                    |> PSeq.collect (fun reference ->
                         collectFromScriptedEffect
                             0
                             (reference.name.GetString())
                             (findCallParams reference.position)
                             settings.defaultContext
                         |> Seq.map (fun expansion -> reference.position, expansion))
+                    |> Seq.toList
 
                 let scopedEventTargetExpansions =
-                    allEntitiesList
-                    |> Seq.collect (fun struct (entity, _) ->
+                    allComputedEntities
+                    |> PSeq.collect (fun struct (entity, _) ->
                         let logicalPath = entity.logicalpath.Replace('\\', '/')
                         let calls =
                             if logicalPath.StartsWith("common/scripted_effects/", StringComparison.OrdinalIgnoreCase) then
@@ -1292,7 +1298,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                             |> Option.map (collectFromScriptedEffect 0 effectName parameters)
                             |> Option.defaultValue []
                             |> Seq.map (fun expansion -> position, expansion)))
-                    |> Seq.cache
+                    |> Seq.toList
 
                 // The reference-based pass starts every scripted-effect call at Any and can
                 // therefore duplicate the scope-aware expansion at that call site. Drop only
@@ -1328,9 +1334,9 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         lookup.varDefInfo <- addEmbeddedVarDefData results
         // eprintfn "vdi %A" results
         let savedEventTargetResults =
-            allEntitiesList
-            |> PSeq.map (fun struct (e, l) ->
-                (l.Force().SavedEventTargets
+            allComputedEntities
+            |> PSeq.map (fun struct (e, data) ->
+                (data.SavedEventTargets
                  |> (Option.defaultWith (fun () -> tempInfoService.GetSavedEventTargets e))))
             |> Seq.fold
                 (fun (acc: ResizeArray<_>) e ->
