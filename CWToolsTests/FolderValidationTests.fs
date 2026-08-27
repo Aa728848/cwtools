@@ -299,6 +299,55 @@ let inlineScriptCompletionRegressionTests =
                   versionBeforeCallerRefresh
                   "Replacing expanded caller entities should invalidate resource-versioned semantic snapshots"
 
+          testWithCapturedLogs "hash parameter comments out expanded inline entries" <| fun () ->
+              let folder = "./testfiles/configtests/ruleswithglobaltests/STL/inlinescripts"
+              let configtext = configFilesFromDir folder
+
+              let settings =
+                  { emptyStellarisSettings folder with
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = true
+                                debugRulesOnly = false
+                                debugMode = false } }
+
+              let stl = STLGame(settings) :> IGame<STLComputedData>
+
+              let inlineFilename =
+                  Path.GetFullPath(Path.Combine(folder, "common", "inline_scripts", "hash_parameter_comment.txt"))
+
+              let callerFilename =
+                  Path.GetFullPath(Path.Combine(folder, "common", "script_consume", "hash_parameter_comment.txt"))
+
+              stl.UpdateFile
+                  false
+                  inlineFilename
+                  (Some
+                      "root_only = yes
+                       $NO_EVENT$unexpected_entry = yes")
+              |> ignore
+
+              let callerErrors =
+                  stl.UpdateFile
+                      false
+                      callerFilename
+                      (Some
+                          "inline_script = {
+                               script = hash_parameter_comment
+                               NO_EVENT = \"#\"
+                           }")
+
+              let unexpectedErrors =
+                  callerErrors
+                  |> List.filter (fun error ->
+                      error.code = "CW274"
+                      || error.message.Contains("unexpected_entry", StringComparison.OrdinalIgnoreCase))
+
+              Expect.isEmpty
+                  unexpectedErrors
+                  $"A # inline parameter on its own line should comment out the substituted template entry, got %A{unexpectedErrors}"
+
           testWithCapturedLogs "nested inline evaluates arithmetic script path suffixes" <| fun () ->
               let folder = "./testfiles/configtests/ruleswithglobaltests/STL/inlinescripts"
               let configtext = configFilesFromDir folder

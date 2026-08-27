@@ -1271,6 +1271,21 @@ type ResourceManager<'T when 'T :> ComputedData>
 
                             node.Nodes |> Seq.iter (foldOverNode stringReplacer inlineScriptPathReplacer)
 
+                            // Parameter substitution can turn a template entry into a comment,
+                            // e.g. $NO_ELEC$electronics = ... with NO_ELEC = "#".
+                            // The template has already been parsed, so remove that expanded entry
+                            // here to match how the game treats the resulting commented line.
+                            let startsWithCommentMarker (text: string) =
+                                text.TrimStart().StartsWith("#", StringComparison.Ordinal)
+
+                            node.AllArray <-
+                                node.AllArray
+                                |> Array.filter (function
+                                    | NodeC child -> not (startsWithCommentMarker child.Key)
+                                    | LeafC leaf -> not (startsWithCommentMarker leaf.Key)
+                                    | LeafValueC leafValue -> not (startsWithCommentMarker (leafValue.Value.ToRawString()))
+                                    | _ -> true)
+
 
                         if
                             nodeRefSet.Contains(struct(n.Position.StartLine, n.Position.StartColumn, n.Position.EndLine, n.Position.EndColumn, n.KeyId.lower))
