@@ -200,7 +200,7 @@ module Files =
             (normalisedPath: string)
             normalisedPathLength
             (scope, filepath: string)
-            (fileLength: int64)
+            (fileLengthThunk: unit -> int64)
             (fileTextThunk: unit -> string)
             =
             // filepath 来自 Directory.GetFiles（原生分隔符），normalisedPath 已统一为 '/'：
@@ -231,7 +231,7 @@ module Files =
 
             match Path.GetExtension(filepath) with
             | "" when isExtensionlessInlineScript ->
-                if fileLength > ((int64 maxFileSizeMB) * 1000000L) then
+                if fileLengthThunk () > ((int64 maxFileSizeMB) * 1000000L) then
                     None
                 else
                     Some(
@@ -248,7 +248,7 @@ module Files =
             | ".sfx"
             | ".asset"
             | ".map" ->
-                if fileLength > ((int64 maxFileSizeMB) * 1000000L) then
+                if fileLengthThunk () > ((int64 maxFileSizeMB) * 1000000L) then
                     None
                 else
                     Some(
@@ -327,7 +327,7 @@ module Files =
                                 workspaceDir.normalisedPath
                                 workspaceDir.normalisedPath.Length
                                 (scope, fn)
-                                (fn |> FileInfo).Length
+                                (fun () -> (fn |> FileInfo).Length)
                                 (fun _ -> File.ReadAllText(fn, encoding))))
                         |> Array.ofSeq)
                     "Load files"
@@ -340,7 +340,7 @@ module Files =
 
                 zd.files
                 |> Array.choose (fun struct (fn, ft) ->
-                    fileToResourceInput normalisedPath normalisedPath.Length (zd.name, fn) 0L (fun _ -> ft))
+                    fileToResourceInput normalisedPath normalisedPath.Length (zd.name, fn) (fun () -> 0L) (fun _ -> ft))
 
             zippedDirectories |> Array.collect zippedDirToResourceInputs
 

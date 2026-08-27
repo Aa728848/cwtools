@@ -845,7 +845,9 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         // log "Refresh rule caches time: %i" timer.ElapsedMilliseconds; timer.Restart()
         // log "Refresh rule caches time: %i" timer.ElapsedMilliseconds; timer.Restart()
 
-        let refreshTypeInfo () =
+        let allEntities = allEntitiesList |> Seq.map structFst
+
+        let refreshTypeInfo (typesToProcess: TypeDefinition list) (baseTypeDefInfo: Map<string, TypeDefInfo array> option) =
             let emptyVarMap: FrozenDictionary<string, PrefixOptimisedStringSet> = FrozenDictionary.Empty
 
             let tempRuleValidationService =
@@ -857,13 +859,25 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     files
                     None
 
-            let allEntities = allEntitiesList |> Seq.map structFst
             let typeDefInfo =
-                getTypesFromDefinitions (Some tempRuleValidationService) tempTypes allEntities
+                getTypesFromDefinitions (Some tempRuleValidationService) typesToProcess allEntities
 
-            lookup.typeDefInfo <- addEmbeddedTypeDefData typeDefInfo // |> Map.map (fun _ v -> v |> List.map (fun (_, t, r) -> (t, r)))
+            let mergedTypeDefInfo =
+                match baseTypeDefInfo with
+                | Some baseInfo ->
+                    typeDefInfo
+                    |> Map.fold (fun acc k v -> Map.add k v acc) baseInfo
+                | None ->
+                    typeDefInfo
+
+            lookup.typeDefInfo <- addEmbeddedTypeDefData mergedTypeDefInfo // |> Map.map (fun _ v -> v |> List.map (fun (_, t, r) -> (t, r)))
 
             typeMapFromTypeDefInfo tempTypeMap lookup.typeDefInfo
+
+        // Round 1: evaluate all types to establish base definitions
+        tempTypeMap <- refreshTypeInfo tempTypes None
+        let initialTypeDefInfo = lookup.typeDefInfo
+        let dynamicSubtypes = tempTypes |> List.filter (fun t -> not t.subtypes.IsEmpty)
 
         logDiag $"Pre-refresh types time: %0.3f{float timer.ElapsedMilliseconds / 1000.0}"
         timer.Restart()
@@ -873,14 +887,17 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let step () =
             //log "%A" current
             i <- i + 1
-            //TODO: Only refresh the types which have subtypes that depend on other types
-            tempTypeMap <- refreshTypeInfo ()
-            logDiag $"Refresh types time: %0.3f{float timer.ElapsedMilliseconds / 1000.0}"
-            timer.Restart()
-            let afterCount = tempTypeMap.Values |> Seq.sumBy _.IdCount
-            let complete = beforeCount = afterCount || i > 5
-            beforeCount <- afterCount
-            complete
+            if dynamicSubtypes.IsEmpty then
+                true
+            else
+                // In subsequent iterations, only re-evaluate types which actually have subtypes
+                tempTypeMap <- refreshTypeInfo dynamicSubtypes (Some initialTypeDefInfo)
+                logDiag $"Refresh types time: %0.3f{float timer.ElapsedMilliseconds / 1000.0}"
+                timer.Restart()
+                let afterCount = tempTypeMap.Values |> Seq.sumBy _.IdCount
+                let complete = beforeCount = afterCount || i > 5
+                beforeCount <- afterCount
+                complete
 
         // TODO check this actually stops early
         while not (step ()) do
@@ -943,10 +960,13 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             |> List.map (fun (s, sl) -> s, (sl |> Seq.map (fun s2 -> s2, range.Zero) |> Array.ofSeq))
             |> Map.ofList
 
+        let subTimer = System.Diagnostics.Stopwatch.StartNew()
         let allComputedEntities =
             allEntitiesList
             |> PSeq.map (fun struct (e, l) -> struct (e, l.Force()))
             |> Seq.toArray
+        logDiag $"Refresh step allComputedEntities force: %0.3f{float subTimer.ElapsedMilliseconds / 1000.0}s"
+        subTimer.Restart()
 
         let results =
             allComputedEntities
@@ -954,6 +974,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 (data.Definedvariables
                  |> (Option.defaultWith (fun () -> tempInfoService.GetDefinedVariables e))))
             |> Seq.fold mergeDefinedVariables predefValues
+        logDiag $"Refresh step GetDefinedVariables: %0.3f{float subTimer.ElapsedMilliseconds / 1000.0}s"
+        subTimer.Restart()
 
         let collectExpandedScriptedData () =
             let entityMap =
@@ -1199,8 +1221,6 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                             Some(name, position, resolvedScope))
                     |> Seq.toList
 
-                let visited = HashSet<string>()
-
                 let contextKey (context: ScopeContext) =
                     String.concat
                         "|"
@@ -1211,16 +1231,17 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                           context.Scopes |> List.map string |> String.concat ","
                           context.FromDepthStack |> List.map string |> String.concat "," ]
 
-                let rec collectFromScriptedEffect depth name parameters (callContext: ScopeContext) =
+                let rec collectFromScriptedEffect depth name parameters (callContext: ScopeContext) (visited: Set<string>) =
                     if depth > 12 then
                         []
                     else
                         let nameKey = lower name
                         let visitedKey = nameKey + "|" + canonicalParams parameters + "|" + contextKey callContext
 
-                        if not (visited.Add visitedKey) then
+                        if visited.Contains visitedKey then
                             []
                         else
+                            let newVisited = visited.Add visitedKey
                             match Map.tryFind nameKey scriptedDefinitions with
                             | None -> []
                             | Some(definitionEntity, definitionNode) ->
@@ -1261,7 +1282,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                                                     nestedPosition)
                                             |> Option.defaultValue callContext
 
-                                        collectFromScriptedEffect (depth + 1) nestedName nestedParams nestedContext)
+                                        collectFromScriptedEffect (depth + 1) nestedName nestedParams nestedContext newVisited)
 
                                 (direct, directEventTargets) :: nested
 
@@ -1278,6 +1299,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                             (reference.name.GetString())
                             (findCallParams reference.position)
                             settings.defaultContext
+                            Set.empty
                         |> Seq.map (fun expansion -> reference.position, expansion))
                     |> Seq.toList
 
@@ -1295,7 +1317,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                         |> Seq.filter (fun (effectName, _, _) -> Set.contains (lower effectName) targetSavingEffects)
                         |> Seq.collect (fun (effectName, parameters, position) ->
                             scriptedEffectContextAtPosition entity position
-                            |> Option.map (collectFromScriptedEffect 0 effectName parameters)
+                            |> Option.map (fun ctx -> collectFromScriptedEffect 0 effectName parameters ctx Set.empty)
                             |> Option.defaultValue []
                             |> Seq.map (fun expansion -> position, expansion)))
                     |> Seq.toList
@@ -1332,6 +1354,9 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             |> Seq.fold mergeDefinedVariables results
 
         lookup.varDefInfo <- addEmbeddedVarDefData results
+        logDiag $"Refresh step collectExpandedScriptedData: %0.3f{float subTimer.ElapsedMilliseconds / 1000.0}s"
+        subTimer.Restart()
+
         // eprintfn "vdi %A" results
         let savedEventTargetResults =
             allComputedEntities
@@ -1349,6 +1374,9 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         |> savedEventTargetResults.AddRange
 
         lookup.savedEventTargets <- savedEventTargetResults
+        logDiag $"Refresh step savedEventTargets: %0.3f{float subTimer.ElapsedMilliseconds / 1000.0}s"
+        subTimer.Restart()
+
         //|> Seq.fold (fun m map -> Map.toList map |>  List.fold (fun m2 (n,k) -> if Map.containsKey n m2 then Map.add n ((k |> List.ofSeq)@m2.[n]) m2 else Map.add n (k |> List.ofSeq) m2) m) tempValues
         settings.refreshConfigAfterVarDefHook lookup resources embeddedSettings
 
@@ -1361,7 +1389,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
         let scriptVariablesWithScope =
             allEntitiesList
-            |> Seq.collect (fun struct (e, _) ->
+            |> PSeq.collect (fun struct (e, _) ->
                 let isGlobal = isGlobalVariableEntity e
 
                 e.entity.Leaves
@@ -1384,8 +1412,12 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             |> Seq.distinct
             |> Seq.toList
 
+        logDiag $"Refresh step scriptVariablesWithScope: %0.3f{float subTimer.ElapsedMilliseconds / 1000.0}s"
+        subTimer.Restart()
+
         let ruleValidationService, infoService, completionService =
             buildServices rulesWrapper tempTypeMap (currentLoc ()) (currentFiles ())
+        logDiag $"Refresh step buildServices: %0.3f{float subTimer.ElapsedMilliseconds / 1000.0}s"
 
         // log "Refresh rule caches time: %i" timer.ElapsedMilliseconds; timer.Restart()
         // game.RefreshValidationManager()

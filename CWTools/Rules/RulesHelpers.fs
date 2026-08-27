@@ -46,6 +46,53 @@ let getTypesFromDefinitions
         |> Seq.map (fun e -> struct (e.entity, Path.GetFileNameWithoutExtension e.logicalpath, e.validate, e.logicalpath))
         |> Array.ofSeq
 
+    let dirBuckets =
+        let d = Dictionary<string, ResizeArray<struct (Node * string * bool * string)>>(StringComparer.OrdinalIgnoreCase)
+        for struct (_, _, _, lp) as item in entityArray do
+            let dir =
+                let span = lp.AsSpan()
+                let dirSpan = Path.GetDirectoryName(span)
+                if dirSpan.IsEmpty then ""
+                else
+                    let s = dirSpan.ToString()
+                    if s.Contains('\\') then s.Replace('\\', '/') else s
+            match d.TryGetValue(dir) with
+            | true, list -> list.Add(item)
+            | false, _ ->
+                let list = ResizeArray()
+                list.Add(item)
+                d[dir] <- list
+        d
+
+    let getCandidateEntities (def: TypeDefinition) =
+        if def.pathOptions.paths.Length = 0 then
+            entityArray
+        else
+            let targetPaths = def.pathOptions.paths
+            if def.pathOptions.pathStrict then
+                let result = ResizeArray()
+                for p in targetPaths do
+                    let normalized = if p.Contains('\\') then p.Replace('\\', '/') else p
+                    match dirBuckets.TryGetValue(normalized) with
+                    | true, list -> result.AddRange(list)
+                    | false, _ -> ()
+                result.ToArray()
+            else
+                let result = ResizeArray()
+                for kv in dirBuckets do
+                    let dir = kv.Key
+                    let mutable matches = false
+                    let mutable pIdx = 0
+                    while not matches && pIdx < targetPaths.Length do
+                        let p = targetPaths[pIdx]
+                        let normalized = if p.Contains('\\') then p.Replace('\\', '/') else p
+                        if dir.Equals(normalized, StringComparison.OrdinalIgnoreCase) || dir.StartsWith(normalized + "/", StringComparison.OrdinalIgnoreCase) then
+                            matches <- true
+                        pIdx <- pIdx + 1
+                    if matches then
+                        result.AddRange(kv.Value)
+                result.ToArray()
+
     let getExplicitLocalisationKeys (entity: IClause) (typeDef: TypeDefinition) =
         typeDef.localisation
         |> List.choose (fun ld -> ld.explicitField |> Option.map (fun ef -> ld.name, ef, ld.primary))
@@ -53,7 +100,8 @@ let getTypesFromDefinitions
             entity.Tag field |> Option.map (fun v -> name, v.ToRawString(), primary))
 
     let getTypeInfo (def: TypeDefinition) =
-        entityArray
+        let candidates = getCandidateEntities def
+        candidates
         |> Array.choose (fun struct (e, fileNameWithoutExtension, v, logicalpath) ->
             if CSharpHelpers.FieldValidatorsHelper.CheckPathDir(def.pathOptions, logicalpath) then
                 Some(e, fileNameWithoutExtension, v)
