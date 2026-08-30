@@ -34,6 +34,67 @@ open MBrace.FsPickler
 
 
 [<Tests>]
+let carrierEventSnapshotLifecycleTests =
+    testList
+        "carrier event snapshot lifecycle"
+        [ test "stale CarrierEvent semantics stay fallback until exact publication" {
+              let scheduled = System.Collections.Generic.Queue<unit -> unit>()
+              let mutable host = "Planet"
+              let gate =
+                  STLGameFunctions.CarrierSnapshotBuildGate<int, string, string>(
+                      (fun () -> struct (0, [| host |])),
+                      (fun _ _ _ entities cancellationToken ->
+                          cancellationToken.ThrowIfCancellationRequested()
+                          entities[0]),
+                      schedule = scheduled.Enqueue)
+
+              let initial = gate.Request 1
+              scheduled.Dequeue() ()
+              Expect.equal initial.task.Value.Result "Planet" "the initial CarrierEvent host is built"
+              Expect.equal (gate.Request 1).exact (Some "Planet") "the initial host is exact"
+
+              host <- "Ship"
+              let changed = gate.Request 2
+              Expect.isNone changed.exact "changed CarrierEvent semantics are not exact yet"
+              Expect.equal changed.fallback (Some "Planet") "the prior Planet host is retained only as stale fallback"
+              scheduled.Dequeue() ()
+              Expect.equal changed.task.Value.Result "Ship" "the changed CarrierEvent host is built"
+              Expect.equal (gate.Request 2).exact (Some "Ship") "Ship becomes visible only after exact publication"
+              (gate :> IDisposable).Dispose() }
+
+          test "newest CarrierEvent semantics supersede an in-flight edit" {
+              let scheduled = System.Collections.Generic.Queue<unit -> unit>()
+              let mutable host = "Planet"
+              let built = ResizeArray<string>()
+              let gate =
+                  STLGameFunctions.CarrierSnapshotBuildGate<int, string, string>(
+                      (fun () -> struct (0, [| host |])),
+                      (fun _ _ _ entities cancellationToken ->
+                          cancellationToken.ThrowIfCancellationRequested()
+                          built.Add entities[0]
+                          entities[0]),
+                      schedule = scheduled.Enqueue)
+
+              let initial = gate.Request 1
+              scheduled.Dequeue() ()
+              Expect.equal initial.task.Value.Result "Planet" "the baseline CarrierEvent semantics publish"
+
+              host <- "Ship"
+              let stale = gate.Request 2
+              host <- "Carrier"
+              let newest = gate.Request 3
+              scheduled.Dequeue() ()
+              Expect.isTrue stale.task.Value.IsCanceled "the in-flight Ship edit is cancelled"
+              Expect.isTrue newest.retry.Value.IsCompleted "the newest Carrier edit is released to capture"
+
+              let newestBuild = gate.Request 3
+              scheduled.Dequeue() ()
+              Expect.equal newestBuild.task.Value.Result "Carrier" "the newest entity view is built"
+              Expect.equal (gate.Request 3).exact (Some "Carrier") "only newest CarrierEvent semantics are exact"
+              Expect.sequenceEqual built [ "Planet"; "Carrier" ] "superseded Ship semantics never build or publish"
+              (gate :> IDisposable).Dispose() } ]
+
+[<Tests>]
 let carrierEventScopeValidationTests =
     testSequenced
     <| testList
@@ -741,7 +802,7 @@ let carrierEventScopeValidationTests =
                                     debugRulesOnly = false
                                     debugMode = false } }
 
-                  let stlGame = STLGame(settings)
+                  use stlGame = new STLGame(settings)
                   let stl = stlGame :> IGame<STLComputedData>
 
                   let completionNeedle = "carrier_completion_marker = yes"

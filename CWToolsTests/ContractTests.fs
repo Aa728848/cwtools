@@ -136,41 +136,140 @@ let carrierScopeContractTests =
                   (CarrierContribution.semanticFingerprint changed)
                   "event identity changes must invalidate the Carrier snapshot" }
 
-          test "carrier build lane never waits on itself after a generation change" {
-              let lane = STLGameFunctions.CarrierSnapshotBuildLane<int>()
-              let mutable nestedBuildRan = false
+          test "carrier scheduler keeps only the newest A-B-C request" {
+              let scheduled = System.Collections.Generic.Queue<unit -> unit>()
+              let mutable captured = "A"
+              let builds = ResizeArray<string>()
+              let gate =
+                  STLGameFunctions.CarrierSnapshotBuildGate<string, string, string>(
+                      (fun () -> struct (builds.Count, [| captured |])),
+                      (fun _ key _ entities cancellationToken ->
+                          cancellationToken.ThrowIfCancellationRequested()
+                          let result = $"%s{key}:%s{entities[0]}"
+                          builds.Add result
+                          result),
+                      schedule = scheduled.Enqueue)
 
-              let resolveOrFallback generation =
-                  if lane.IsBuildingOnCurrentThread then
-                      "fallback"
-                  else
-                      lane.Run(
-                          generation,
-                          fun () ->
-                              nestedBuildRan <- true
-                              "built"
-                      )
+              let a = gate.Request "A"
+              captured <- "B"
+              let b = gate.Request "B"
+              captured <- "C"
+              let c = gate.Request "C"
 
-              let task =
-                  System.Threading.Tasks.Task.Run(fun () ->
-                      lane.Run(
-                          1,
-                          fun () ->
-                              // Simulate Invalidate advancing the target while the
-                              // old generation is still inside buildSnapshot.
-                              resolveOrFallback 2
-                      ))
+              Expect.equal scheduled.Count 1 "only A may occupy the scheduler"
+              Expect.isTrue b.retry.Value.IsCompleted "C must release the superseded B retry"
+              Expect.isFalse c.retry.Value.IsCompleted "C waits for the active A owner to exit"
+              scheduled.Dequeue() ()
+              Expect.isTrue a.task.Value.IsCanceled "A is cancelled when B supersedes it"
+              Expect.isTrue c.retry.Value.IsCompleted "A exit releases the newest C retry"
 
+              let cBuild = gate.Request "C"
+              Expect.equal scheduled.Count 1 "the newest request starts exactly once"
+              scheduled.Dequeue() ()
+              Expect.equal cBuild.task.Value.Result "C:C" "C captures the newest entity view"
+              let published = gate.Request "C"
+              Expect.equal published.exact (Some "C:C") "only C is published"
+              Expect.sequenceEqual builds [ "C:C" ] "neither stale A nor superseded B may build"
+              (gate :> IDisposable).Dispose() }
+
+          test "carrier scheduler coalesces same-key callers" {
+              let scheduled = System.Collections.Generic.Queue<unit -> unit>()
+              let mutable captures = 0
+              let gate =
+                  STLGameFunctions.CarrierSnapshotBuildGate<int, int, int>(
+                      (fun () ->
+                          captures <- captures + 1
+                          struct (captures, [| captures |])),
+                      (fun _ key _ entities _ -> key + entities[0]),
+                      schedule = scheduled.Enqueue)
+
+              let first = gate.Request 10
+              let second = gate.Request 10
+              Expect.equal captures 1 "same-key callers share one captured entity view"
+              Expect.equal scheduled.Count 1 "same-key callers schedule one worker"
               Expect.isTrue
-                  (task.Wait(TimeSpan.FromSeconds 2.0))
-                  "cross-generation re-entry must not block on the lane already held by this builder"
-              Expect.equal task.Result "fallback" "the stale builder should use an incomplete snapshot"
-              Expect.isFalse nestedBuildRan "the re-entrant generation must not start inside the old builder"
-              Expect.equal
-                  (resolveOrFallback 2)
-                  "built"
-                  "the next generation should acquire the lane after the stale builder exits"
-              Expect.isTrue nestedBuildRan "the replacement generation should eventually build" } ]
+                  (obj.ReferenceEquals(first.task.Value, second.task.Value))
+                  "same-key callers observe the same completion task"
+              scheduled.Dequeue() ()
+              Expect.equal first.task.Value.Result 11 "the shared build completes normally"
+              Expect.equal (gate.Request 10).exact (Some 11) "the shared result is published once"
+              (gate :> IDisposable).Dispose() }
+
+          test "carrier invalidation is a publication barrier" {
+              use started = new ManualResetEventSlim(false)
+              use release = new ManualResetEventSlim(false)
+              let mutable result = "old"
+              let gate =
+                  STLGameFunctions.CarrierSnapshotBuildGate<int, unit, string>(
+                      (fun () -> struct (0, [| () |])),
+                      (fun _ _ _ _ _ ->
+                          started.Set()
+                          release.Wait()
+                          result),
+                      schedule = (fun work -> System.Threading.Tasks.Task.Run(Action work) |> ignore))
+
+              let stale = gate.Request 1
+              Expect.isTrue (started.Wait(TimeSpan.FromSeconds 2.0)) "the stale build must start"
+              gate.Invalidate()
+              release.Set()
+              Expect.throwsT<AggregateException>
+                  (fun () -> stale.task.Value.Wait())
+                  "the invalidated worker completes as cancelled"
+              result <- "new"
+              let afterBarrier = gate.Request 1
+              Expect.isNone afterBarrier.exact "invalidation must bar publication of the old result"
+              Expect.equal afterBarrier.task.Value.Result "new" "the next generation builds afresh"
+              Expect.equal (gate.Request 1).exact (Some "new") "only the new generation is published"
+              (gate :> IDisposable).Dispose() }
+
+          test "carrier shutdown cancels and joins an active build" {
+              use started = new ManualResetEventSlim(false)
+              let gate =
+                  STLGameFunctions.CarrierSnapshotBuildGate<int, unit, int>(
+                      (fun () -> struct (0, [| () |])),
+                      (fun _ _ _ _ cancellationToken ->
+                          started.Set()
+                          cancellationToken.WaitHandle.WaitOne() |> ignore
+                          cancellationToken.ThrowIfCancellationRequested()
+                          1))
+
+              let active = gate.Request 1
+              Expect.isTrue (started.Wait(TimeSpan.FromSeconds 2.0)) "the active build must start"
+              let shutdown = gate.ShutdownAsync()
+              Expect.isTrue (shutdown.Wait(TimeSpan.FromSeconds 2.0)) "shutdown waits for worker cancellation"
+              Expect.isTrue active.task.Value.IsCanceled "the active caller observes cancellation"
+              Expect.throwsT<ObjectDisposedException>
+                  (fun () -> gate.Request 1 |> ignore)
+                  "shutdown rejects new work"
+              (gate :> IDisposable).Dispose() }
+
+          test "carrier shutdown preserves active build faults" {
+              use started = new ManualResetEventSlim(false)
+              use release = new ManualResetEventSlim(false)
+              let failure = InvalidOperationException("carrier build failed")
+              let gate =
+                  STLGameFunctions.CarrierSnapshotBuildGate<int, unit, int>(
+                      (fun () -> struct (0, [| () |])),
+                      (fun _ _ _ _ _ ->
+                          started.Set()
+                          release.Wait()
+                          raise failure))
+
+              gate.Request 1 |> ignore
+              Expect.isTrue (started.Wait(TimeSpan.FromSeconds 2.0)) "the faulting build must start"
+              let shutdown = gate.ShutdownAsync()
+              release.Set()
+              let observed =
+                  try
+                      shutdown.GetAwaiter().GetResult()
+                      None
+                  with :? InvalidOperationException as error ->
+                      Some error
+              Expect.isSome observed "shutdown must surface a worker fault"
+              Expect.equal observed.Value.Message failure.Message "shutdown preserves the original fault"
+              Expect.throwsT<InvalidOperationException>
+                  (fun () -> (gate :> IDisposable).Dispose())
+                  "synchronous disposal preserves the same fault" } ]
 
 [<Tests>]
 let localValidationContractTests =

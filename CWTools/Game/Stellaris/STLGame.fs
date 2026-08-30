@@ -1,7 +1,6 @@
 namespace CWTools.Games.Stellaris
 
 open System
-open System.Collections.Concurrent
 open System.Collections.Generic
 open System.Diagnostics
 open System.Threading
@@ -834,28 +833,264 @@ module STLGameFunctions =
           resourceEpoch: int
           carrierEpoch: int }
 
-    /// Serialises expensive Carrier snapshot builds and identifies re-entrant
-    /// resolution on the active builder thread. A builder may outlive the epoch
-    /// it started for, so re-entry must be detected independently of the key.
-    type internal CarrierSnapshotBuildLane<'Key>() =
-        let gate = new SemaphoreSlim(1, 1)
-        let buildingKey = new ThreadLocal<'Key option>(fun () -> None)
+    type internal CarrierSnapshotBuildAccess<'Key, 'Result> =
+        { key: struct ('Key * int)
+          exact: 'Result option
+          fallback: 'Result option
+          task: Task<'Result> option
+          retry: Task option }
 
-        member _.IsBuildingOnCurrentThread = buildingKey.Value.IsSome
+    type private CarrierSnapshotActiveBuild<'Key, 'Entity, 'Result> =
+        { key: struct ('Key * int)
+          resourceEpoch: int
+          entities: 'Entity array
+          cancellation: CancellationTokenSource
+          completion: TaskCompletionSource<'Result>
+          owner: int64 }
 
-        member _.Run(key: 'Key, build: unit -> 'Result) =
-            gate.Wait()
+    type private CarrierSnapshotPendingBuild<'Key> =
+        { key: struct ('Key * int)
+          signal: TaskCompletionSource<unit> }
 
+    /// Owns the complete Carrier snapshot lifecycle. Pending work deliberately
+    /// stores no entity view: only a caller can retry and capture resources while
+    /// it still owns the game-state read lock.
+    type internal CarrierSnapshotBuildGate<'Key, 'Entity, 'Result when 'Key: equality>
+        (
+            capture: unit -> struct (int * 'Entity array),
+            build: int -> 'Key -> int -> 'Entity array -> CancellationToken -> 'Result,
+            ?schedule: (unit -> unit) -> unit
+        ) =
+
+        let gate = obj ()
+        let schedule = defaultArg schedule (fun work -> Task.Run(Action work) |> ignore)
+        let buildingOwner = new ThreadLocal<int64 option>(fun () -> None)
+        let mutable activeBuild: CarrierSnapshotActiveBuild<'Key, 'Entity, 'Result> option = None
+        let mutable pending: CarrierSnapshotPendingBuild<'Key> option = None
+        let mutable lastCompleted: (struct ('Key * int) * 'Result) option = None
+        let mutable target: struct ('Key * int) option = None
+        let mutable generation = 0
+        let mutable nextOwner = 0L
+        let mutable shutdownTask: Task option = None
+        let mutable isShutdown = false
+
+        let newSignal () =
+            TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+        let signal (pendingBuild: CarrierSnapshotPendingBuild<'Key>) =
+            pendingBuild.signal.TrySetResult(()) |> ignore
+
+        let cancel (active: CarrierSnapshotActiveBuild<'Key, 'Entity, 'Result>) =
             try
-                let previousKey = buildingKey.Value
-                buildingKey.Value <- Some key
+                active.cancellation.Cancel()
+            with :? ObjectDisposedException ->
+                // finish may win after the owner check but before cancellation
+                // runs outside the gate. Completion already makes cancellation moot.
+                ()
 
+        let finish
+            (active: CarrierSnapshotActiveBuild<'Key, 'Entity, 'Result>)
+            (outcome: Choice<'Result, OperationCanceledException, exn>)
+            =
+            let pendingToSignal =
+                lock gate (fun () ->
+                    match activeBuild with
+                    | Some current when current.owner = active.owner ->
+                        match outcome with
+                        | Choice1Of3 result
+                            when not active.cancellation.IsCancellationRequested
+                                 && not isShutdown
+                                 && target = Some active.key
+                                 && pending.IsNone ->
+                            // This is the sole publication point. The owner check
+                            // prevents a late worker from overwriting newer state.
+                            lastCompleted <- Some(active.key, result)
+                        | _ -> ()
+
+                        activeBuild <- None
+                        pending
+                    | _ -> None)
+
+            active.cancellation.Dispose()
+
+            match outcome with
+            | Choice1Of3 result -> active.completion.TrySetResult(result) |> ignore
+            | Choice2Of3 _ -> active.completion.TrySetCanceled() |> ignore
+            | Choice3Of3 error -> active.completion.TrySetException(error) |> ignore
+
+            pendingToSignal |> Option.iter signal
+
+        let run (active: CarrierSnapshotActiveBuild<'Key, 'Entity, 'Result>) =
+            let previousOwner = buildingOwner.Value
+            buildingOwner.Value <- Some active.owner
+
+            let outcome =
                 try
-                    build ()
-                finally
-                    buildingKey.Value <- previousKey
-            finally
-                gate.Release() |> ignore
+                    let struct (baseKey, buildGeneration) = active.key
+                    active.cancellation.Token.ThrowIfCancellationRequested()
+                    let result =
+                        build active.resourceEpoch baseKey buildGeneration active.entities active.cancellation.Token
+                    active.cancellation.Token.ThrowIfCancellationRequested()
+                    Choice1Of3 result
+                with
+                | :? OperationCanceledException as cancelled -> Choice2Of3 cancelled
+                | error -> Choice3Of3 error
+
+            // Completion is observable as the worker lifecycle barrier, so restore
+            // re-entrancy state before completing waiters or shutdown.
+            let completedOutcome =
+                try
+                    buildingOwner.Value <- previousOwner
+                    outcome
+                with error ->
+                    Choice3Of3 error
+
+            finish active completedOutcome
+
+        let observeShutdown (active: CarrierSnapshotActiveBuild<'Key, 'Entity, 'Result> option) =
+            match active with
+            | None ->
+                buildingOwner.Dispose()
+                Task.CompletedTask
+            | Some active ->
+                active.completion.Task.ContinueWith(
+                    (fun (completed: Task<'Result>) ->
+                        try
+                            if completed.IsFaulted then
+                                let error =
+                                    if completed.Exception.InnerExceptions.Count = 1 then
+                                        completed.Exception.InnerExceptions[0]
+                                    else
+                                        completed.Exception :> exn
+                                raise error
+                            // Cancellation is expected and observed during shutdown.
+                            ()
+                        finally
+                            buildingOwner.Dispose()),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default
+                )
+                :> Task
+
+        member _.IsBuildingOnCurrentThread = buildingOwner.Value.IsSome
+
+        member _.Request(baseKey: 'Key) =
+            let mutable cancellation: CancellationTokenSource option = None
+            let mutable replacedPending: CarrierSnapshotPendingBuild<'Key> option = None
+            let mutable start: CarrierSnapshotActiveBuild<'Key, 'Entity, 'Result> option = None
+
+            let access =
+                lock gate (fun () ->
+                    if isShutdown then
+                        raise (ObjectDisposedException(nameof CarrierSnapshotBuildGate))
+
+                    let key = struct (baseKey, generation)
+                    let exact =
+                        lastCompleted
+                        |> Option.bind (fun (completedKey, result) ->
+                            if completedKey = key then Some result else None)
+
+                    match exact, activeBuild with
+                    | Some result, _ ->
+                        { key = key
+                          exact = Some result
+                          fallback = Some result
+                          task = None
+                          retry = None }
+                    | None, Some active when active.key = key ->
+                        { key = key
+                          exact = None
+                          fallback = lastCompleted |> Option.map snd
+                          task = Some active.completion.Task
+                          retry = None }
+                    | None, Some active ->
+                        target <- Some key
+                        cancellation <- Some active.cancellation
+                        replacedPending <- pending
+                        let pendingBuild = { key = key; signal = newSignal () }
+                        pending <- Some pendingBuild
+                        { key = key
+                          exact = None
+                          fallback = lastCompleted |> Option.map snd
+                          task = None
+                          retry = Some(pendingBuild.signal.Task :> Task) }
+                    | None, None ->
+                        target <- Some key
+                        replacedPending <- pending
+                        pending <- None
+                        let struct (resourceEpoch, entities) = capture ()
+                        let owner = Interlocked.Increment(&nextOwner)
+                        let active =
+                            { key = key
+                              resourceEpoch = resourceEpoch
+                              entities = entities
+                              cancellation = new CancellationTokenSource()
+                              completion =
+                                TaskCompletionSource<'Result>(TaskCreationOptions.RunContinuationsAsynchronously)
+                              owner = owner }
+                        activeBuild <- Some active
+                        start <- Some active
+                        { key = key
+                          exact = None
+                          fallback = lastCompleted |> Option.map snd
+                          task = Some active.completion.Task
+                          retry = None })
+
+            replacedPending |> Option.iter signal
+            cancellation
+            |> Option.iter (fun source ->
+                try
+                    source.Cancel()
+                with :? ObjectDisposedException ->
+                    ())
+
+            start
+            |> Option.iter (fun active ->
+                try
+                    schedule (fun () -> run active)
+                with error ->
+                    finish active (Choice3Of3 error))
+
+            access
+
+        member _.Invalidate() =
+            let active, pendingToSignal =
+                lock gate (fun () ->
+                    generation <- generation + 1
+                    target <- None
+                    let active = activeBuild
+                    let pendingToSignal = pending
+                    pending <- None
+                    active, pendingToSignal)
+
+            // Publication is already barred by target=None under the gate.
+            // Cancellation runs outside the gate in case callbacks execute inline.
+            pendingToSignal |> Option.iter signal
+            active |> Option.iter cancel
+
+        member _.ShutdownAsync() =
+            let task, active, pendingToSignal =
+                lock gate (fun () ->
+                    match shutdownTask with
+                    | Some task -> task, None, None
+                    | None ->
+                        isShutdown <- true
+                        generation <- generation + 1
+                        target <- None
+                        let active = activeBuild
+                        let pendingToSignal = pending
+                        pending <- None
+                        let task = observeShutdown active
+                        shutdownTask <- Some task
+                        task, active, pendingToSignal)
+
+            pendingToSignal |> Option.iter signal
+            active |> Option.iter cancel
+            task
+
+        interface IDisposable with
+            member this.Dispose() = this.ShutdownAsync().GetAwaiter().GetResult()
 
     type internal CarrierScopeResolver
         (
@@ -864,18 +1099,6 @@ module STLGameFunctions =
             getInfoService: unit -> InfoService option
         ) =
 
-        let gate = obj ()
-        let mutable lastCompletedSnapshot: CarrierInferenceSnapshot option = None
-        // ConcurrentDictionary value factories may run more than once. Store a
-        // Lazy<Task<_>> so only the winning value starts the multi-GB build.
-        let snapshotTasks =
-            ConcurrentDictionary<(int * int), Lazy<Task<CarrierInferenceSnapshot>>>()
-        // Epoch-specific tasks share one build lane. A rapid edit sequence may
-        // enqueue newer epochs, but it must never run several multi-GB builds in
-        // parallel. Queued stale epochs are discarded before allocating.
-        let buildLane = CarrierSnapshotBuildLane<int * int>()
-        let mutable currentTarget: (int * int) option = None
-        let mutable generation = 0
         let mutable snapshotHitCount = 0L
         let mutable snapshotMissCount = 0L
         let mutable snapshotBuildCount = 0L
@@ -1334,7 +1557,9 @@ module STLGameFunctions =
                     |> List.fold (fun context node -> changeContextByKey node.Key context) baseContext)
                 |> Option.defaultValue baseContext)
 
-        let buildSnapshot resourceEpoch carrierEpoch buildGeneration (entities: Entity array) =
+        let buildSnapshot resourceEpoch carrierEpoch buildGeneration (entities: Entity array) (cancellationToken: CancellationToken) =
+            let checkCancellation () = cancellationToken.ThrowIfCancellationRequested()
+            checkCancellation ()
             let buildNumber = Interlocked.Increment(&snapshotBuildCount)
             let startedAt = Stopwatch.StartNew()
             let allocatedBefore = GC.GetTotalAllocatedBytes(false)
@@ -1345,6 +1570,7 @@ module STLGameFunctions =
             let expandedNodeOwners = emptyExpandedNodeOwners ()
 
             for entity in entities do
+                checkCancellation ()
                 for root in entity.entity.Nodes do
                     for node in allNodes root do
                         if
@@ -1369,6 +1595,7 @@ module STLGameFunctions =
             let mutable situationScopes: Map<string, Set<Scope>> = Map.empty
 
             for entity in entities do
+                checkCancellation ()
                 for root in entity.entity.Nodes do
                     for node in allNodes root do
                         match normalizeKey node.Key with
@@ -1433,6 +1660,7 @@ module STLGameFunctions =
                         evidence <- addEvidence eventId $"carrier_is_type in %s{root.Position.FileName}:%i{root.Position.StartLine}" evidence
 
             for entity in entities do
+                checkCancellation ()
                 for root in entity.entity.Nodes do
                     let rootEventId = root.TagText "id" |> cleanValue
                     let callerEventId =
@@ -1541,6 +1769,7 @@ module STLGameFunctions =
             let mutable changed = true
             let mutable iterations = 0
             while changed && iterations < 64 do
+                checkCancellation ()
                 changed <- false
                 iterations <- iterations + 1
 
@@ -1606,6 +1835,7 @@ module STLGameFunctions =
             // event root scope as false evidence.
             if getInfoService().IsSome then
                 for pair in eventDefinitions do
+                    checkCancellation ()
                     let eventId = pair.Key
                     let struct (entity, root) = pair.Value
                     let rootContext =
@@ -1705,6 +1935,7 @@ module STLGameFunctions =
             let mutable targetScopeIterations = 0
 
             while targetScopesChanged && targetScopeIterations < 64 do
+                checkCancellation ()
                 targetScopesChanged <- false
                 targetScopeIterations <- targetScopeIterations + 1
 
@@ -1738,6 +1969,8 @@ module STLGameFunctions =
                         eventSavedTargetScopes <- eventSavedTargetScopes |> Map.add targetKey after
                         targetScopesChanged <- true
 
+            checkCancellation ()
+
             let snapshot =
                 { resourceEpoch = resourceEpoch
                   carrierEpoch = carrierEpoch
@@ -1753,26 +1986,35 @@ module STLGameFunctions =
                   situationEventTargetScopes = situationEventTargetScopes
                   expandedNodeOwners = expandedNodeOwners }
 
+            checkCancellation ()
             startedAt.Stop()
             let allocatedAfter = GC.GetTotalAllocatedBytes(false)
             Utils.log $"CarrierSnapshot build-end build={buildNumber} resourceEpoch={resourceEpoch} carrierEpoch={carrierEpoch} generation={buildGeneration} entities={entities.Length} elapsedMs={startedAt.ElapsedMilliseconds} allocDeltaMB={(allocatedAfter - allocatedBefore) / 1048576L}"
             snapshot
 
-        let currentSnapshot () =
+        let snapshotGate =
+            CarrierSnapshotBuildGate<int, Entity, CarrierInferenceSnapshot>(
+                (fun () ->
+                    let resourceEpoch = ResourceManagerEager.currentResource ()
+                    let entities =
+                        resources.AllEntities()
+                        |> Seq.choose (fun struct (entity, _) ->
+                            if CarrierContribution.isRelevantEntity entity then Some entity else None)
+                        |> Seq.toArray
+                    struct (resourceEpoch, entities)),
+                (fun resourceEpoch carrierEpoch buildGeneration entities cancellationToken ->
+                    Utils.log $"CarrierSnapshot miss resourceEpoch={resourceEpoch} carrierEpoch={carrierEpoch} generation={buildGeneration} hits={Volatile.Read(&snapshotHitCount)} misses={Volatile.Read(&snapshotMissCount)}"
+                    buildSnapshot resourceEpoch carrierEpoch buildGeneration entities cancellationToken)
+            )
+
+        let rec currentSnapshot () =
             let resourceEpoch = ResourceManagerEager.currentResource ()
             let carrierEpoch = ResourceManagerEager.currentCarrier ()
-            let buildGeneration = lock gate (fun () -> generation)
-            // Resource-only edits do not invalidate Carrier inference. The
-            // snapshot keeps its capture resource epoch for diagnostics, while
-            // carrierEpoch plus the resolver generation define semantic identity.
-            let key = (carrierEpoch, buildGeneration)
-            let isCurrent (snapshot: CarrierInferenceSnapshot) =
-                snapshot.carrierEpoch = carrierEpoch && snapshot.generation = buildGeneration
 
-            let emptySnapshot () =
+            let emptySnapshot generation =
                 { resourceEpoch = resourceEpoch
                   carrierEpoch = carrierEpoch
-                  generation = buildGeneration
+                  generation = generation
                   eventHosts = Map.empty
                   eventEvidence = Map.empty
                   eventFromChains = Map.empty
@@ -1790,107 +2032,38 @@ module STLGameFunctions =
                   resourceEpoch = resourceEpoch
                   carrierEpoch = carrierEpoch }
 
-            // Publish/read the target under the same gate. The old implementation
-            // accessed these mutable fields without synchronisation while builders
-            // published from a different thread.
-            let completed =
-                lock gate (fun () ->
-                    currentTarget <- Some key
-                    lastCompletedSnapshot |> Option.filter isCurrent)
+            let rec request () =
+                let access = snapshotGate.Request carrierEpoch
+                let struct (_, generation) = access.key
 
-            match completed with
-            | Some snapshot ->
-                Interlocked.Increment(&snapshotHitCount) |> ignore
-                result snapshot true
-            | None when buildLane.IsBuildingOnCurrentThread ->
-                // An edit can advance the generation while the old builder is
-                // still running. That builder must not enqueue the new key and
-                // then wait on the single build lane it already owns.
-                result (emptySnapshot ()) false
-            | None ->
-                Interlocked.Increment(&snapshotMissCount) |> ignore
-                let lazyTask =
-                    snapshotTasks.GetOrAdd(
-                        key,
-                        fun _ ->
-                            // Capture the resource view before dispatch. LSP callers
-                            // hold the game-state read lock here; the background task
-                            // must not enumerate a live map while a writer mutates it.
-                            let entities =
-                                resources.AllEntities()
-                                |> Seq.choose (fun struct (entity, _) ->
-                                    if CarrierContribution.isRelevantEntity entity then Some entity else None)
-                                |> Seq.toArray
-
-                            System.Lazy<Task<CarrierInferenceSnapshot>>(
-                                (fun () ->
-                                    Utils.log $"CarrierSnapshot miss resourceEpoch={resourceEpoch} carrierEpoch={carrierEpoch} generation={buildGeneration} hits={Volatile.Read(&snapshotHitCount)} misses={Volatile.Read(&snapshotMissCount)}"
-                                    Task.Run(fun () ->
-                                        // Fail fast before occupying the build lane: an edit may have
-                                        // advanced the epoch while this task was queued, so avoid
-                                        // blocking a thread-pool thread for a build that is already stale.
-                                        if not (lock gate (fun () -> currentTarget = Some key)) then
-                                            raise (OperationCanceledException("Carrier snapshot epoch was superseded before build start"))
-
-                                        buildLane.Run(
-                                            key,
-                                            fun () ->
-                                                let stillCurrent = lock gate (fun () -> currentTarget = Some key)
-                                                if not stillCurrent then
-                                                    raise (OperationCanceledException("Carrier snapshot epoch was superseded before build start"))
-                                                let snapshot = buildSnapshot resourceEpoch carrierEpoch buildGeneration entities
-
-                                                lock gate (fun () ->
-                                                    if currentTarget = Some key then
-                                                        lastCompletedSnapshot <- Some snapshot
-                                                        let staleKeys = snapshotTasks.Keys |> Seq.toArray
-
-                                                        for staleKey in staleKeys do
-                                                            if staleKey <> key then
-                                                                snapshotTasks.TryRemove(staleKey) |> ignore)
-
-                                                snapshot
-                                        ))),
-                                LazyThreadSafetyMode.ExecutionAndPublication
-                            )
-                    )
-
-                let task = lazyTask.Value
-
-                if task.IsCompletedSuccessfully then
-                    let snapshot = task.Result
-                    lock gate (fun () ->
-                        if currentTarget = Some key then lastCompletedSnapshot <- Some snapshot)
+                match access.exact with
+                | Some snapshot ->
+                    Interlocked.Increment(&snapshotHitCount) |> ignore
                     result snapshot true
-                else
-                    if task.IsFaulted || task.IsCanceled then
-                        // Do not pin a failed task forever; the next request retries.
-                        snapshotTasks.TryRemove(key) |> ignore
-
-                    match lock gate (fun () -> lastCompletedSnapshot) with
-                    | Some fallback ->
-                        // During normal editing, keep requests responsive while the
-                        // new epoch is built. Exact resolution rejects this stale
-                        // snapshot via isComplete=false.
+                | None when snapshotGate.IsBuildingOnCurrentThread ->
+                    access.fallback
+                    |> Option.defaultWith (fun () -> emptySnapshot generation)
+                    |> fun fallback -> result fallback false
+                | None ->
+                    Interlocked.Increment(&snapshotMissCount) |> ignore
+                    match access.fallback, access.task, access.retry with
+                    | Some fallback, _, _ ->
+                        // Preserve responsiveness during edits. Exact carrier
+                        // semantics reject this stale snapshot until publication.
                         result fallback false
-                    | None when task.IsFaulted || task.IsCanceled ->
-                        result (emptySnapshot ()) false
-                    | None ->
-                        // Initial ComputedData construction needs Carrier inference
-                        // to be complete. Returning an empty snapshot here silently
-                        // degrades event scopes (for example Country becomes Any).
-                        // Re-entrant builder lookups were handled above, so waiting
-                        // here cannot wait on the builder's own thread.
+                    | None, Some task, _ ->
                         try
-                            let snapshot = task.GetAwaiter().GetResult()
-                            lock gate (fun () ->
-                                if currentTarget = Some key then lastCompletedSnapshot <- Some snapshot)
-                            result snapshot true
-                        with _ ->
-                            // A failed initial build is retryable and must not poison
-                            // all future lookups with a permanently faulted task.
-                            snapshotTasks.TryRemove(key) |> ignore
-                            result (emptySnapshot ()) false
+                            task.GetAwaiter().GetResult() |> ignore
+                            request ()
+                        with
+                        | :? OperationCanceledException -> currentSnapshot ()
+                        | _ -> result (emptySnapshot generation) false
+                    | None, None, Some retry ->
+                        retry.GetAwaiter().GetResult()
+                        currentSnapshot ()
+                    | None, None, None -> result (emptySnapshot generation) false
+
+            request ()
 
         let tryEntityAndRoot (snapshot: CarrierInferenceSnapshot) (node: Node) =
             match snapshot.expandedNodeOwners.TryGetValue node with
@@ -1902,14 +2075,12 @@ module STLGameFunctions =
                     |> Seq.tryFind (fun root -> rangeContainsRange root.Position node.Position)
                     |> Option.map (fun root -> entity, root))
 
-        member _.Invalidate() =
-            lock gate (fun () ->
-                generation <- generation + 1
-                currentTarget <- None
-                // Keep the previous completed snapshot as a non-exact fallback
-                // while the new generation builds. Exact resolution checks
-                // isComplete and will reject stale scope data.
-                snapshotTasks.Clear())
+        member _.Invalidate() = snapshotGate.Invalidate()
+
+        member _.ShutdownAsync() = snapshotGate.ShutdownAsync()
+
+        interface IDisposable with
+            member this.Dispose() = this.ShutdownAsync().GetAwaiter().GetResult()
 
         member _.Resolve(node: IClause, context: ScopeContext) =
             match node with
@@ -2639,6 +2810,18 @@ type STLGame(setupSettings: StellarisSettings) =
     interface ISemanticDeltaProvider with
         member _.SemanticSignatureForFile filepath =
             semanticSignatureForFile game filepath
+
+    interface IDisposable with
+        member _.Dispose() =
+            dynamicScopeOverride <- fun _ _ -> None
+            getActiveInfoService <- fun () -> None
+            (carrierScopeResolver :> IDisposable).Dispose()
+
+    interface IAsyncDisposable with
+        member _.DisposeAsync() =
+            dynamicScopeOverride <- fun _ _ -> None
+            getActiveInfoService <- fun () -> None
+            ValueTask(carrierScopeResolver.ShutdownAsync())
 
     interface ICancellableFileValidation with
         member _.ValidateFileInteractiveCancellable(staged, shouldCancel) =
