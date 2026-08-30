@@ -501,6 +501,36 @@ let stagedRefreshTests =
               let actualFields = knownSubtypes |> Array.collect (fun lookup -> mutableFields (lookup.GetType()) |> Set.toArray) |> Set.ofArray
               Expect.equal actualFields expectedFields "every mutable source field must be represented explicitly"
 
+              let canonicalFields (lookupType: Type) =
+                  let rec fields current =
+                      if isNull current || current = typeof<obj> then [||]
+                      else
+                          Array.append
+                              (current.GetFields(BindingFlags.Instance ||| BindingFlags.NonPublic ||| BindingFlags.Public ||| BindingFlags.DeclaredOnly)
+                               |> Array.filter (fun field -> not field.IsInitOnly && not (ignoredDerivedFields.Contains field.Name)))
+                              (fields current.BaseType)
+                  fields lookupType
+
+              let assertCanonicalFieldsRoundTrip (source: Lookup) (destination: Lookup) =
+                  let destinationIdentity = destination :> obj
+                  destination.ApplyFieldSnapshot(source.CreateFieldSnapshot())
+                  Expect.isTrue (Object.ReferenceEquals(destinationIdentity, destination)) $"{source.GetType().Name} apply preserves destination identity"
+
+                  for field in canonicalFields (source.GetType()) do
+                      let sourceValue = field.GetValue source
+                      let destinationValue = field.GetValue destination
+                      Expect.equal destinationValue sourceValue $"{source.GetType().Name}.{field.Name} is copied"
+
+                      if not field.FieldType.IsValueType && not (isNull sourceValue) then
+                          Expect.isTrue
+                              (Object.ReferenceEquals(sourceValue, destinationValue))
+                              $"{source.GetType().Name}.{field.Name} remains structurally shared"
+
+              let freshTargets: Lookup array =
+                  [| Lookup(); JominiLookup(); CK2Lookup(); EU4Lookup(); HOI4Lookup(); STLLookup(); IRLookup(); VIC2Lookup() |]
+
+              Array.iter2 assertCanonicalFieldsRoundTrip knownSubtypes freshTargets
+
               let mismatched = Lookup()
               mismatched.scriptedVariables <- [ "@sentinel", "unchanged" ]
               Expect.throws (fun () -> mismatched.ApplyFieldSnapshot snapshot) "snapshot subtype mismatch must fail"
