@@ -274,11 +274,24 @@ module CarrierContribution =
 /// canonical logical/file paths are the stable residual ordering policy; declaration
 /// order within a file remains significant and the first contribution wins.
 module ScriptedVariableContribution =
-    let private normalisePath (path: string) = path.Replace('\\', '/').ToLowerInvariant()
+    let private normaliseSeparators (path: string) = path.Replace('\\', '/')
+
+    let private pathComparer isWindows =
+        if isWindows then StringComparer.OrdinalIgnoreCase else StringComparer.Ordinal
+
+    /// Injectable for platform-aware tests. The original ordinal path is the final
+    /// tie-break so distinct Unix paths, and case variants on Windows, never compare equal.
+    let comparePathForPlatform isWindows (left: string) (right: string) =
+        let normalisedLeft = normaliseSeparators left
+        let normalisedRight = normaliseSeparators right
+        let platformOrder = pathComparer isWindows |> fun comparer -> comparer.Compare(normalisedLeft, normalisedRight)
+
+        if platformOrder <> 0 then platformOrder
+        else StringComparer.Ordinal.Compare(normalisedLeft, normalisedRight)
 
     let isScriptedVariablesPath (path: string) =
-        normalisePath path
-        |> fun value -> value.Contains("common/scripted_variables/", StringComparison.Ordinal)
+        normaliseSeparators path
+        |> fun value -> value.Contains("common/scripted_variables/", StringComparison.OrdinalIgnoreCase)
 
     let isScriptedVariablesEntity (entity: Entity) =
         isScriptedVariablesPath entity.logicalpath || isScriptedVariablesPath entity.filepath
@@ -308,11 +321,13 @@ module ScriptedVariableContribution =
     let collect (entities: seq<Entity>) =
         let orderedEntities = entities |> Seq.toArray
 
+        let isWindows = OperatingSystem.IsWindows()
+
         orderedEntities
         |> Array.sortInPlaceWith (fun left right ->
-            let logical = StringComparer.Ordinal.Compare(normalisePath left.logicalpath, normalisePath right.logicalpath)
+            let logical = comparePathForPlatform isWindows left.logicalpath right.logicalpath
             if logical <> 0 then logical
-            else StringComparer.Ordinal.Compare(normalisePath left.filepath, normalisePath right.filepath))
+            else comparePathForPlatform isWindows left.filepath right.filepath)
 
         let contributions = orderedEntities |> Array.collect variableLeaves
         let seenValues = HashSet<string>(StringComparer.Ordinal)

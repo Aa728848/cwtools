@@ -1655,7 +1655,31 @@ let incrementalScriptedRefreshTests =
     testSequenced
     <| testList
         "incremental scripted refresh"
-        [ testWithCapturedLogs "scripted-variable contribution-only stages track values names and paths" <| fun () ->
+        [ testCase "scripted-variable path ordering is platform-aware and total" <| fun () ->
+              let upper = "common/scripted_variables/A.txt"
+              let lower = "common/scripted_variables/a.txt"
+              Expect.isLessThan
+                  (ScriptedVariableContribution.comparePathForPlatform false upper lower)
+                  0
+                  "Unix ordering must preserve case and use ordinal order"
+              Expect.isGreaterThan
+                  (ScriptedVariableContribution.comparePathForPlatform false lower upper)
+                  0
+                  "Unix case-distinct paths must not compare equal"
+              Expect.isLessThan
+                  (ScriptedVariableContribution.comparePathForPlatform true upper lower)
+                  0
+                  "Windows ordering must case-fold, then use the original ordinal path as a deterministic tie-break"
+              Expect.isGreaterThan
+                  (ScriptedVariableContribution.comparePathForPlatform true lower upper)
+                  0
+                  "Windows case variants must not compare equal after the deterministic tie-break"
+              Expect.equal
+                  0
+                  (ScriptedVariableContribution.comparePathForPlatform false "common\\scripted_variables\\a.txt" lower)
+                  "separator variants of the same path may compare equal"
+
+          testWithCapturedLogs "scripted-variable contribution-only stages track values names and paths" <| fun () ->
               let stl, folder = stlScriptedGame ()
               let variableFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_variables", "incremental.txt"))
               let relativeFile = Path.GetRelativePath(Directory.GetCurrentDirectory(), variableFile)
