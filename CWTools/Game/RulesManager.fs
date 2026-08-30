@@ -956,14 +956,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             )
 
 
-        //let infoService = tempInfoService
-        // game.InfoService <- Some tempInfoService
-        if not rulesDataGenerated then
-            resources.ForceRulesDataGenerate()
-            rulesDataGenerated <- true
-        else
-            ()
-
+        // Computed-data lazies are rebuilt after the new services are published.
+        // Refresh derives its small cross-entity fact set directly from the raw entities.
         let predefValues =
             tempValues
             |> Map.map (fun k vs -> (expandPredefinedValues tempTypeMap lookup.enumDefs vs))
@@ -972,18 +966,39 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             |> Map.ofList
 
         let subTimer = System.Diagnostics.Stopwatch.StartNew()
-        let allComputedEntities =
+        let collectEntityFacts (entity: Entity) =
+            try
+                let referencedTypes, definedVariables, _, _, savedEventTargets = tempInfoService.BatchFolds entity
+                let scriptedEffectReferences =
+                    referencedTypes
+                    |> Seq.tryFind (fun reference -> reference.Key = "scripted_effect")
+                    |> Option.map (fun reference -> reference.Value |> Seq.toList)
+                    |> Option.defaultValue []
+                struct (definedVariables, scriptedEffectReferences, savedEventTargets)
+            with ex ->
+                // Keep refresh safe for unusual rule sets while retaining the old individual-fold behaviour.
+                logDiag $"Refresh compact fact batch failed for %s{entity.filepath}: %s{ex.Message}"
+                let scriptedEffectReferences =
+                    tempInfoService.GetReferencedTypes entity
+                    |> Seq.tryFind (fun reference -> reference.Key = "scripted_effect")
+                    |> Option.map (fun reference -> reference.Value |> Seq.toList)
+                    |> Option.defaultValue []
+                struct (
+                    tempInfoService.GetDefinedVariables entity,
+                    scriptedEffectReferences,
+                    tempInfoService.GetSavedEventTargets entity
+                )
+
+        let entityFacts =
             allEntitiesList
-            |> PSeq.map (fun struct (e, l) -> struct (e, l.Force()))
+            |> PSeq.map (fun struct (entity, _) -> collectEntityFacts entity)
             |> Seq.toArray
-        logDiag $"Refresh step allComputedEntities force: %0.3f{float subTimer.ElapsedMilliseconds / 1000.0}s"
+        logDiag $"Refresh step compact entity facts: %0.3f{float subTimer.ElapsedMilliseconds / 1000.0}s"
         subTimer.Restart()
 
         let results =
-            allComputedEntities
-            |> PSeq.map (fun struct (e, data) ->
-                (data.Definedvariables
-                 |> (Option.defaultWith (fun () -> tempInfoService.GetDefinedVariables e))))
+            entityFacts
+            |> Seq.map (fun struct (definedVariables, _, _) -> definedVariables)
             |> Seq.fold mergeDefinedVariables predefValues
         logDiag $"Refresh step GetDefinedVariables: %0.3f{float subTimer.ElapsedMilliseconds / 1000.0}s"
         subTimer.Restart()
@@ -1298,11 +1313,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                                 (direct, directEventTargets) :: nested
 
                 let rawReferencedExpansions =
-                    allComputedEntities
-                    |> PSeq.collect (fun struct (_, data) ->
-                        data.Referencedtypes
-                        |> Option.bind (Map.tryFind "scripted_effect")
-                        |> Option.defaultValue [])
+                    entityFacts
+                    |> PSeq.collect (fun struct (_, scriptedEffectReferences, _) -> scriptedEffectReferences)
                     |> PSeq.filter (fun reference -> reference.referenceType = ReferenceType.TypeDef)
                     |> PSeq.collect (fun reference ->
                         collectFromScriptedEffect
@@ -1315,8 +1327,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     |> Seq.toList
 
                 let scopedEventTargetExpansions =
-                    allComputedEntities
-                    |> PSeq.collect (fun struct (entity, _) ->
+                    allEntities
+                    |> PSeq.collect (fun entity ->
                         let logicalPath = entity.logicalpath.Replace('\\', '/')
                         let calls =
                             if logicalPath.StartsWith("common/scripted_effects/", StringComparison.OrdinalIgnoreCase) then
@@ -1370,10 +1382,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
         // eprintfn "vdi %A" results
         let savedEventTargetResults =
-            allComputedEntities
-            |> PSeq.map (fun struct (e, data) ->
-                (data.SavedEventTargets
-                 |> (Option.defaultWith (fun () -> tempInfoService.GetSavedEventTargets e))))
+            entityFacts
+            |> Seq.map (fun struct (_, _, savedEventTargets) -> savedEventTargets)
             |> Seq.fold
                 (fun (acc: ResizeArray<_>) e ->
                     acc.AddRange e

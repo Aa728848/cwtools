@@ -583,6 +583,86 @@ let stagedRefreshTests =
 
 
 [<Tests>]
+let lazyRefreshTests =
+    let createGame (files: (string * string) list) =
+        let root = Path.Combine(Path.GetTempPath(), "cwtools-lazy-refresh-" + Guid.NewGuid().ToString("N"))
+        for relativePath, text in files do
+            let path = Path.Combine(root, relativePath)
+            Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+            File.WriteAllText(path, text)
+
+        let configText = configFilesFromDir (Path.Combine(stellarisConfigRoot.Value, "config"))
+        let settings =
+            { emptyStellarisSettings root with
+                rules =
+                    Some
+                        { ruleFiles = configText
+                          validateRules = false
+                          debugRulesOnly = false
+                          debugMode = false } }
+        root, STLGame(settings)
+
+    let semanticFacts (game: STLGame) =
+        let variables =
+            game.Lookup.varDefInfo
+            |> Map.map (fun _ values -> values |> Array.map fst |> Array.sort)
+        let eventTargets =
+            game.Lookup.savedEventTargets
+            |> Seq.map (fun (name, _, scope) -> name, scope.ToString())
+            |> Seq.sort
+            |> Seq.toArray
+        variables, eventTargets
+
+    testList
+        "lazy refresh"
+        [ testWithCapturedLogs "events-only refresh preserves facts without creating computed data"
+          <| fun () ->
+              let root, concrete =
+                  createGame
+                      [ Path.Combine("events", "lazy_events.txt"),
+                        "namespace = lazy\ncountry_event = { id = lazy.1 hide_window = yes is_triggered_only = yes immediate = { save_event_target_as = lazy_target set_variable = { which = lazy_variable value = 1 } } }" ]
+              let game = concrete :> IGame<STLComputedData>
+              try
+                  let beforeFacts = semanticFacts concrete
+                  let beforeVariables, beforeTargets = beforeFacts
+                  Expect.contains beforeVariables.["variable"] "lazy_variable" "fixture must contribute the defined variable"
+                  Expect.isTrue (beforeTargets |> Array.exists (fun (name, _) -> name = "lazy_target")) "fixture must contribute the saved event target"
+                  game.RefreshCaches()
+                  Expect.equal (semanticFacts concrete) beforeFacts "compact refresh facts must match the established semantics"
+                  let stats = concrete.LastLazyRefreshStats |> Option.get
+                  Expect.equal stats.newlyCreated 0 "events-only refresh must not create computed-data values"
+                  Expect.equal stats.afterRefreshCreated stats.beforeCreated "refresh itself must leave lazy creation unchanged"
+                  Expect.equal stats.afterRecomputeCreated 0 "post-publication recompute must install fresh uncreated lazies"
+              finally
+                  (concrete :> IDisposable).Dispose()
+                  if Directory.Exists root then Directory.Delete(root, true)
+
+          testWithCapturedLogs "mixed refresh creates fewer computed values than total entities"
+          <| fun () ->
+              let root, concrete =
+                  createGame
+                      [ Path.Combine("events", "lazy_mixed_events.txt"),
+                        "namespace = lazy_mixed\ncountry_event = { id = lazy_mixed.1 hide_window = yes is_triggered_only = yes immediate = { lazy_save = { TARGET = mixed_target } } }"
+                        Path.Combine("common", "scripted_effects", "lazy_mixed_effects.txt"),
+                        "lazy_save = { save_event_target_as = $TARGET$ set_variable = { which = mixed_variable value = 1 } }" ]
+              let game = concrete :> IGame<STLComputedData>
+              try
+                  let firstLazy = game.AllEntities() |> Seq.head |> fun struct (_, data) -> data
+                  firstLazy.Force() |> ignore
+                  let beforeFacts = semanticFacts concrete
+                  let beforeVariables, beforeTargets = beforeFacts
+                  Expect.contains beforeVariables.["variable"] "mixed_variable" "scripted expansion must contribute the defined variable"
+                  Expect.isTrue (beforeTargets |> Array.exists (fun (name, _) -> name = "mixed_target")) "scripted expansion must contribute the saved event target"
+                  game.RefreshCaches()
+                  Expect.equal (semanticFacts concrete) beforeFacts "mixed compact refresh facts must remain semantically equivalent"
+                  let stats = concrete.LastLazyRefreshStats |> Option.get
+                  Expect.isLessThan stats.newlyCreated stats.total "refresh must create fewer computed values than the entity total"
+                  Expect.equal stats.afterRecomputeCreated 0 "recompute must replace mixed old lazies without forcing replacements"
+              finally
+                  (concrete :> IDisposable).Dispose()
+                  if Directory.Exists root then Directory.Delete(root, true) ]
+
+[<Tests>]
 let paramSlotCompletionTests =
     testList
         "param slot completion"

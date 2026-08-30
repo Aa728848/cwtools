@@ -20,6 +20,13 @@ type ValidationSettings =
       validateVanilla: bool
       experimental: bool }
 
+type internal LazyRefreshStats =
+    { beforeCreated: int
+      afterRefreshCreated: int
+      afterRecomputeCreated: int
+      newlyCreated: int
+      total: int }
+
 type GameSettings<'L> =
     { rootDirectories: WorkspaceDirectoryInput array
       embedded: EmbeddedSettings
@@ -757,9 +764,15 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     let mutable prevRuleServiceRef: System.WeakReference option = None
     let mutable prevInfoServiceRef: System.WeakReference option = None
     let mutable prevCompletionServiceRef: System.WeakReference option = None
+    let mutable lastLazyRefreshStats: LazyRefreshStats option = None
+
+    let createdLazyCount () =
+        this.Resources.AllEntities() |> Seq.sumBy (fun struct (_, data) -> if data.IsValueCreated then 1 else 0)
 
     let updateRulesCache () =
         LanguageFeatures.clearScriptedEffectParamMapCache ()
+        let total = this.Resources.AllEntities() |> Seq.length
+        let beforeCreated = createdLazyCount ()
         // Capture old service instances for leak detection
         let oldRule = this.RuleValidationService |> Option.map (fun x -> System.WeakReference(x))
         let oldInfo = this.InfoService |> Option.map (fun x -> System.WeakReference(x))
@@ -769,6 +782,18 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         this.RuleValidationService <- Some rules
         this.InfoService <- Some info
         this.completionService <- Some completion
+        let afterRefreshCreated = createdLazyCount ()
+        this.Resources.ForceRecompute()
+        let afterRecomputeCreated = createdLazyCount ()
+        let newlyCreated = max 0 (afterRefreshCreated - beforeCreated)
+        lastLazyRefreshStats <-
+            Some
+                { beforeCreated = beforeCreated
+                  afterRefreshCreated = afterRefreshCreated
+                  afterRecomputeCreated = afterRecomputeCreated
+                  newlyCreated = newlyCreated
+                  total = total }
+        log $"[LazyRefresh] before=%d{beforeCreated} afterRefresh=%d{afterRefreshCreated} afterRecompute=%d{afterRecomputeCreated} newlyCreated=%d{newlyCreated} total=%d{total}"
         this.RefreshValidationManager()
         LanguageFeatures.clearCompletionEntityCache ()
         LanguageFeatures.clearTypeReferenceIndexCache ()
@@ -807,10 +832,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         log (sprintf "Rules loaded in %A" timer.ElapsedMilliseconds)
         timer.Restart()
         updateRulesCache ()
-        log (sprintf "Rules cache updated in %A" timer.ElapsedMilliseconds)
-        timer.Restart()
-        this.Resources.ForceRecompute()
-        log (sprintf "Resource recomputer in %A" timer.ElapsedMilliseconds)
+        log (sprintf "Rules cache updated and resources reset in %A" timer.ElapsedMilliseconds)
 
     do
         lookup.rootFolders <- settings.rootDirectories
@@ -831,6 +853,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member val completionService: CompletionService option = None with get, set
 
     member _.Resources: IResourceAPI<'T> = resourceManager.Api
+    member internal _.LastLazyRefreshStats = lastLazyRefreshStats
     member _.ResourceManager = resourceManager
     member _.Lookup: 'L = lookup
     // member __.AllLocalisation() = localisationManager.allLocalisation()

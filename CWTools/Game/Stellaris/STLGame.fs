@@ -2582,6 +2582,7 @@ type STLGame(setupSettings: StellarisSettings) =
 
 
     member _.Lookup = lookup
+    member internal _.LastLazyRefreshStats = game.LastLazyRefreshStats
 
     interface IScopeInferenceProvider with
         member _.ScopeInferenceAtPos pos file _text scopes =
