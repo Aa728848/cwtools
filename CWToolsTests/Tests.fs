@@ -574,6 +574,37 @@ let tests =
                   (incremental.PeekLocalisationDelta "staged")
                   peek
                   "prepare must neither acknowledge nor alter the active prefix"
+              Expect.isTrue
+                  (concrete.LocalisationManager.CanAckDelta cursor)
+                  "the exact active owner and prefix must be acknowledgeable"
+              let wrongOwner = { cursor with owner = cursor.owner + "-other" }
+              let wrongPrefix = { cursor with throughRevision = cursor.throughRevision + 1L }
+              Expect.isFalse
+                  (concrete.LocalisationManager.CanAckDelta wrongOwner)
+                  "a different owner must not be acknowledgeable"
+              Expect.isFalse
+                  (concrete.LocalisationManager.CanAckDelta wrongPrefix)
+                  "a different prefix must not be acknowledgeable"
+              let mutable staleCallbackCalled = false
+              Expect.equal
+                  (concrete.LocalisationManager.TryTransformDelta(wrongPrefix, fun () -> staleCallbackCalled <- true))
+                  LocalisationDeltaAckResult.Stale
+                  "a stale transform must be rejected"
+              Expect.isFalse staleCallbackCalled "a stale transform must not invoke publication"
+              let callbackFailure = InvalidOperationException("publication failed")
+              try
+                  concrete.LocalisationManager.TryTransformDelta(cursor, fun () -> raise callbackFailure)
+                  |> ignore
+                  failtest "the publication exception must escape"
+              with ex ->
+                  Expect.equal ex callbackFailure "the publication exception must escape unchanged"
+              Expect.isTrue
+                  (concrete.LocalisationManager.CanAckDelta cursor)
+                  "a throwing callback must leave the exact prefix active"
+              Expect.equal
+                  (incremental.PeekLocalisationDelta "staged")
+                  peek
+                  "a throwing callback must not acknowledge or alter the journal"
               let repeated =
                   match incremental.PrepareLocalisationRefresh "staged" with
                   | Result.Ok(Some value) -> value
@@ -622,10 +653,42 @@ let tests =
                   [| locPath |]
                   "prefix commit must retain exactly the newer file facts"
               Expect.isTrue suffixBatch.delta.semanticChanged "the retained suffix must preserve its semantic change"
+              use callbackStarted = new ManualResetEventSlim(false)
+              use releaseCallback = new ManualResetEventSlim(false)
+              let transformTask =
+                  System.Threading.Tasks.Task.Run(fun () ->
+                      concrete.LocalisationManager.TryTransformDelta(
+                          suffixBatch.cursor,
+                          fun () ->
+                              callbackStarted.Set()
+                              releaseCallback.Wait()
+                      ))
+              Expect.isTrue (callbackStarted.Wait(1000)) "the transform callback must run synchronously"
+              let concurrent = suffix + " staged_concurrent:0 \"queued\"" + Environment.NewLine
+              let writerTask =
+                  System.Threading.Tasks.Task.Run(fun () ->
+                      concrete.LocalisationManager.UpdateLocalisationFile
+                          { currentLocResource with filetext = concurrent })
+              Expect.isFalse
+                  (writerTask.Wait(50))
+                  "a concurrent journal writer must wait until callback and prefix removal complete"
+              releaseCallback.Set()
               Expect.equal
-                  (incremental.AckLocalisationDelta suffixBatch.cursor)
+                  transformTask.Result
                   LocalisationDeltaAckResult.Acknowledged
-                  "test cleanup must acknowledge exactly the retained suffix"
+                  "the callback and exact prefix removal must complete atomically"
+              Expect.isTrue (writerTask.Wait(1000)) "the queued writer must resume after acknowledgement"
+              Expect.isFalse
+                  (concrete.LocalisationManager.CanAckDelta suffixBatch.cursor)
+                  "the acknowledged prefix must no longer be active"
+              let concurrentBatch =
+                  match incremental.PeekLocalisationDelta "concurrent-suffix" with
+                  | Result.Ok(Some batch) -> batch
+                  | other -> failtestf "the concurrent writer must remain as a newer suffix, got %A" other
+              Expect.isTrue
+                  (concurrentBatch.cursor.fromRevision > suffixBatch.cursor.throughRevision)
+                  "the serialized concurrent writer must receive a newer revision"
+              incremental.DiscardLocalisationDelta concurrentBatch.cursor
               Expect.equal
                   (incremental.TryCommitLocalisationRefresh stage)
                   StagedLocalisationCommitResult.AlreadyCompleted

@@ -30,6 +30,7 @@ type LocalisationManager<'T when 'T :> ComputedData>
     let processedReferencesBySource = Dictionary<struct (Lang * string), string array>()
     let processedSourcesByReference = Dictionary<struct (Lang * string), HashSet<string>>()
     let deltaJournal = ResizeArray<struct (int64 * LocalisationDelta)>()
+    let deltaGate = obj ()
     let mutable nextDeltaRevision = 0L
     let mutable activeDeltaCursor: LocalisationDeltaCursor option = None
     let mutable completedDeltaCursor: LocalisationDeltaCursor option = None
@@ -179,8 +180,9 @@ type LocalisationManager<'T when 'T :> ComputedData>
                 addProcessedSourceReferences lang sourceKey entry
 
     let appendDelta (delta: LocalisationDelta) =
-        nextDeltaRevision <- nextDeltaRevision + 1L
-        deltaJournal.Add(struct (nextDeltaRevision, delta))
+        lock deltaGate (fun () ->
+            nextDeltaRevision <- nextDeltaRevision + 1L
+            deltaJournal.Add(struct (nextDeltaRevision, delta)))
 
     let materialiseDelta (cursor: LocalisationDeltaCursor) =
         let keys = HashSet<string>(StringComparer.Ordinal)
@@ -198,34 +200,49 @@ type LocalisationManager<'T when 'T :> ComputedData>
               semanticChanged = semanticChanged } }
 
     let peekDelta owner =
-        match activeDeltaCursor with
-        | Some cursor when StringComparer.Ordinal.Equals(cursor.owner, owner) ->
-            Ok(Some(materialiseDelta cursor))
-        | Some _ -> Error LocalisationDeltaCursorError.Stale
-        | None when deltaJournal.Count = 0 -> Ok None
-        | None ->
-            let struct (fromRevision, _) = deltaJournal.[0]
-            let struct (throughRevision, _) = deltaJournal.[deltaJournal.Count - 1]
-            let cursor =
-                { owner = owner
-                  fromRevision = fromRevision
-                  throughRevision = throughRevision }
-            activeDeltaCursor <- Some cursor
-            Ok(Some(materialiseDelta cursor))
+        lock deltaGate (fun () ->
+            match activeDeltaCursor with
+            | Some cursor when StringComparer.Ordinal.Equals(cursor.owner, owner) ->
+                Ok(Some(materialiseDelta cursor))
+            | Some _ -> Error LocalisationDeltaCursorError.Stale
+            | None when deltaJournal.Count = 0 -> Ok None
+            | None ->
+                let struct (fromRevision, _) = deltaJournal.[0]
+                let struct (throughRevision, _) = deltaJournal.[deltaJournal.Count - 1]
+                let cursor =
+                    { owner = owner
+                      fromRevision = fromRevision
+                      throughRevision = throughRevision }
+                activeDeltaCursor <- Some cursor
+                Ok(Some(materialiseDelta cursor)))
 
-    let ackDelta cursor =
-        match activeDeltaCursor with
-        | Some active when active = cursor ->
-            let prefixCount = deltaJournal |> Seq.takeWhile (fun struct (revision, _) -> revision <= cursor.throughRevision) |> Seq.length
-            if prefixCount > 0 then deltaJournal.RemoveRange(0, prefixCount)
-            activeDeltaCursor <- None
-            completedDeltaCursor <- Some cursor
-            LocalisationDeltaAckResult.Acknowledged
-        | _ when completedDeltaCursor = Some cursor -> LocalisationDeltaAckResult.AlreadyCompleted
-        | _ -> LocalisationDeltaAckResult.Stale
+    let canAckDelta cursor =
+        lock deltaGate (fun () -> activeDeltaCursor = Some cursor)
+
+    let tryTransformDelta cursor (publish: unit -> unit) =
+        lock deltaGate (fun () ->
+            match activeDeltaCursor with
+            | Some active when active = cursor ->
+                // The callback is synchronous and runs under the manager gate. Callers that
+                // publish game state must already hold the game write lock. If it throws,
+                // journal and cursor state remain unchanged.
+                publish ()
+                let prefixCount =
+                    deltaJournal
+                    |> Seq.takeWhile (fun struct (revision, _) -> revision <= cursor.throughRevision)
+                    |> Seq.length
+                if prefixCount > 0 then deltaJournal.RemoveRange(0, prefixCount)
+                activeDeltaCursor <- None
+                completedDeltaCursor <- Some cursor
+                LocalisationDeltaAckResult.Acknowledged
+            | _ when completedDeltaCursor = Some cursor -> LocalisationDeltaAckResult.AlreadyCompleted
+            | _ -> LocalisationDeltaAckResult.Stale)
+
+    let ackDeltaExact cursor = tryTransformDelta cursor ignore
 
     let discardDelta cursor =
-        if activeDeltaCursor = Some cursor then activeDeltaCursor <- None
+        lock deltaGate (fun () ->
+            if activeDeltaCursor = Some cursor then activeDeltaCursor <- None)
 
     let updateAllLocalisationSources () =
         localisationAPIMap <-
@@ -391,9 +408,10 @@ type LocalisationManager<'T when 'T :> ComputedData>
         let processLoc = processLocalisation lookup
         lookup.proccessedLoc <- validatableEntries |> List.map processLoc
         rebuildProcessedReferenceIndex ()
-        deltaJournal.Clear()
-        activeDeltaCursor <- None
-        completedDeltaCursor <- None
+        lock deltaGate (fun () ->
+            deltaJournal.Clear()
+            activeDeltaCursor <- None
+            completedDeltaCursor <- None)
 
     member val localisationErrors: CWError list option = None with get, set
     member val globalLocalisationErrors: CWError list option = None with get, set
@@ -401,21 +419,31 @@ type LocalisationManager<'T when 'T :> ComputedData>
     member val taggedLocalisationKeys: (Lang * LocKeySet) array = [||] with get, set
 
     member this.UpdateAllLocalisation() =
-        updateAllLocalisationSources ()
-        updateProcessedLocalisation ()
+        lock deltaGate (fun () ->
+            updateAllLocalisationSources ()
+            updateProcessedLocalisation ())
 
-    member _.UpdateProcessedLocalisation() = updateProcessedLocalisation ()
-    member _.UpdateLocalisationFile(locFile: FileWithContentResource) = updateLocalisationSource locFile
-    member _.RemoveLocalisationFile(filepath: string) = removeLocalisationSource filepath
+    member _.UpdateProcessedLocalisation() =
+        lock deltaGate updateProcessedLocalisation
+    member _.UpdateLocalisationFile(locFile: FileWithContentResource) =
+        lock deltaGate (fun () -> updateLocalisationSource locFile)
+    member _.RemoveLocalisationFile(filepath: string) =
+        lock deltaGate (fun () -> removeLocalisationSource filepath)
 
     member _.PeekDelta(owner: string) = peekDelta owner
-    member _.AckDelta(cursor: LocalisationDeltaCursor) = ackDelta cursor
+    member _.CanAckDelta(cursor: LocalisationDeltaCursor) = canAckDelta cursor
+    member _.AckDeltaExact(cursor: LocalisationDeltaCursor) = ackDeltaExact cursor
+    /// Runs the synchronous publication callback and exact prefix acknowledgement under
+    /// the manager gate. The caller must hold the game write lock while publishing.
+    member _.TryTransformDelta(cursor: LocalisationDeltaCursor, publish: unit -> unit) =
+        tryTransformDelta cursor publish
+    member _.AckDelta(cursor: LocalisationDeltaCursor) = ackDeltaExact cursor
     member _.DiscardDelta(cursor: LocalisationDeltaCursor) = discardDelta cursor
 
     member _.TakeDelta() =
         match peekDelta takeDeltaOwner with
         | Ok(Some detached) ->
-            match ackDelta detached.cursor with
+            match ackDeltaExact detached.cursor with
             | LocalisationDeltaAckResult.Acknowledged
             | LocalisationDeltaAckResult.AlreadyCompleted -> Some detached.delta
             | LocalisationDeltaAckResult.Stale -> None

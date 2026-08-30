@@ -964,14 +964,16 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             staged.ClearResult()
             StagedLocalisationCommitResult.Superseded
         else
-            match localisationManager.PeekDelta staged.Cursor.owner with
-            | Ok(Some current) when current.cursor = staged.Cursor ->
-                match localisationManager.AckDelta staged.Cursor, staged.TakeResult() with
-                | LocalisationDeltaAckResult.Acknowledged, Some result -> StagedLocalisationCommitResult.Committed result
-                | _ ->
-                    staged.ClearResult()
-                    StagedLocalisationCommitResult.Superseded
-            | _ ->
+            // Publication is intentionally a no-op until the prepared validation state has
+            // a writer-owned swap. The manager still couples this callback and exact prefix
+            // removal atomically, so a later publication callback cannot race acknowledgement.
+            match localisationManager.TryTransformDelta(staged.Cursor, ignore) with
+            | LocalisationDeltaAckResult.Acknowledged ->
+                match staged.TakeResult() with
+                | Some result -> StagedLocalisationCommitResult.Committed result
+                | None -> StagedLocalisationCommitResult.Superseded
+            | LocalisationDeltaAckResult.AlreadyCompleted
+            | LocalisationDeltaAckResult.Stale ->
                 staged.ClearResult()
                 StagedLocalisationCommitResult.Superseded
 
