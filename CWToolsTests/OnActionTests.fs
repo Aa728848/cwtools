@@ -31,6 +31,29 @@ open FParsec
 open LogCaptureTest
 open MBrace.FsPickler
 
+type private UnknownLookup() =
+    inherit Lookup()
+
+[<System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)>]
+let private snapshotWithDerivedWeakReferences () =
+    let source = IRLookup()
+    source.allCoreLinks <- [ Effect("weak-trigger", [], EffectType.Trigger) ]
+    source.triggers |> ignore
+    source.triggersMap |> ignore
+    source.effects |> ignore
+    source.effectsMap |> ignore
+    source.eventTargetLinks |> ignore
+    source.eventTargetLinksMap |> ignore
+    source.valueTriggers |> ignore
+    source.valueTriggerMap |> ignore
+    let derivedFields =
+        typeof<Lookup>.GetFields(BindingFlags.Instance ||| BindingFlags.NonPublic ||| BindingFlags.DeclaredOnly)
+        |> Array.filter (fun field -> field.Name.StartsWith("_triggers")
+                                     || field.Name.StartsWith("_effects")
+                                     || field.Name.StartsWith("_eventTargetLinks")
+                                     || field.Name.StartsWith("_valueTriggers"))
+        |> Array.map (fun field -> WeakReference(field.GetValue source))
+    source.CreateFieldSnapshot(), derivedFields
 
 
 [<Tests>]
@@ -323,6 +346,169 @@ let stagedRefreshTests =
               Expect.isTrue (original.typeDefInfo.ContainsKey "t2") "snapshot copies map fields"
               Expect.isFalse (original.typeDefInfo.ContainsKey "t") "snapshot replaces, not merges"
 
+          testCase "typed lookup snapshot covers fields, subtypes, identity, and derived caches"
+          <| fun () ->
+              let source = IRLookup()
+              source.onlyScriptedEffects <- [ Effect("scripted_effect", [], EffectType.Effect) ]
+              source.onlyScriptedTriggers <- [ Effect("scripted_trigger", [], EffectType.Trigger) ]
+              source.rootFolders <- [| WD { path = "root"; name = "root" } |]
+              source.staticModifiers <- [| { tag = "static"; categories = [] } |]
+              source.coreModifiers <- [| { tag = "core"; category = ModifierCategory(2uy) } |]
+              source.embeddedScriptedLoc <- [| "embedded" |]
+              source.scriptedLoc <- [| "real" |]
+              source.proccessedLoc <- []
+              source.technologies <- [ "technology", [ "prerequisite" ] ]
+              source.configRules <- [||]
+              source.typeDefs <- []
+              source.enumDefs <- Map.ofList [ "enum", ("description", [||]) ]
+              source.typeDefInfo <- Map.ofList [ "type", [||] ]
+              source.typeDefInfoForValidation <- Map.ofList [ "type", [||] ]
+              source.varDefInfo <- Map.ofList [ "variable", [||] ]
+              source.savedEventTargets <- ResizeArray([ "target", range.Zero, scopeManager.AnyScope ])
+              source.scriptedVariables <- [ "@variable", "value" ]
+              source.globalScriptedVariableNames <- [ "@variable" ]
+              source.ScriptedEffectKeys <- [ "jomini" ]
+              source.IRprovinces <- [| "province" |]
+              source.IRcharacters <- [| "character" |]
+              source.allCoreLinks <-
+                  [ Effect("trigger", [], EffectType.Trigger)
+                    Effect("effect", [], EffectType.Effect)
+                    Effect("link", [], EffectType.Link)
+                    Effect("value_trigger", [], EffectType.ValueTrigger) ]
+
+              // Force the source caches so the snapshot must not simply retain them.
+              let sourceTriggers = source.triggers
+              let sourceTriggerMap = source.triggersMap
+              let sourceEffects = source.effects
+              let sourceEffectsMap = source.effectsMap
+              let sourceLinks = source.eventTargetLinks
+              let sourceLinksMap = source.eventTargetLinksMap
+              let sourceValueTriggers = source.valueTriggers
+              let sourceValueTriggerMap = source.valueTriggerMap
+
+              let snapshot = source.CreateFieldSnapshot()
+              let target = IRLookup()
+              let targetIdentity = target :> obj
+              target.ApplyFieldSnapshot snapshot
+
+              Expect.isTrue (Object.ReferenceEquals(targetIdentity, target)) "apply preserves the target lookup identity"
+              Expect.equal target.onlyScriptedEffects source.onlyScriptedEffects "base list field copied"
+              Expect.equal target.rootFolders source.rootFolders "base array field copied"
+              Expect.equal target.staticModifiers source.staticModifiers "base record array copied"
+              Expect.equal target.coreModifiers source.coreModifiers "base modifier array copied"
+              Expect.equal target.scriptedLoc source.scriptedLoc "embedded and real localisation fields copied"
+              Expect.equal target.technologies source.technologies "base tuple list copied"
+              Expect.equal target.enumDefs source.enumDefs "base enum map copied"
+              Expect.equal target.typeDefInfo source.typeDefInfo "base type map copied"
+              Expect.equal target.savedEventTargets source.savedEventTargets "base mutable collection copied"
+              Expect.equal target.scriptedVariables source.scriptedVariables "base scripted variables copied"
+              Expect.equal target.globalScriptedVariableNames source.globalScriptedVariableNames "base global names copied"
+              Expect.equal target.ScriptedEffectKeys [ "jomini" ] "inherited Jomini field copied"
+              Expect.equal target.IRprovinces [| "province" |] "IR province field copied"
+              Expect.equal target.IRcharacters [| "character" |] "IR character field copied"
+              Expect.equal (target.triggers |> List.map (fun effect -> effect.Name.GetString())) [ "trigger"; "value_trigger" ] "trigger list rebuilt from live links"
+              Expect.equal (target.effects |> List.map (fun effect -> effect.Name.GetString())) [ "effect" ] "effect list rebuilt from live links"
+              Expect.equal (target.eventTargetLinks |> List.map (fun effect -> effect.Name.GetString())) [ "link" ] "link list rebuilt from live links"
+              Expect.equal (target.valueTriggers |> List.map (fun effect -> effect.Name.GetString())) [ "value_trigger" ] "value-trigger list rebuilt from live links"
+              Expect.isFalse (Object.ReferenceEquals(sourceTriggerMap, target.triggersMap)) "derived trigger map is not snapshotted"
+              Expect.isFalse (Object.ReferenceEquals(sourceEffectsMap, target.effectsMap)) "derived effect map is not snapshotted"
+              Expect.isFalse (Object.ReferenceEquals(sourceLinksMap, target.eventTargetLinksMap)) "derived link map is not snapshotted"
+              Expect.isFalse (Object.ReferenceEquals(sourceValueTriggerMap, target.valueTriggerMap)) "derived value-trigger map is not snapshotted"
+
+              let retainedSnapshot, derivedWeakReferences = snapshotWithDerivedWeakReferences ()
+              GC.Collect()
+              GC.WaitForPendingFinalizers()
+              GC.Collect()
+              Expect.isTrue (derivedWeakReferences |> Array.forall (fun reference -> not reference.IsAlive)) "snapshot must not retain source derived Lazy values"
+              GC.KeepAlive retainedSnapshot
+
+              let roundTrip (source: Lookup) (target: Lookup) assertSubtype =
+                  source.scriptedVariables <- [ "@roundtrip", source.GetType().Name ]
+                  target.scriptedVariables <- [ "@old", target.GetType().Name ]
+                  let targetIdentity = target :> obj
+                  target.ApplyFieldSnapshot(source.CreateFieldSnapshot())
+                  Expect.isTrue (Object.ReferenceEquals(targetIdentity, target)) "roundtrip preserves destination identity"
+                  Expect.equal target.scriptedVariables source.scriptedVariables "roundtrip copies base fields"
+                  assertSubtype ()
+
+              let baseSource, baseTarget = Lookup(), Lookup()
+              roundTrip baseSource baseTarget ignore
+
+              let jominiSource, jominiTarget = JominiLookup(), JominiLookup()
+              jominiSource.ScriptedEffectKeys <- [ "jomini-key" ]
+              roundTrip jominiSource jominiTarget (fun () -> Expect.equal jominiTarget.ScriptedEffectKeys jominiSource.ScriptedEffectKeys "Jomini fields roundtrip")
+
+              let ck2Source, ck2Target = CK2Lookup(), CK2Lookup()
+              ck2Source.CK2LandedTitles <- Map.ofList [ (TitleType.Empire, true), [ "e_roundtrip" ] ]
+              ck2Source.CK2provinces <- [| "ck2-province" |]
+              roundTrip ck2Source ck2Target (fun () ->
+                  Expect.equal ck2Target.CK2LandedTitles ck2Source.CK2LandedTitles "CK2 title fields roundtrip"
+                  Expect.equal ck2Target.CK2provinces ck2Source.CK2provinces "CK2 province fields roundtrip")
+
+              let eu4Source, eu4Target = EU4Lookup(), EU4Lookup()
+              eu4Source.EU4ScriptedEffectKeys <- [| "eu4-effect" |]
+              eu4Source.EU4TrueLegacyGovernments <- [| "eu4-government" |]
+              roundTrip eu4Source eu4Target (fun () ->
+                  Expect.equal eu4Target.EU4ScriptedEffectKeys eu4Source.EU4ScriptedEffectKeys "EU4 effect fields roundtrip"
+                  Expect.equal eu4Target.EU4TrueLegacyGovernments eu4Source.EU4TrueLegacyGovernments "EU4 government fields roundtrip")
+
+              let hoi4Source, hoi4Target = HOI4Lookup(), HOI4Lookup()
+              hoi4Source.HOI4provinces <- [| "hoi4-province" |]
+              roundTrip hoi4Source hoi4Target (fun () -> Expect.equal hoi4Target.HOI4provinces hoi4Source.HOI4provinces "HOI4 fields roundtrip")
+
+              let stlSource, stlTarget = STLLookup(), STLLookup()
+              roundTrip stlSource stlTarget ignore
+
+              let irSource, irTarget = IRLookup(), IRLookup()
+              irSource.ScriptedEffectKeys <- [ "ir-effect" ]
+              irSource.IRprovinces <- [| "ir-province" |]
+              irSource.IRcharacters <- [| "ir-character" |]
+              roundTrip irSource irTarget (fun () ->
+                  Expect.equal irTarget.ScriptedEffectKeys irSource.ScriptedEffectKeys "IR inherited fields roundtrip"
+                  Expect.equal irTarget.IRprovinces irSource.IRprovinces "IR province fields roundtrip"
+                  Expect.equal irTarget.IRcharacters irSource.IRcharacters "IR character fields roundtrip")
+
+              let vic2Source, vic2Target = VIC2Lookup(), VIC2Lookup()
+              vic2Source.VIC2provinces <- [| "vic2-province" |]
+              roundTrip vic2Source vic2Target (fun () -> Expect.equal vic2Target.VIC2provinces vic2Source.VIC2provinces "VIC2 fields roundtrip")
+
+              let knownSubtypes: Lookup array =
+                  [| baseSource; jominiSource; ck2Source; eu4Source; hoi4Source; stlSource; irSource; vic2Source |]
+
+              let ignoredDerivedFields =
+                  set [ "_triggers"; "_triggersMap"; "_effects"; "_effectsMap"
+                        "_eventTargetLinks"; "_eventTargetLinksMap"; "_valueTriggers"; "_valueTriggersMap" ]
+              let mutableFields (lookupType: Type) =
+                  let rec fields current =
+                      if isNull current || current = typeof<obj> then []
+                      else
+                          let own =
+                              current.GetFields(BindingFlags.Instance ||| BindingFlags.NonPublic ||| BindingFlags.Public ||| BindingFlags.DeclaredOnly)
+                              |> Array.filter (fun field -> not field.IsInitOnly && not (ignoredDerivedFields.Contains field.Name))
+                              |> Array.map _.Name
+                              |> Array.toList
+                          own @ fields current.BaseType
+                  fields lookupType |> Set.ofList
+              let expectedFields =
+                  set [ "_allCoreLinks"; "onlyScriptedEffects@"; "onlyScriptedTriggers@"; "rootFolders@"
+                        "staticModifiers@"; "coreModifiers@"; "embeddedScriptedLoc@"; "_realScriptedLoc@"
+                        "proccessedLoc@"; "technologies@"; "configRules@"; "typeDefs@"; "enumDefs@"
+                        "typeDefInfo@"; "typeDefInfoForValidation@"; "varDefInfo@"; "extendedConfigMetadata@"
+                        "savedEventTargets@"; "scriptedVariables@"; "globalScriptedVariableNames@"
+                        "ScriptedEffectKeys@"; "CK2LandedTitles@"; "CK2provinces@"; "EU4ScriptedEffectKeys@"
+                        "EU4TrueLegacyGovernments@"; "HOI4provinces@"; "IRprovinces@"; "IRcharacters@"
+                        "VIC2provinces@" ]
+              let actualFields = knownSubtypes |> Array.collect (fun lookup -> mutableFields (lookup.GetType()) |> Set.toArray) |> Set.ofArray
+              Expect.equal actualFields expectedFields "every mutable source field must be represented explicitly"
+
+              let mismatched = Lookup()
+              mismatched.scriptedVariables <- [ "@sentinel", "unchanged" ]
+              Expect.throws (fun () -> mismatched.ApplyFieldSnapshot snapshot) "snapshot subtype mismatch must fail"
+              Expect.equal mismatched.scriptedVariables [ "@sentinel", "unchanged" ] "subtype guard must run before applying base fields"
+
+              let unknown = UnknownLookup()
+              Expect.throws (fun () -> unknown.CreateFieldSnapshot() |> ignore) "unknown Lookup subtype must fail"
+
           testWithCapturedLogs "prepare/commit refresh matches locked refresh"
           <| fun () ->
               let configtext =
@@ -359,7 +545,11 @@ let stagedRefreshTests =
               let staged2 = stl.PrepareRefreshCaches()
               Expect.isSome staged2 "second prepare should succeed"
               stl.RefreshCaches()
-              Expect.isFalse (stl.CommitRefreshCaches staged2.Value) "commit must refuse when the live state moved after prepare" ]
+              let liveTypesBeforeReject = sortedTypeIds (stl.Types())
+              let liveTriggersBeforeReject = stl.ScriptedTriggers() |> List.map (fun effect -> effect.Name.GetString())
+              Expect.isFalse (stl.CommitRefreshCaches staged2.Value) "commit must refuse when the live state moved after prepare"
+              Expect.equal (sortedTypeIds (stl.Types())) liveTypesBeforeReject "rejected snapshot must not publish staged types"
+              Expect.equal (stl.ScriptedTriggers() |> List.map (fun effect -> effect.Name.GetString())) liveTriggersBeforeReject "rejected snapshot must not publish staged links" ]
 
 
 [<Tests>]

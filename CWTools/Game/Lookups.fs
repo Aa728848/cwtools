@@ -7,13 +7,45 @@ open CWTools.Utilities.Position
 open Files
 open CWTools.Process.Localisation
 
-/// Field-only snapshot used by staged cache refreshes. The values remain
-/// structurally shared with the refreshed lookup, but the temporary lookup
-/// object itself is released as soon as prepare finishes.
+/// Explicit source-field snapshot used by staged cache refreshes. Values remain
+/// structurally shared with the refreshed lookup, while derived lazy indexes are
+/// rebuilt when the snapshot is applied.
+type private LookupBaseSnapshot =
+    { allCoreLinks: Effect list
+      onlyScriptedEffects: Effect list
+      onlyScriptedTriggers: Effect list
+      rootFolders: WorkspaceDirectoryInput array
+      staticModifiers: StaticModifier array
+      coreModifiers: ActualModifier array
+      embeddedScriptedLoc: string array
+      realScriptedLoc: string array
+      proccessedLoc: (Lang * Collections.Map<string, LocEntry>) list
+      technologies: (string * string list) list
+      configRules: RootRule array
+      typeDefs: TypeDefinition list
+      enumDefs: Map<string, string * (string * range option) array>
+      typeDefInfo: Map<string, TypeDefInfo array>
+      typeDefInfoForValidation: Map<string, struct (string * range) array>
+      varDefInfo: Map<string, (string * range) array>
+      extendedConfigMetadata: ExtendedConfigMetadata
+      savedEventTargets: ResizeArray<string * range * Scope>
+      scriptedVariables: (string * string) list
+      globalScriptedVariableNames: string list }
+
+type private LookupSubtypeSnapshot =
+    | LookupBase
+    | LookupJomini of scriptedEffectKeys: string list
+    | LookupCK2 of landedTitles: Collections.Map<TitleType * bool, string list> * provinces: string array
+    | LookupEU4 of scriptedEffectKeys: string array * trueLegacyGovernments: string array
+    | LookupHOI4 of provinces: string array
+    | LookupSTL
+    | LookupIR of scriptedEffectKeys: string list * provinces: string array * characters: string array
+    | LookupVIC2 of provinces: string array
+
 type LookupFieldSnapshot =
-    internal
-        { runtimeType: System.Type
-          fields: struct (System.Reflection.FieldInfo * obj) array }
+    private
+        { baseFields: LookupBaseSnapshot
+          subtype: LookupSubtypeSnapshot }
 
 type Lookup() =
 
@@ -107,43 +139,6 @@ type Lookup() =
     /// original's consistent state.
     member this.ShallowClone() : Lookup = this.MemberwiseClone() :?> Lookup
 
-    static member private InstanceFields(runtimeType: System.Type) =
-        let fields = ResizeArray<System.Reflection.FieldInfo>()
-
-        let rec collectFields (t: System.Type) =
-            if not (isNull t) && t <> typeof<obj> then
-                let flags =
-                    System.Reflection.BindingFlags.DeclaredOnly
-                    ||| System.Reflection.BindingFlags.Instance
-                    ||| System.Reflection.BindingFlags.Public
-                    ||| System.Reflection.BindingFlags.NonPublic
-
-                for field in t.GetFields(flags) do
-                    fields.Add field
-
-                collectFields t.BaseType
-
-        collectFields runtimeType
-        fields.ToArray()
-
-    /// Capture only the field references produced by a staged refresh. This keeps
-    /// structural sharing without retaining the complete temporary lookup clone.
-    member this.CreateFieldSnapshot() =
-        let runtimeType = this.GetType()
-        { runtimeType = runtimeType
-          fields =
-            Lookup.InstanceFields(runtimeType)
-            |> Array.map (fun field -> struct (field, field.GetValue(this))) }
-
-    /// Apply a field snapshot under the game-state write lock without changing
-    /// the shared lookup object's identity.
-    member this.ApplyFieldSnapshot(snapshot: LookupFieldSnapshot) =
-        if not (System.Object.ReferenceEquals(this.GetType(), snapshot.runtimeType)) then
-            invalidArg "snapshot" "Lookup field snapshot has a different runtime type"
-
-        for struct (field, value) in snapshot.fields do
-            field.SetValue(this, value)
-
 type JominiLookup() =
     inherit Lookup()
     member val ScriptedEffectKeys: string list = [] with get, set
@@ -173,3 +168,116 @@ type IRLookup() =
 type VIC2Lookup() =
     inherit Lookup()
     member val VIC2provinces: string array = [||] with get, set
+
+type Lookup with
+    member private this.BaseFieldSnapshot() =
+        { allCoreLinks = this.allCoreLinks
+          onlyScriptedEffects = this.onlyScriptedEffects
+          onlyScriptedTriggers = this.onlyScriptedTriggers
+          rootFolders = this.rootFolders
+          staticModifiers = this.staticModifiers
+          coreModifiers = this.coreModifiers
+          embeddedScriptedLoc = this.embeddedScriptedLoc
+          realScriptedLoc = this._realScriptedLoc
+          proccessedLoc = this.proccessedLoc
+          technologies = this.technologies
+          configRules = this.configRules
+          typeDefs = this.typeDefs
+          enumDefs = this.enumDefs
+          typeDefInfo = this.typeDefInfo
+          typeDefInfoForValidation = this.typeDefInfoForValidation
+          varDefInfo = this.varDefInfo
+          extendedConfigMetadata = this.extendedConfigMetadata
+          savedEventTargets = this.savedEventTargets
+          scriptedVariables = this.scriptedVariables
+          globalScriptedVariableNames = this.globalScriptedVariableNames }
+
+    /// Capture only explicit source fields produced by a staged refresh. Derived
+    /// lazy lists and maps are deliberately excluded.
+    member this.CreateFieldSnapshot() =
+        let subtype =
+            if this.GetType() = typeof<Lookup> then LookupBase
+            elif this.GetType() = typeof<IRLookup> then
+                let lookup = this :?> IRLookup
+                LookupIR(lookup.ScriptedEffectKeys, lookup.IRprovinces, lookup.IRcharacters)
+            elif this.GetType() = typeof<JominiLookup> then
+                LookupJomini((this :?> JominiLookup).ScriptedEffectKeys)
+            elif this.GetType() = typeof<CK2Lookup> then
+                let lookup = this :?> CK2Lookup
+                LookupCK2(lookup.CK2LandedTitles, lookup.CK2provinces)
+            elif this.GetType() = typeof<EU4Lookup> then
+                let lookup = this :?> EU4Lookup
+                LookupEU4(lookup.EU4ScriptedEffectKeys, lookup.EU4TrueLegacyGovernments)
+            elif this.GetType() = typeof<HOI4Lookup> then
+                LookupHOI4((this :?> HOI4Lookup).HOI4provinces)
+            elif this.GetType() = typeof<STLLookup> then LookupSTL
+            elif this.GetType() = typeof<VIC2Lookup> then
+                LookupVIC2((this :?> VIC2Lookup).VIC2provinces)
+            else
+                invalidOp $"Unsupported Lookup subtype: {this.GetType().FullName}"
+
+        { baseFields = this.BaseFieldSnapshot()
+          subtype = subtype }
+
+    /// Apply a typed snapshot without changing this lookup object's identity.
+    /// Assigning allCoreLinks rebuilds every derived lazy list and map live. The caller
+    /// must hold the game-state write lock for the complete guard-and-apply operation.
+    member this.ApplyFieldSnapshot(snapshot: LookupFieldSnapshot) =
+        let subtypeMatches =
+            match snapshot.subtype with
+            | LookupBase -> this.GetType() = typeof<Lookup>
+            | LookupJomini _ -> this.GetType() = typeof<JominiLookup>
+            | LookupCK2 _ -> this.GetType() = typeof<CK2Lookup>
+            | LookupEU4 _ -> this.GetType() = typeof<EU4Lookup>
+            | LookupHOI4 _ -> this.GetType() = typeof<HOI4Lookup>
+            | LookupSTL -> this.GetType() = typeof<STLLookup>
+            | LookupIR _ -> this.GetType() = typeof<IRLookup>
+            | LookupVIC2 _ -> this.GetType() = typeof<VIC2Lookup>
+
+        if not subtypeMatches then
+            invalidArg "snapshot" "Lookup field snapshot has a different runtime type"
+
+        let fields = snapshot.baseFields
+        this.allCoreLinks <- fields.allCoreLinks
+        this.onlyScriptedEffects <- fields.onlyScriptedEffects
+        this.onlyScriptedTriggers <- fields.onlyScriptedTriggers
+        this.rootFolders <- fields.rootFolders
+        this.staticModifiers <- fields.staticModifiers
+        this.coreModifiers <- fields.coreModifiers
+        this.embeddedScriptedLoc <- fields.embeddedScriptedLoc
+        this._realScriptedLoc <- fields.realScriptedLoc
+        this.proccessedLoc <- fields.proccessedLoc
+        this.technologies <- fields.technologies
+        this.configRules <- fields.configRules
+        this.typeDefs <- fields.typeDefs
+        this.enumDefs <- fields.enumDefs
+        this.typeDefInfo <- fields.typeDefInfo
+        this.typeDefInfoForValidation <- fields.typeDefInfoForValidation
+        this.varDefInfo <- fields.varDefInfo
+        this.extendedConfigMetadata <- fields.extendedConfigMetadata
+        this.savedEventTargets <- fields.savedEventTargets
+        this.scriptedVariables <- fields.scriptedVariables
+        this.globalScriptedVariableNames <- fields.globalScriptedVariableNames
+
+        match snapshot.subtype with
+        | LookupBase
+        | LookupSTL -> ()
+        | LookupJomini scriptedEffectKeys ->
+            (this :?> JominiLookup).ScriptedEffectKeys <- scriptedEffectKeys
+        | LookupCK2(landedTitles, provinces) ->
+            let lookup = this :?> CK2Lookup
+            lookup.CK2LandedTitles <- landedTitles
+            lookup.CK2provinces <- provinces
+        | LookupEU4(scriptedEffectKeys, trueLegacyGovernments) ->
+            let lookup = this :?> EU4Lookup
+            lookup.EU4ScriptedEffectKeys <- scriptedEffectKeys
+            lookup.EU4TrueLegacyGovernments <- trueLegacyGovernments
+        | LookupHOI4 provinces ->
+            (this :?> HOI4Lookup).HOI4provinces <- provinces
+        | LookupIR(scriptedEffectKeys, provinces, characters) ->
+            let lookup = this :?> IRLookup
+            lookup.ScriptedEffectKeys <- scriptedEffectKeys
+            lookup.IRprovinces <- provinces
+            lookup.IRcharacters <- characters
+        | LookupVIC2 provinces ->
+            (this :?> VIC2Lookup).VIC2provinces <- provinces
