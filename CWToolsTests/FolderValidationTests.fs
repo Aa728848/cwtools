@@ -1655,7 +1655,121 @@ let incrementalScriptedRefreshTests =
     testSequenced
     <| testList
         "incremental scripted refresh"
-        [ testWithCapturedLogs "prepare is pure and commit swaps the type index" <| fun () ->
+        [ testWithCapturedLogs "scripted-variable contribution-only stages track values names and paths" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let variableFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_variables", "incremental.txt"))
+              let relativeFile = Path.GetRelativePath(Directory.GetCurrentDirectory(), variableFile)
+
+              stl.UpdateFile false variableFile (Some "@incremental = one") |> ignore
+              let added = stl.PrepareScriptedTypes([ variableFile ], false)
+              Expect.isSome added "an absolute scripted_variables path should produce a contribution-only stage"
+              Expect.isTrue added.Value.semanticChanged "adding a global variable is semantic"
+              Expect.isTrue (stl.CommitScriptedTypes added.Value) "the add stage should commit"
+              Expect.contains (stl.ScriptedVariables()) ("@incremental", "one") "the committed value should be published"
+
+              stl.UpdateFile false variableFile (Some "@incremental = two") |> ignore
+              let valueChanged = stl.PrepareScriptedTypes([ relativeFile ], false)
+              Expect.isSome valueChanged "the same scripted_variables file should be recognised through a relative path"
+              Expect.isTrue valueChanged.Value.semanticChanged "changing a winning value is semantic"
+              Expect.isTrue (stl.CommitScriptedTypes valueChanged.Value) "the value stage should commit"
+              Expect.contains (stl.ScriptedVariables()) ("@incremental", "two") "the new value should replace the old winner"
+
+              stl.UpdateFile false variableFile (Some "@renamed = two") |> ignore
+              let renamed = stl.PrepareScriptedTypes([ variableFile ], false)
+              Expect.isSome renamed "renaming a variable should stage"
+              Expect.isTrue (stl.CommitScriptedTypes renamed.Value) "the rename stage should commit"
+              Expect.isFalse (stl.ScriptedVariables() |> List.exists (fst >> (=) "@incremental")) "rename should remove the old name"
+              Expect.contains (stl.ScriptedVariables()) ("@renamed", "two") "rename should publish the new name"
+
+          testWithCapturedLogs "scripted-variable duplicate reorder mirrors full refresh" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let first = Path.GetFullPath(Path.Combine(folder, "common", "scripted_variables", "a_incremental.txt"))
+              let second = Path.GetFullPath(Path.Combine(folder, "common", "scripted_variables", "b_incremental.txt"))
+              stl.UpdateFile false first (Some "@duplicate = first") |> ignore
+              stl.UpdateFile false second (Some "@duplicate = second") |> ignore
+              let initial = stl.PrepareScriptedTypes([ first; second ], false)
+              Expect.isSome initial "duplicate contributions should stage"
+              Expect.isTrue (stl.CommitScriptedTypes initial.Value) "initial duplicate stage should commit"
+              let before = stl.ScriptedVariables() |> List.find (fst >> (=) "@duplicate")
+
+              // Swap the two equal-name contributions. The name/value multiset is unchanged,
+              // but ordered first-wins semantics select the other value.
+              stl.UpdateFile false first (Some "@duplicate = second") |> ignore
+              stl.UpdateFile false second (Some "@duplicate = first") |> ignore
+              let reordered = stl.PrepareScriptedTypes([ first; second ], false)
+              Expect.isSome reordered "reordering duplicate contributions should stage"
+              Expect.isTrue reordered.Value.semanticChanged "winner/order changes are semantic even when each value is unchanged"
+              Expect.isTrue (stl.CommitScriptedTypes reordered.Value) "the reorder stage should commit"
+              let incremental = stl.ScriptedVariables() |> List.find (fst >> (=) "@duplicate")
+              Expect.notEqual incremental before "duplicate reorder should change the deterministic winner"
+              stl.RefreshCaches()
+              Expect.equal
+                  incremental
+                  (stl.ScriptedVariables() |> List.find (fst >> (=) "@duplicate"))
+                  "incremental duplicate winner must exactly match a fresh full model"
+
+          testWithCapturedLogs "contribution stages chain and reject stale resources" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let variableFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_variables", "guard_incremental.txt"))
+              let unrelated = Path.GetFullPath(Path.Combine(folder, "events", "guard_incremental.txt"))
+              Expect.isNone
+                  (stl.PrepareScriptedTypes([ unrelated ], false))
+                  "a non-contribution file with no type keys or additional semantic change should not stage"
+
+              stl.UpdateFile false variableFile (Some "@guarded = one") |> ignore
+              let first = stl.PrepareScriptedTypes([ variableFile ], false)
+              Expect.isSome first "first contribution stage should exist"
+              Expect.isTrue (stl.CommitScriptedTypes first.Value) "first chained commit should succeed"
+              let noChange = stl.PrepareScriptedTypes([ variableFile ], false)
+              Expect.isSome noChange "an unchanged contribution path still has a safe staged index"
+              Expect.isFalse noChange.Value.semanticChanged "unchanged contribution should be a semantic no-op"
+              Expect.isTrue (stl.CommitScriptedTypes noChange.Value) "no-op chained commit should succeed"
+
+              stl.UpdateFile false variableFile (Some "@guarded = two") |> ignore
+              let stale = stl.PrepareScriptedTypes([ variableFile ], false)
+              Expect.isSome stale "changed contribution should stage"
+              stl.UpdateFile false variableFile (Some "@guarded = three") |> ignore
+              Expect.isFalse (stl.CommitScriptedTypes stale.Value) "resource mutation after prepare must reject the stale stage"
+              Expect.equal
+                  ("@guarded", "one")
+                  (stl.ScriptedVariables() |> List.find (fst >> (=) "@guarded"))
+                  "a rejected stale stage must not publish its contribution"
+
+              // Deletion has no safe contribution commit API: returning false preserves the
+              // caller's existing full model reload fallback instead of mutating staged state.
+              Expect.isFalse
+                  (stl.RemoveScriptedTypes [ variableFile ])
+                  "contribution-only deletion must retain the existing full-refresh fallback"
+
+          testWithCapturedLogs "mixed scripted-variable deletion batch is rejected atomically" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let variableFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_variables", "mixed_delete.txt"))
+              let triggerFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
+              stl.UpdateFile false variableFile (Some "@mixed_delete = present") |> ignore
+              let variableStage = stl.PrepareScriptedTypes([ variableFile ], false)
+              Expect.isSome variableStage "the scripted-variable contribution should stage before deletion"
+              Expect.isTrue (stl.CommitScriptedTypes variableStage.Value) "the scripted-variable contribution should commit"
+              let triggerIdsBefore = stl.Types().["scripted_trigger"] |> Array.map _.id
+
+              Expect.isFalse
+                  (stl.RemoveScriptedTypes [ triggerFile; variableFile ])
+                  "any scripted_variables member must reject the whole mixed deletion batch"
+              Expect.isSome
+                  (stl.AllEntities() |> Seq.tryFind (fun struct (entity, _) -> entity.filepath = triggerFile))
+                  "the scripted type resource must not be partially removed"
+              Expect.isSome
+                  (stl.AllEntities() |> Seq.tryFind (fun struct (entity, _) -> entity.filepath = variableFile))
+                  "the scripted-variable resource must remain for the full-refresh fallback"
+              Expect.equal
+                  triggerIdsBefore
+                  (stl.Types().["scripted_trigger"] |> Array.map _.id)
+                  "the mixed-batch rejection must not partially mutate the type index"
+              Expect.contains
+                  (stl.ScriptedVariables())
+                  ("@mixed_delete", "present")
+                  "the mixed-batch rejection must not partially mutate contributions"
+
+          testWithCapturedLogs "prepare is pure and commit swaps the type index" <| fun () ->
               let stl, folder = stlScriptedGame ()
               let triggerFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
 

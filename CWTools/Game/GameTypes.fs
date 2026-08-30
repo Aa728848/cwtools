@@ -97,6 +97,10 @@ type StagedScriptedTypes =
       baseCoreLinks: obj
       baseOnlyScriptedEffects: obj
       baseOnlyScriptedTriggers: obj
+      /// Scripted-variable contribution guards reject stages prepared against stale lookup/resources.
+      baseScriptedVariables: obj
+      baseGlobalScriptedVariableNames: obj
+      resourceEpoch: int
       newEnumDefs: obj
       newTempEnumMap: obj
       /// Present only for a semantic change. The lookup snapshot and services are

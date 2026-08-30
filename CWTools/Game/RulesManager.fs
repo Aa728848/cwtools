@@ -713,6 +713,12 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     Map.add n (k.ToArray()) m2)
             m
 
+    // Both full and staged refresh use this exact deterministic winner helper.
+    let scriptedVariableContributions (entities: struct (Entity * Lazy<'T>) list) =
+        entities
+        |> Seq.map (fun struct (entity, _) -> entity)
+        |> ScriptedVariableContribution.collect
+
     let refreshConfigFor
         (refreshLookup: 'L)
         (initialTempTypeMap: Map<string, PrefixOptimisedStringSet>)
@@ -1380,37 +1386,11 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         //|> Seq.fold (fun m map -> Map.toList map |>  List.fold (fun m2 (n,k) -> if Map.containsKey n m2 then Map.add n ((k |> List.ofSeq)@m2.[n]) m2 else Map.add n (k |> List.ofSeq) m2) m) tempValues
         settings.refreshConfigAfterVarDefHook lookup resources embeddedSettings
 
-        // Collect scripted variables with their values from all entities. Only variables
-        // defined under common/scripted_variables are game-globals; every other @-variable
-        // is file-local. The full list keeps feeding hover/docs, while completion receives
-        // the globals only (CompletionService adds the current file's locals per entity).
-        let isGlobalVariableEntity (e: Entity) =
-            e.logicalpath.Replace('\\', '/').Contains("common/scripted_variables/")
-
-        let scriptVariablesWithScope =
-            allEntitiesList
-            |> PSeq.collect (fun struct (e, _) ->
-                let isGlobal = isGlobalVariableEntity e
-
-                e.entity.Leaves
-                |> Seq.choose (fun leaf ->
-                    if leaf.Key.StartsWith("@") && not (leaf.Key.StartsWith("@[")) && not (leaf.Key.StartsWith(@"@\[")) then
-                        Some (isGlobal, leaf.Key, leaf.Value.ToRawString())
-                    else None))
-            |> Seq.toList
-
-        // Store in lookup for later use (with actual values)
-        lookup.scriptedVariables <-
-            scriptVariablesWithScope
-            |> Seq.map (fun (_, key, value) -> key, value)
-            |> Seq.distinctBy fst
-            |> Seq.toList
-
-        lookup.globalScriptedVariableNames <-
-            scriptVariablesWithScope
-            |> Seq.choose (fun (isGlobal, key, _) -> if isGlobal then Some key else None)
-            |> Seq.distinct
-            |> Seq.toList
+        // The same ordered contribution fold is used by incremental preparation so
+        // duplicate winners and reorder-only changes exactly mirror a full refresh.
+        let scriptedVariables, globalScriptedVariableNames = scriptedVariableContributions allEntitiesList
+        lookup.scriptedVariables <- scriptedVariables
+        lookup.globalScriptedVariableNames <- globalScriptedVariableNames
 
         logDiag $"Refresh step scriptVariablesWithScope: %0.3f{float subTimer.ElapsedMilliseconds / 1000.0}s"
         subTimer.Restart()
@@ -1537,6 +1517,11 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     Map.add typeKey (createStringSet ids) acc)
                 tempTypeMap
         lookup.typeDefInfoForValidation <- typeDefInfoForValidationFrom lookup.typeDefInfo
+
+        let scriptedVariables, globalScriptedVariableNames =
+            resources.AllEntities() |> Seq.toList |> scriptedVariableContributions
+        lookup.scriptedVariables <- scriptedVariables
+        lookup.globalScriptedVariableNames <- globalScriptedVariableNames
 
         let ruleValidationService, infoService, completionService =
             buildServices rulesWrapper tempTypeMap loc allFiles
@@ -1689,6 +1674,9 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let baseCoreLinks = original.allCoreLinks
         let baseOnlyScriptedEffects = original.onlyScriptedEffects
         let baseOnlyScriptedTriggers = original.onlyScriptedTriggers
+        let baseScriptedVariables = original.scriptedVariables
+        let baseGlobalScriptedVariableNames = original.globalScriptedVariableNames
+        let resourceEpoch = ResourceManagerEager.currentResource ()
         let baseTempEnumMap = tempEnumMap
         let clone = original.ShallowClone() :?> 'L
         lookup <- clone
@@ -1702,10 +1690,22 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             match prepareTypeIndex files typeKeys with
             | None -> None
             | Some stagedIndex ->
+                let scriptedVariables, globalScriptedVariableNames =
+                    resources.AllEntities() |> Seq.toList |> scriptedVariableContributions
+
+                let scriptedVariablesChanged =
+                    scriptedVariables <> baseScriptedVariables
+                    || globalScriptedVariableNames <> baseGlobalScriptedVariableNames
+
                 let semanticChanged =
                     additionalSemanticChanged
                     || stagedIndex.semanticChanged
+                    || scriptedVariablesChanged
                     || not (enumDefsSemanticallyEqual baseEnumDefs lookup.enumDefs)
+
+                if semanticChanged then
+                    lookup.scriptedVariables <- scriptedVariables
+                    lookup.globalScriptedVariableNames <- globalScriptedVariableNames
 
                 let lookupSnapshot, services =
                     if semanticChanged then
@@ -1737,6 +1737,9 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                       baseCoreLinks = box baseCoreLinks
                       baseOnlyScriptedEffects = box baseOnlyScriptedEffects
                       baseOnlyScriptedTriggers = box baseOnlyScriptedTriggers
+                      baseScriptedVariables = box baseScriptedVariables
+                      baseGlobalScriptedVariableNames = box baseGlobalScriptedVariableNames
+                      resourceEpoch = resourceEpoch
                       newEnumDefs = box lookup.enumDefs
                       newTempEnumMap = box tempEnumMap
                       lookupSnapshot = lookupSnapshot
@@ -1749,6 +1752,9 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let baseGuardsFailed =
             not (System.Object.ReferenceEquals(lookup.typeDefInfo, staged.baseTypeDefInfo))
             || not (System.Object.ReferenceEquals(lookup.enumDefs, staged.baseEnumDefs))
+            || not (System.Object.ReferenceEquals(lookup.scriptedVariables, staged.baseScriptedVariables))
+            || not (System.Object.ReferenceEquals(lookup.globalScriptedVariableNames, staged.baseGlobalScriptedVariableNames))
+            || ResourceManagerEager.currentResource () <> staged.resourceEpoch
 
         let semanticGuardsFailed =
             staged.semanticChanged

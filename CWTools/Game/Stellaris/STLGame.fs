@@ -242,7 +242,10 @@ module STLGameFunctions =
                 else
                     [||]
 
-            Array.concat [ localSignature; parameterSignature; definitionSignature ]
+            let scriptedVariableSignature =
+                ScriptedVariableContribution.signatureForEntity entity
+
+            Array.concat [ localSignature; parameterSignature; definitionSignature; scriptedVariableSignature ]
             |> Array.sort
             |> Some
         | _ -> None
@@ -2550,18 +2553,27 @@ type STLGame(setupSettings: StellarisSettings) =
                 true
 
         member _.RemoveScriptedTypes files =
-            let typeKeys = incrementalTypeKeysForFiles game files
-            if typeKeys.IsEmpty then false
+            let containsScriptedVariableContribution =
+                files |> List.exists ScriptedVariableContribution.isScriptedVariablesPath
+
+            if containsScriptedVariableContribution then
+                false
             else
-                for file in files do
-                    game.RemoveFile file |> ignore
-                game.RefreshScriptedTypesForFiles(files, typeKeys)
-                carrierScopeResolver.Invalidate()
-                true
+                let typeKeys = incrementalTypeKeysForFiles game files
+                if typeKeys.IsEmpty then false
+                else
+                    for file in files do
+                        game.RemoveFile file |> ignore
+                    game.RefreshScriptedTypesForFiles(files, typeKeys)
+                    carrierScopeResolver.Invalidate()
+                    true
 
         member _.PrepareScriptedTypes(files, additionalSemanticChanged) =
             let typeKeys = incrementalTypeKeysForFiles game files
-            if typeKeys.IsEmpty then None
+            let hasScriptedVariableContribution =
+                files |> List.exists ScriptedVariableContribution.isScriptedVariablesPath
+
+            if typeKeys.IsEmpty && not additionalSemanticChanged && not hasScriptedVariableContribution then None
             else game.PrepareScriptedTypesForFiles(files, typeKeys, additionalSemanticChanged)
 
         member _.CommitScriptedTypes staged =

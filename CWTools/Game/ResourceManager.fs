@@ -269,6 +269,69 @@ module CarrierContribution =
             |> hashChildren (mix 1469598103934665603UL entity.logicalpath)
             |> Some
 
+/// Deterministic scripted-variable contribution ordering shared by full and staged
+/// scripted-service refreshes. Entity does not expose Paradox dependency order, so
+/// canonical logical/file paths are the stable residual ordering policy; declaration
+/// order within a file remains significant and the first contribution wins.
+module ScriptedVariableContribution =
+    let private normalisePath (path: string) = path.Replace('\\', '/').ToLowerInvariant()
+
+    let isScriptedVariablesPath (path: string) =
+        normalisePath path
+        |> fun value -> value.Contains("common/scripted_variables/", StringComparison.Ordinal)
+
+    let isScriptedVariablesEntity (entity: Entity) =
+        isScriptedVariablesPath entity.logicalpath || isScriptedVariablesPath entity.filepath
+
+    let private variableLeaves (entity: Entity) =
+        let isGlobal = isScriptedVariablesEntity entity
+
+        entity.entity.Leaves
+        |> Seq.indexed
+        |> Seq.choose (fun (index, leaf) ->
+            if leaf.Key.StartsWith("@", StringComparison.Ordinal)
+               && not (leaf.Key.StartsWith("@[", StringComparison.Ordinal))
+               && not (leaf.Key.StartsWith(@"@\[", StringComparison.Ordinal)) then
+                Some(index, isGlobal, leaf.Key, leaf.Value.ToRawString())
+            else
+                None)
+        |> Seq.toArray
+
+    let signatureForEntity (entity: Entity) =
+        if isScriptedVariablesEntity entity then
+            variableLeaves entity
+            |> Array.map (fun (index, _, key, value) ->
+                sprintf "scripted_variable\u001f%010d\u001f%s\u001f%s" index key value)
+        else
+            [||]
+
+    let collect (entities: seq<Entity>) =
+        let orderedEntities = entities |> Seq.toArray
+
+        orderedEntities
+        |> Array.sortInPlaceWith (fun left right ->
+            let logical = StringComparer.Ordinal.Compare(normalisePath left.logicalpath, normalisePath right.logicalpath)
+            if logical <> 0 then logical
+            else StringComparer.Ordinal.Compare(normalisePath left.filepath, normalisePath right.filepath))
+
+        let contributions = orderedEntities |> Array.collect variableLeaves
+        let seenValues = HashSet<string>(StringComparer.Ordinal)
+        let seenGlobals = HashSet<string>(StringComparer.Ordinal)
+
+        let values =
+            contributions
+            |> Array.choose (fun (_, _, key, value) ->
+                if seenValues.Add key then Some(key, value) else None)
+            |> Array.toList
+
+        let globals =
+            contributions
+            |> Array.choose (fun (_, isGlobal, key, _) ->
+                if isGlobal && seenGlobals.Add key then Some key else None)
+            |> Array.toList
+
+        values, globals
+
 type RawEntity = Entity
 
 type CachedResourceData =
