@@ -166,13 +166,17 @@ type LocalisationDeltaAckResult =
 type IncrementalLocalisationResult =
     { affectedFiles: string array
       errors: CWError list
-      /// Phase 2 carries explicit empty replacements; publishing them is a Phase 3 manager swap.
       localisationErrorReplacements: CWError array
       globalLocalisationErrorReplacements: CWError array }
 
-/// Opaque, single-use localisation validation prepared against one exact journal prefix.
-/// Phase 2 deliberately stages only the detached result: swapping ValidationManager and
-/// localisation error caches atomically remains a Phase 3 concern.
+[<NoEquality; NoComparison>]
+type internal LocalisationPublicationState =
+    { generation: int64
+      localErrors: Map<string, CWError array>
+      globalErrors: Map<string, CWError array> }
+
+/// Opaque, single-use localisation validation and immutable publication candidate
+/// prepared against one exact journal prefix.
 [<Sealed>]
 type StagedLocalisationRefresh internal
     (
@@ -181,21 +185,31 @@ type StagedLocalisationRefresh internal
         typeRulesEpoch: int,
         localisationEpoch: int,
         fileSetEpoch: int,
+        validationManagerIdentity: obj,
+        baseState: LocalisationPublicationState,
+        candidateState: LocalisationPublicationState,
         result: IncrementalLocalisationResult
     ) =
     let mutable completed = 0
     let mutable retainedResult = Some result
+    let mutable retainedCandidate = Some candidateState
     member internal _.Cursor = cursor
     member internal _.ResourceEpoch = resourceEpoch
     member internal _.TypeRulesEpoch = typeRulesEpoch
     member internal _.LocalisationEpoch = localisationEpoch
     member internal _.FileSetEpoch = fileSetEpoch
+    member internal _.ValidationManagerIdentity = validationManagerIdentity
+    member internal _.BaseState = baseState
+    member internal _.CandidateState = retainedCandidate
     member internal _.TryComplete() = System.Threading.Interlocked.CompareExchange(&completed, 1, 0) = 0
     member internal _.TakeResult() =
         let current = retainedResult
         retainedResult <- None
+        retainedCandidate <- None
         current
-    member internal _.ClearResult() = retainedResult <- None
+    member internal _.ClearResult() =
+        retainedResult <- None
+        retainedCandidate <- None
     member internal _.IsCompleted = System.Threading.Volatile.Read(&completed) <> 0
 
 type StagedLocalisationCommitResult =

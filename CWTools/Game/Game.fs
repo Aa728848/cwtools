@@ -191,6 +191,34 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         )
     let errorCache = System.Collections.Concurrent.ConcurrentDictionary<string, CWError list>()
     let mutable incrementalLocalisationValidationCount = 0
+    let mutable localisationPublicationState =
+        { generation = 0L
+          localErrors = Map.empty
+          globalErrors = Map.empty }
+
+    let readLocalisationPublicationState () =
+        System.Threading.Volatile.Read(&localisationPublicationState)
+
+    let errorsByPath (errors: CWError seq) : Map<string, CWError array> =
+        errors
+        |> Seq.groupBy (fun error -> error.range.FileName)
+        |> Seq.map (fun (path, values) -> path, values |> Seq.toArray)
+        |> Map.ofSeq
+
+    let replacePublicationErrors
+        (files: Set<string>)
+        (replacements: CWError array)
+        (existing: Map<string, CWError array>)
+        =
+        let retained = existing |> Map.filter (fun path _ -> not (files.Contains path))
+        errorsByPath replacements |> Map.fold (fun state path errors -> Map.add path errors state) retained
+
+    let flattenPublicationErrors (errors: Map<string, CWError array>) : CWError list =
+        errors |> Map.toSeq |> Seq.collect snd |> Seq.toList
+
+    let syncLocalisationManagerFromState (state: LocalisationPublicationState) =
+        localisationManager.localisationErrors <- Some(flattenPublicationErrors state.localErrors)
+        localisationManager.globalLocalisationErrors <- Some(flattenPublicationErrors state.globalErrors)
 
     let readTextWithDeclaredEncoding filepath =
         let strictPrimary =
@@ -337,8 +365,8 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         // A future Phase 3 stage may carry and atomically swap those caches at commit.
         { affectedFiles = affectedFiles |> Seq.sortWith (fun left right -> pathComparer.Compare(left, right)) |> Seq.toArray
           errors = cachedRuleErrors @ localErrors @ globalErrors
-          localisationErrorReplacements = [||]
-          globalLocalisationErrorReplacements = [||] }
+          localisationErrorReplacements = localErrors |> List.toArray
+          globalLocalisationErrorReplacements = globalErrors |> List.toArray }
 
     let updateFile (shallow: bool) filepath (fileText: string option) =
         log $"updateFile %s{filepath}"
@@ -896,14 +924,37 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
     member _.SemanticSignatureForFile(filepath) = semanticSignatureForFile filepath
 
+    member internal _.LocalisationPublicationIdentity =
+        readLocalisationPublicationState () :> obj
+
+    member internal _.LocalisationPublicationStats =
+        let state = readLocalisationPublicationState ()
+        state.generation, state.localErrors.Count, state.globalErrors.Count
+
+    member internal _.PublishFullLocalisationErrors(localErrors: CWError list, globalErrors: CWError list) =
+        let current = readLocalisationPublicationState ()
+        let published =
+            { generation = current.generation + 1L
+              localErrors = errorsByPath localErrors
+              globalErrors = errorsByPath globalErrors }
+        System.Threading.Volatile.Write(&localisationPublicationState, published)
+        syncLocalisationManagerFromState published
+        published
+
+    member internal _.PublishedLocalisationErrors() =
+        let state = readLocalisationPublicationState ()
+        flattenPublicationErrors state.localErrors, flattenPublicationErrors state.globalErrors
+
     member _.PeekLocalisationDelta(owner: string) =
-        if localisationManager.localisationErrors.IsSome && localisationManager.globalLocalisationErrors.IsSome then
+        let state = readLocalisationPublicationState ()
+        if state.generation > 0L then
             localisationManager.PeekDelta owner
         else
             Ok None
 
     member _.AckLocalisationDelta(cursor: LocalisationDeltaCursor) =
-        if localisationManager.localisationErrors.IsSome && localisationManager.globalLocalisationErrors.IsSome then
+        let state = readLocalisationPublicationState ()
+        if state.generation > 0L then
             localisationManager.AckDelta cursor
         else
             LocalisationDeltaAckResult.Stale
@@ -911,7 +962,8 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member _.DiscardLocalisationDelta(cursor: LocalisationDeltaCursor) = localisationManager.DiscardDelta cursor
 
     member _.TakeLocalisationDelta() =
-        if localisationManager.localisationErrors.IsSome && localisationManager.globalLocalisationErrors.IsSome then
+        let state = readLocalisationPublicationState ()
+        if state.generation > 0L then
             localisationManager.TakeDelta()
         else
             None
@@ -920,7 +972,8 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         validateIncrementalLocalisationFiles delta.changedKeys delta.affectedLocalisationFiles
 
     member _.PrepareLocalisationRefresh(owner: string, validate: LocalisationDelta -> IncrementalLocalisationResult) =
-        if localisationManager.localisationErrors.IsNone || localisationManager.globalLocalisationErrors.IsNone then
+        let readyState = readLocalisationPublicationState ()
+        if readyState.generation = 0L then
             Ok None
         else
             let resourceEpoch = ResourceManagerEager.currentResource ()
@@ -937,8 +990,14 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 let materialised =
                     { affectedFiles = validated.affectedFiles |> Array.copy |> Array.sortWith (fun left right -> pathComparer.Compare(left, right))
                       errors = validated.errors |> List.ofSeq
-                      localisationErrorReplacements = [||]
-                      globalLocalisationErrorReplacements = [||] }
+                      localisationErrorReplacements = validated.localisationErrorReplacements |> Array.copy
+                      globalLocalisationErrorReplacements = validated.globalLocalisationErrorReplacements |> Array.copy }
+                let baseState = readLocalisationPublicationState ()
+                let affectedFileSet = materialised.affectedFiles |> Set.ofArray
+                let candidateState =
+                    { generation = baseState.generation + 1L
+                      localErrors = replacePublicationErrors affectedFileSet materialised.localisationErrorReplacements baseState.localErrors
+                      globalErrors = replacePublicationErrors affectedFileSet materialised.globalLocalisationErrorReplacements baseState.globalErrors }
                 Ok(
                     Some(
                         StagedLocalisationRefresh(
@@ -947,6 +1006,9 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                             typeRulesEpoch,
                             localisationEpoch,
                             fileSetEpoch,
+                            box validationManager,
+                            baseState,
+                            candidateState,
                             materialised
                         )
                     )
@@ -960,14 +1022,19 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             || ResourceManagerEager.currentTypeRules () <> staged.TypeRulesEpoch
             || ResourceManagerEager.currentLocalisation () <> staged.LocalisationEpoch
             || ResourceManagerEager.currentFileSet () <> staged.FileSetEpoch
+            || not (Object.ReferenceEquals(validationManager, staged.ValidationManagerIdentity))
+            || not (Object.ReferenceEquals(readLocalisationPublicationState (), staged.BaseState))
         then
             staged.ClearResult()
             StagedLocalisationCommitResult.Superseded
         else
-            // Publication is intentionally a no-op until the prepared validation state has
-            // a writer-owned swap. The manager still couples this callback and exact prefix
-            // removal atomically, so a later publication callback cannot race acknowledgement.
-            match localisationManager.TryCommitDelta(staged.Cursor, ignore) with
+            let publish () =
+                match staged.CandidateState with
+                | Some candidate ->
+                    System.Threading.Volatile.Write(&localisationPublicationState, candidate)
+                    syncLocalisationManagerFromState candidate
+                | None -> ()
+            match localisationManager.TryCommitDelta(staged.Cursor, publish) with
             | LocalisationDeltaAckResult.Acknowledged ->
                 match staged.TakeResult() with
                 | Some result -> StagedLocalisationCommitResult.Committed result

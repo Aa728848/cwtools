@@ -454,24 +454,23 @@ module Helpers =
                     else
                         false)
 
-            let genGlobal () =
-                let ges = globalLocalisation (game)
-                game.LocalisationManager.globalLocalisationErrors <- Some ges
-                ges
-
-            let genAll () =
-                let les =
-                    (game.ValidationManager.ValidateAllLocalisation(validatableEntities))
-
-                game.LocalisationManager.localisationErrors <- Some les
-                les
-
-            rulesLocErrors
-            @ match game.LocalisationManager.localisationErrors, game.LocalisationManager.globalLocalisationErrors with
-              | Some les, Some ges -> (if force then genAll () else les) @ (if forceGlobal then genGlobal () else ges)
-              | None, Some ges -> genAll () @ (if forceGlobal then genGlobal () else ges)
-              | Some les, None -> (if force then genAll () else les) @ genGlobal ()
-              | None, None -> genAll () @ genGlobal ()
+            let generation, _, _ = game.LocalisationPublicationStats
+            let publishedLocal, publishedGlobal = game.PublishedLocalisationErrors()
+            let localErrors =
+                if force || generation = 0L then game.ValidationManager.ValidateAllLocalisation(validatableEntities)
+                else publishedLocal
+            let globalErrors =
+                if forceGlobal || generation = 0L then globalLocalisation game
+                else publishedGlobal
+            let localErrors, globalErrors =
+                if force || forceGlobal || generation = 0L then
+                    let currentLocal = if force || generation = 0L then localErrors else publishedLocal
+                    let currentGlobal = if forceGlobal || generation = 0L then globalErrors else publishedGlobal
+                    game.PublishFullLocalisationErrors(currentLocal, currentGlobal) |> ignore
+                    currentLocal, currentGlobal
+                else
+                    publishedLocal, publishedGlobal
+            rulesLocErrors @ localErrors @ globalErrors
 
     let createTypeDefInfo validate id range explicitLocalisation subtypes =
         { TypeDefInfo.id = id

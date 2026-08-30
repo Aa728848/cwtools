@@ -566,6 +566,8 @@ let tests =
                   | Result.Ok(Some batch) -> batch.cursor
                   | other -> failtestf "staged update should have a cursor, got %A" other
               let beforePrepare = concrete.IncrementalLocalisationValidationCount
+              let beforeState = concrete.LocalisationPublicationIdentity
+              let beforeGeneration, _, _ = concrete.LocalisationPublicationStats
               let stage =
                   match incremental.PrepareLocalisationRefresh "staged" with
                   | Result.Ok(Some value) -> value
@@ -574,6 +576,9 @@ let tests =
                   (incremental.PeekLocalisationDelta "staged")
                   peek
                   "prepare must neither acknowledge nor alter the active prefix"
+              Expect.isTrue
+                  (Object.ReferenceEquals(beforeState, concrete.LocalisationPublicationIdentity))
+                  "prepare must preserve the live publication state identity"
               Expect.isTrue
                   (concrete.LocalisationManager.CanAckDelta cursor)
                   "the exact active owner and prefix must be acknowledgeable"
@@ -625,9 +630,15 @@ let tests =
                   Expect.isTrue
                       (result.affectedFiles = Array.sort result.affectedFiles)
                       "staged replacements must be deterministic"
-                  Expect.isEmpty result.localisationErrorReplacements "detached local replacements must be explicit empty arrays"
-                  Expect.isEmpty result.globalLocalisationErrorReplacements "detached global replacements must be explicit empty arrays"
+                  Expect.isEmpty result.localisationErrorReplacements "explicit empty local replacements must clear affected paths"
+                  Expect.isEmpty result.globalLocalisationErrorReplacements "explicit empty global replacements must clear affected paths"
               | other -> failtestf "exact staged prefix should commit, got %A" other
+              let committedState = concrete.LocalisationPublicationIdentity
+              let committedGeneration, _, _ = concrete.LocalisationPublicationStats
+              Expect.isFalse
+                  (Object.ReferenceEquals(beforeState, committedState))
+                  "commit must atomically replace the publication state identity"
+              Expect.equal committedGeneration (beforeGeneration + 1L) "commit must advance publication generation once"
               Expect.equal
                   concrete.IncrementalLocalisationValidationCount
                   (beforePrepare + 2)
@@ -700,6 +711,9 @@ let tests =
                   (incremental.TryCommitLocalisationRefresh repeated)
                   StagedLocalisationCommitResult.Superseded
                   "a second stage for an acknowledged cursor is superseded"
+              Expect.isTrue
+                  (Object.ReferenceEquals(committedState, concrete.LocalisationPublicationIdentity))
+                  "a stale stage must not invoke publication"
 
               let second = suffix + " staged_second:0 \"ready\"" + Environment.NewLine
               stl.UpdateFile false locPath (Some second) |> ignore
@@ -711,6 +725,7 @@ let tests =
                   match incremental.PrepareLocalisationRefresh "cursor-stale" with
                   | Result.Ok(Some value) -> value
                   | other -> failtestf "second staged update should prepare, got %A" other
+              let cursorState = concrete.LocalisationPublicationIdentity
               Expect.equal
                   (incremental.AckLocalisationDelta staleCursor)
                   LocalisationDeltaAckResult.Acknowledged
@@ -719,6 +734,9 @@ let tests =
                   (incremental.TryCommitLocalisationRefresh cursorStage)
                   StagedLocalisationCommitResult.Superseded
                   "a stale cursor must supersede without another acknowledgement"
+              Expect.isTrue
+                  (Object.ReferenceEquals(cursorState, concrete.LocalisationPublicationIdentity))
+                  "a stale cursor must preserve publication identity"
 
               let third = second + " staged_third:0 \"ready\"" + Environment.NewLine
               stl.UpdateFile false locPath (Some third) |> ignore
@@ -726,6 +744,7 @@ let tests =
                   match incremental.PrepareLocalisationRefresh "epoch-stale" with
                   | Result.Ok(Some value) -> value
                   | other -> failtestf "third staged update should prepare, got %A" other
+              let epochState = concrete.LocalisationPublicationIdentity
               ResourceManagerEager.nextTypeRules () |> ignore
               Expect.equal
                   (incremental.TryCommitLocalisationRefresh epochStage)
@@ -734,6 +753,9 @@ let tests =
               Expect.isSome
                   (incremental.PeekLocalisationDelta "epoch-stale" |> Result.toOption |> Option.flatten)
                   "superseded commit must leave its prefix pending"
+              Expect.isTrue
+                  (Object.ReferenceEquals(epochState, concrete.LocalisationPublicationIdentity))
+                  "an epoch-stale stage must not invoke publication"
               incremental.DiscardLocalisationRefresh epochStage
               incremental.DiscardLocalisationRefresh epochStage
               Expect.equal

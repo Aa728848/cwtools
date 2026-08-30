@@ -359,11 +359,10 @@ module STLGameFunctions =
                 | Invalid(_, errors) -> errors |> onlyAffected
                 | _ -> []
 
-        // Keep staged validation detached from the live localisation error caches.
         { affectedFiles = affectedFiles |> Seq.sortWith (fun left right -> pathComparer.Compare(left, right)) |> Seq.toArray
           errors = cachedRuleErrors @ localErrors @ globalErrors
-          localisationErrorReplacements = [||]
-          globalLocalisationErrorReplacements = [||] }
+          localisationErrorReplacements = localErrors |> List.toArray
+          globalLocalisationErrorReplacements = globalErrors |> List.toArray }
 
     let validateIncrementalLocalisation (game: GameObject) (delta: LocalisationDelta) =
         validateIncrementalLocalisationFiles game delta.changedKeys delta.affectedLocalisationFiles
@@ -2586,6 +2585,8 @@ type STLGame(setupSettings: StellarisSettings) =
     member _.Lookup = lookup
     member internal _.LastLazyRefreshStats = game.LastLazyRefreshStats
     member internal _.IncrementalLocalisationValidationCount = game.IncrementalLocalisationValidationCount
+    member internal _.LocalisationPublicationIdentity = game.LocalisationPublicationIdentity
+    member internal _.LocalisationPublicationStats = game.LocalisationPublicationStats
     member internal _.LocalisationManager = game.LocalisationManager
 
     interface IScopeInferenceProvider with
