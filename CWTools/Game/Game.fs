@@ -1020,9 +1020,21 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         LanguageFeatures.clearScriptedEffectParamMapCache ()
         match rulesManager.CommitRefreshConfig(staged) with
         | Some(rules, info, completion) ->
+            let total = this.Resources.AllEntities() |> Seq.length
+            let beforeCreated = createdLazyCount ()
             this.RuleValidationService <- Some rules
             this.InfoService <- Some info
             this.completionService <- Some completion
+            let afterRefreshCreated = createdLazyCount ()
+            this.Resources.ForceRecompute()
+            let afterRecomputeCreated = createdLazyCount ()
+            lastLazyRefreshStats <-
+                Some
+                    { beforeCreated = beforeCreated
+                      afterRefreshCreated = afterRefreshCreated
+                      afterRecomputeCreated = afterRecomputeCreated
+                      newlyCreated = max 0 (afterRefreshCreated - beforeCreated)
+                      total = total }
             this.RefreshValidationManager()
             LanguageFeatures.clearCompletionEntityCache ()
             LanguageFeatures.clearTypeReferenceIndexCache ()

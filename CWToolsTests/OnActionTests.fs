@@ -557,14 +557,32 @@ let stagedRefreshTests =
                                 debugRulesOnly = false
                                 debugMode = false } }
 
-              let stl = STLGame(settings) :> IGame<STLComputedData>
+              let concrete = STLGame(settings)
+              let stl = concrete :> IGame<STLComputedData>
 
               let sortedTypeIds (types: Map<string, TypeDefInfo array>) =
                   types |> Map.map (fun _ v -> v |> Array.map _.id |> Array.sort)
 
+              let preRefreshEntity, preRefreshData =
+                  stl.AllEntities() |> Seq.head |> fun struct (entity, data) -> entity, data
+              preRefreshData.Force() |> ignore
+              Expect.isTrue preRefreshData.IsValueCreated "pre-refresh fixture must have computed data"
+
               let staged = stl.PrepareRefreshCaches()
               Expect.isSome staged "prepare should produce a staged refresh"
               Expect.isTrue (stl.CommitRefreshCaches staged.Value) "commit guards should hold with no interleaved writes"
+
+              let postRefreshData =
+                  stl.AllEntities()
+                  |> Seq.find (fun struct (entity, _) -> entity.filepath = preRefreshEntity.filepath)
+                  |> fun struct (_, data) -> data
+              Expect.isFalse (Object.ReferenceEquals(preRefreshData, postRefreshData)) "commit must replace pre-refresh computed data"
+              Expect.isFalse postRefreshData.IsValueCreated "commit must install the replacement without forcing it"
+              let stagedStats = concrete.LastLazyRefreshStats |> Option.get
+              Expect.equal stagedStats.afterRecomputeCreated 0 "staged recompute must leave replacement lazies uncreated"
+              postRefreshData.Force() |> ignore
+              Expect.isTrue postRefreshData.IsValueCreated "eventual consumers may compute refreshed data"
+
               let typesAfterStaged = sortedTypeIds (stl.Types())
               let triggersAfterStaged = stl.ScriptedTriggers() |> List.length
               stl.RefreshCaches()
