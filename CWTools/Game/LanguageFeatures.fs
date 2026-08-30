@@ -31,11 +31,12 @@ module LanguageFeatures =
 
     type private ScriptedEffectParamMapCacheEntry =
         { source: obj
-          value: Lazy<Map<string, string list>> }
+          value: Lazy<Map<string, string list>>
+          orderNode: Collections.Generic.LinkedListNode<string> }
 
     let private scriptedEffectParamMapCacheLock = obj ()
     let private scriptedEffectParamMapCache = Collections.Generic.Dictionary<string, ScriptedEffectParamMapCacheEntry>()
-    let private scriptedEffectParamMapCacheOrder = Collections.Generic.Queue<struct (string * ScriptedEffectParamMapCacheEntry)>()
+    let private scriptedEffectParamMapCacheOrder = Collections.Generic.LinkedList<string>()
 
     let internal normaliseScriptedEffectParamMapCacheKey (filepath: string) =
         let fullPath =
@@ -51,10 +52,18 @@ module LanguageFeatures =
 
     let internal removeScriptedEffectParamMapCache filepath =
         let key = normaliseScriptedEffectParamMapCacheKey filepath
-        lock scriptedEffectParamMapCacheLock (fun () -> scriptedEffectParamMapCache.Remove key |> ignore)
+        lock scriptedEffectParamMapCacheLock (fun () ->
+            match scriptedEffectParamMapCache.TryGetValue key with
+            | true, entry ->
+                scriptedEffectParamMapCache.Remove key |> ignore
+                scriptedEffectParamMapCacheOrder.Remove entry.orderNode
+            | _ -> ())
 
     let internal scriptedEffectParamMapCacheCount () =
         lock scriptedEffectParamMapCacheLock (fun () -> scriptedEffectParamMapCache.Count)
+
+    let internal scriptedEffectParamMapCacheBookkeepingCount () =
+        lock scriptedEffectParamMapCacheLock (fun () -> scriptedEffectParamMapCacheOrder.Count)
 
     let internal getOrBuildScriptedEffectParamMapCacheValue filepath source build =
         let key = normaliseScriptedEffectParamMapCacheKey filepath
@@ -62,19 +71,20 @@ module LanguageFeatures =
             lock scriptedEffectParamMapCacheLock (fun () ->
                 match scriptedEffectParamMapCache.TryGetValue key with
                 | true, entry when Object.ReferenceEquals(entry.source, source) -> entry.value
-                | _ ->
-                    scriptedEffectParamMapCache.Remove key |> ignore
+                | found, previous ->
+                    if found then
+                        scriptedEffectParamMapCache.Remove key |> ignore
+                        scriptedEffectParamMapCacheOrder.Remove previous.orderNode
+                    let orderNode = scriptedEffectParamMapCacheOrder.AddLast key
                     let entry =
                         { source = source
-                          value = lazy (build ()) }
+                          value = lazy (build ())
+                          orderNode = orderNode }
                     scriptedEffectParamMapCache.[key] <- entry
-                    scriptedEffectParamMapCacheOrder.Enqueue(struct (key, entry))
                     while scriptedEffectParamMapCache.Count > ScriptedEffectParamMapCacheMaxEntries do
-                        let struct (oldestKey, oldestEntry) = scriptedEffectParamMapCacheOrder.Dequeue()
-                        match scriptedEffectParamMapCache.TryGetValue oldestKey with
-                        | true, current when Object.ReferenceEquals(current, oldestEntry) ->
-                            scriptedEffectParamMapCache.Remove oldestKey |> ignore
-                        | _ -> ()
+                        let oldestNode = scriptedEffectParamMapCacheOrder.First
+                        scriptedEffectParamMapCacheOrder.RemoveFirst()
+                        scriptedEffectParamMapCache.Remove oldestNode.Value |> ignore
                     entry.value)
         value.Value
 

@@ -51,6 +51,16 @@ let scriptedEffectParamMapCacheTests =
                 let path = Path.GetFullPath(sprintf "./cache-tests/%04d.txt" index)
                 populate path (obj ())) |> ignore
             Expect.isLessThanOrEqual (LanguageFeatures.scriptedEffectParamMapCacheCount ()) LanguageFeatures.ScriptedEffectParamMapCacheMaxEntries "concurrent inserts must obey the hard bound"
+            Expect.equal (LanguageFeatures.scriptedEffectParamMapCacheBookkeepingCount ()) (LanguageFeatures.scriptedEffectParamMapCacheCount ()) "bookkeeping must contain exactly one node per live entry"
+        }
+
+        test "repeated replacements keep bookkeeping strictly bounded" {
+            LanguageFeatures.clearScriptedEffectParamMapCache ()
+            let paths = [| for index in 0 .. 3 -> Path.GetFullPath(sprintf "./cache-tests/replaced-%d.txt" index) |]
+            Parallel.For(0, 4096, fun index -> populate paths.[index % paths.Length] (obj ())) |> ignore
+            Expect.equal (LanguageFeatures.scriptedEffectParamMapCacheCount ()) paths.Length "replacement retains one value per key"
+            Expect.isLessThanOrEqual (LanguageFeatures.scriptedEffectParamMapCacheBookkeepingCount ()) LanguageFeatures.ScriptedEffectParamMapCacheMaxEntries "replacement bookkeeping must obey the 256-entry hard bound"
+            Expect.equal (LanguageFeatures.scriptedEffectParamMapCacheBookkeepingCount ()) paths.Length "replacement bookkeeping is strictly bounded by live keys"
         }
 
         testWithCapturedLogs "edit delete and full refresh invalidate entries" <| fun () ->
