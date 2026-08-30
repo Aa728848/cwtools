@@ -143,6 +143,26 @@ type LocalisationDelta =
       affectedLocalisationFiles: string array
       semanticChanged: bool }
 
+/// Stable prefix of the localisation revision journal owned by one consumer.
+type LocalisationDeltaCursor =
+    { owner: string
+      fromRevision: int64
+      throughRevision: int64 }
+
+/// Pure materialisation of a journal prefix. Arrays are copied and sorted so the
+/// payload does not retain mutable manager state or depend on hash enumeration.
+type DetachedLocalisationDelta =
+    { cursor: LocalisationDeltaCursor
+      delta: LocalisationDelta }
+
+type LocalisationDeltaCursorError =
+    | Stale
+
+type LocalisationDeltaAckResult =
+    | Acknowledged
+    | AlreadyCompleted
+    | Stale
+
 type IncrementalLocalisationResult =
     { affectedFiles: string array
       errors: CWError list }
@@ -151,6 +171,9 @@ type IncrementalLocalisationResult =
 /// keep the existing full localisation refresh behaviour.
 type IIncrementalLocalisation =
     abstract IsLocalisationFile: string -> bool
+    abstract PeekLocalisationDelta: owner: string -> Result<DetachedLocalisationDelta option, LocalisationDeltaCursorError>
+    abstract AckLocalisationDelta: LocalisationDeltaCursor -> LocalisationDeltaAckResult
+    abstract DiscardLocalisationDelta: LocalisationDeltaCursor -> unit
     abstract TakeLocalisationDelta: unit -> LocalisationDelta option
     abstract ValidateLocalisationDelta: LocalisationDelta -> IncrementalLocalisationResult
     abstract ValidateLocalisationFiles: string array -> IncrementalLocalisationResult

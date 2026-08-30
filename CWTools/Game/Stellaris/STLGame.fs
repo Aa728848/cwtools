@@ -2796,6 +2796,9 @@ type STLGame(setupSettings: StellarisSettings) =
 
     interface IIncrementalLocalisation with
         member _.IsLocalisationFile filepath = game.IsLocalisationFile filepath
+        member _.PeekLocalisationDelta owner = game.PeekLocalisationDelta owner
+        member _.AckLocalisationDelta cursor = game.AckLocalisationDelta cursor
+        member _.DiscardLocalisationDelta cursor = game.DiscardLocalisationDelta cursor
         member _.TakeLocalisationDelta() =
             let delta = game.LocalisationManager.TakeDelta()
             if game.LocalisationManager.localisationErrors.IsSome

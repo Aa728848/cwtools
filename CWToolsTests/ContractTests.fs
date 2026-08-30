@@ -582,16 +582,25 @@ test_item = {
                 let renamedLocalisation = localisationText "cross_new" "New"
                 File.WriteAllText(localisationFile, renamedLocalisation)
                 incrementalGame.UpdateFile false localisationFile (Some renamedLocalisation) |> ignore
-                let localisationDelta = localisation.TakeLocalisationDelta()
-                Expect.isSome
-                    localisationDelta
-                    $"{gameName} localisation rename must produce an incremental delta"
+                let renamePeek = localisation.PeekLocalisationDelta "cross-game-contract"
+                let renameBatch =
+                    match renamePeek with
+                    | Result.Ok(Some batch) -> batch
+                    | other -> failtestf $"{gameName} localisation rename must produce an incremental delta, got %A{other}"
                 Expect.containsAll
-                    localisationDelta.Value.changedKeys
+                    renameBatch.delta.changedKeys
                     [| "cross_old"; "cross_new" |]
                     $"{gameName} localisation rename must invalidate old and new keys"
+                Expect.contains
+                    renameBatch.delta.affectedLocalisationFiles
+                    localisationFile
+                    $"{gameName} detached rename payload must include its file replacement"
+                Expect.equal
+                    (localisation.AckLocalisationDelta renameBatch.cursor)
+                    LocalisationDeltaAckResult.Acknowledged
+                    $"{gameName} localisation rename prefix must acknowledge exactly"
                 let incrementalLocalisationErrors =
-                    localisation.ValidateLocalisationDelta localisationDelta.Value
+                    localisation.ValidateLocalisationDelta renameBatch.delta
                 fullGame.UpdateFile false localisationFile (Some renamedLocalisation) |> ignore
                 fullGame.RefreshLocalisationCaches()
                 let affectedAfterRename = incrementalLocalisationErrors.affectedFiles |> Set.ofArray

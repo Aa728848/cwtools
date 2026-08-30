@@ -29,7 +29,11 @@ type LocalisationManager<'T when 'T :> ComputedData>
     let pathComparer = if OperatingSystem.IsWindows() then StringComparer.OrdinalIgnoreCase else StringComparer.Ordinal
     let processedReferencesBySource = Dictionary<struct (Lang * string), string array>()
     let processedSourcesByReference = Dictionary<struct (Lang * string), HashSet<string>>()
-    let mutable pendingDelta: LocalisationDelta option = None
+    let deltaJournal = ResizeArray<struct (int64 * LocalisationDelta)>()
+    let mutable nextDeltaRevision = 0L
+    let mutable activeDeltaCursor: LocalisationDeltaCursor option = None
+    let mutable completedDeltaCursor: LocalisationDeltaCursor option = None
+    let takeDeltaOwner = "CWTools.LocalisationManager.TakeDelta"
 
     let validatableLocalisation () =
         this.GetLocalisationAPIs()
@@ -174,17 +178,54 @@ type LocalisationManager<'T when 'T :> ComputedData>
             for KeyValue(sourceKey, entry) in entries do
                 addProcessedSourceReferences lang sourceKey entry
 
-    let mergePendingDelta (delta: LocalisationDelta) =
-        pendingDelta <-
-            match pendingDelta with
-            | None -> Some delta
-            | Some current ->
-                Some
-                    { changedKeys = Array.append current.changedKeys delta.changedKeys |> Array.distinct
-                      affectedLocalisationFiles =
-                        Array.append current.affectedLocalisationFiles delta.affectedLocalisationFiles
-                        |> Array.distinct
-                      semanticChanged = current.semanticChanged || delta.semanticChanged }
+    let appendDelta (delta: LocalisationDelta) =
+        nextDeltaRevision <- nextDeltaRevision + 1L
+        deltaJournal.Add(struct (nextDeltaRevision, delta))
+
+    let materialiseDelta (cursor: LocalisationDeltaCursor) =
+        let keys = HashSet<string>(StringComparer.Ordinal)
+        let files = HashSet<string>(pathComparer)
+        let mutable semanticChanged = false
+        for struct (revision, delta) in deltaJournal do
+            if revision >= cursor.fromRevision && revision <= cursor.throughRevision then
+                keys.UnionWith delta.changedKeys
+                files.UnionWith delta.affectedLocalisationFiles
+                semanticChanged <- semanticChanged || delta.semanticChanged
+        { cursor = cursor
+          delta =
+            { changedKeys = keys |> Seq.sortWith (fun left right -> StringComparer.Ordinal.Compare(left, right)) |> Seq.toArray
+              affectedLocalisationFiles = files |> Seq.sortWith (fun left right -> pathComparer.Compare(left, right)) |> Seq.toArray
+              semanticChanged = semanticChanged } }
+
+    let peekDelta owner =
+        match activeDeltaCursor with
+        | Some cursor when StringComparer.Ordinal.Equals(cursor.owner, owner) ->
+            Ok(Some(materialiseDelta cursor))
+        | Some _ -> Error LocalisationDeltaCursorError.Stale
+        | None when deltaJournal.Count = 0 -> Ok None
+        | None ->
+            let struct (fromRevision, _) = deltaJournal.[0]
+            let struct (throughRevision, _) = deltaJournal.[deltaJournal.Count - 1]
+            let cursor =
+                { owner = owner
+                  fromRevision = fromRevision
+                  throughRevision = throughRevision }
+            activeDeltaCursor <- Some cursor
+            Ok(Some(materialiseDelta cursor))
+
+    let ackDelta cursor =
+        match activeDeltaCursor with
+        | Some active when active = cursor ->
+            let prefixCount = deltaJournal |> Seq.takeWhile (fun struct (revision, _) -> revision <= cursor.throughRevision) |> Seq.length
+            if prefixCount > 0 then deltaJournal.RemoveRange(0, prefixCount)
+            activeDeltaCursor <- None
+            completedDeltaCursor <- Some cursor
+            LocalisationDeltaAckResult.Acknowledged
+        | _ when completedDeltaCursor = Some cursor -> LocalisationDeltaAckResult.AlreadyCompleted
+        | _ -> LocalisationDeltaAckResult.Stale
+
+    let discardDelta cursor =
+        if activeDeltaCursor = Some cursor then activeDeltaCursor <- None
 
     let updateAllLocalisationSources () =
         localisationAPIMap <-
@@ -328,7 +369,7 @@ type LocalisationManager<'T when 'T :> ComputedData>
             { changedKeys = changedKeys |> Seq.toArray
               affectedLocalisationFiles = affectedFiles |> Seq.toArray
               semanticChanged = semanticChanged }
-        mergePendingDelta delta
+        appendDelta delta
 
     let updateLocalisationSource (locFile: FileWithContentResource) =
         let loc = parseLocFile locFile |> Option.defaultValue [||]
@@ -350,7 +391,9 @@ type LocalisationManager<'T when 'T :> ComputedData>
         let processLoc = processLocalisation lookup
         lookup.proccessedLoc <- validatableEntries |> List.map processLoc
         rebuildProcessedReferenceIndex ()
-        pendingDelta <- None
+        deltaJournal.Clear()
+        activeDeltaCursor <- None
+        completedDeltaCursor <- None
 
     member val localisationErrors: CWError list option = None with get, set
     member val globalLocalisationErrors: CWError list option = None with get, set
@@ -365,10 +408,19 @@ type LocalisationManager<'T when 'T :> ComputedData>
     member _.UpdateLocalisationFile(locFile: FileWithContentResource) = updateLocalisationSource locFile
     member _.RemoveLocalisationFile(filepath: string) = removeLocalisationSource filepath
 
+    member _.PeekDelta(owner: string) = peekDelta owner
+    member _.AckDelta(cursor: LocalisationDeltaCursor) = ackDelta cursor
+    member _.DiscardDelta(cursor: LocalisationDeltaCursor) = discardDelta cursor
+
     member _.TakeDelta() =
-        let result = pendingDelta
-        pendingDelta <- None
-        result
+        match peekDelta takeDeltaOwner with
+        | Ok(Some detached) ->
+            match ackDelta detached.cursor with
+            | LocalisationDeltaAckResult.Acknowledged
+            | LocalisationDeltaAckResult.AlreadyCompleted -> Some detached.delta
+            | LocalisationDeltaAckResult.Stale -> None
+        | Ok None
+        | Error _ -> None
 
     member _.ProcessedLocalisationForFiles(files: Set<string>) =
         lookup.proccessedLoc

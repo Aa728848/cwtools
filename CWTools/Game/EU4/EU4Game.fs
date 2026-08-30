@@ -595,6 +595,9 @@ type EU4Game(setupSettings: EU4Settings) =
 
     interface IIncrementalLocalisation with
         member _.IsLocalisationFile filepath = game.IsLocalisationFile filepath
+        member _.PeekLocalisationDelta owner = game.PeekLocalisationDelta owner
+        member _.AckLocalisationDelta cursor = game.AckLocalisationDelta cursor
+        member _.DiscardLocalisationDelta cursor = game.DiscardLocalisationDelta cursor
         member _.TakeLocalisationDelta() = game.TakeLocalisationDelta()
         member _.ValidateLocalisationDelta delta = game.ValidateIncrementalLocalisationDelta delta
         member _.ValidateLocalisationFiles files = game.ValidateIncrementalLocalisationFiles files

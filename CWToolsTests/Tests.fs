@@ -438,10 +438,61 @@ let tests =
                       | _ -> None)
               let updatedLoc = originalLoc + Environment.NewLine + " test:0 \"resolved\"" + Environment.NewLine
               stl.UpdateFile false locPath (Some updatedLoc) |> ignore
+              let firstPeek = incremental.PeekLocalisationDelta "validation"
+              let firstBatch =
+                  match firstPeek with
+                  | Result.Ok(Some batch) -> batch
+                  | other -> failtestf "localisation update should publish an incremental delta, got %A" other
+              let repeated = incremental.PeekLocalisationDelta "validation"
+              Expect.equal repeated firstPeek "peek must be repeatable for the active owner"
+              Expect.isTrue
+                  (firstBatch.delta.changedKeys = Array.sort firstBatch.delta.changedKeys)
+                  "detached changed-key facts must be sorted"
+              Expect.isTrue
+                  (firstBatch.delta.affectedLocalisationFiles = Array.sort firstBatch.delta.affectedLocalisationFiles)
+                  "detached affected-file replacements must be sorted"
+              Expect.contains firstBatch.delta.changedKeys "test" "added key should be present in the delta"
+
+              let secondLoc = updatedLoc + " another_test:0 \"newer\"" + Environment.NewLine
+              stl.UpdateFile false locPath (Some secondLoc) |> ignore
+              Expect.equal
+                  (incremental.PeekLocalisationDelta "validation")
+                  firstPeek
+                  "newer revisions must not change an active prefix"
+              Expect.equal
+                  (incremental.PeekLocalisationDelta "other")
+                  (Result.Error LocalisationDeltaCursorError.Stale)
+                  "a concurrent owner must be stale"
+              let wrongPrefix = { firstBatch.cursor with throughRevision = firstBatch.cursor.throughRevision + 1L }
+              Expect.equal
+                  (incremental.AckLocalisationDelta wrongPrefix)
+                  LocalisationDeltaAckResult.Stale
+                  "ack must match the exact owner and prefix"
+              Expect.equal
+                  (incremental.AckLocalisationDelta firstBatch.cursor)
+                  LocalisationDeltaAckResult.Acknowledged
+                  "the exact prefix should be acknowledged"
+              Expect.equal
+                  (incremental.AckLocalisationDelta firstBatch.cursor)
+                  LocalisationDeltaAckResult.AlreadyCompleted
+                  "repeating an exact ack should report completion"
+
+              let newerPeek = incremental.PeekLocalisationDelta "shim-parity"
+              let newerBatch =
+                  match newerPeek with
+                  | Result.Ok(Some batch) -> batch
+                  | other -> failtestf "the concurrent revision must remain pending, got %A" other
+              Expect.contains newerBatch.delta.changedKeys "another_test" "prefix ack must retain newer facts"
+              incremental.DiscardLocalisationDelta newerBatch.cursor
+              incremental.DiscardLocalisationDelta newerBatch.cursor
               let delta = incremental.TakeLocalisationDelta()
-              Expect.isSome delta "localisation update should publish an incremental delta"
-              Expect.contains delta.Value.changedKeys "test" "added key should be present in the delta"
-              let result = incremental.ValidateLocalisationDelta delta.Value
+              Expect.isSome delta "the compatibility shim should consume a discarded batch"
+              Expect.equal delta.Value newerBatch.delta "TakeDelta must preserve peek plus ack payload behavior"
+              Expect.equal
+                  (incremental.PeekLocalisationDelta "after-shim")
+                  (Result.Ok None)
+                  "TakeDelta must acknowledge the materialised prefix"
+              let result = incremental.ValidateLocalisationDelta firstBatch.delta
               let eventFile =
                   stl.AllEntities()
                   |> Seq.map (fun struct (entity, _) -> entity.filepath)
