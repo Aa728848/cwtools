@@ -165,7 +165,43 @@ type LocalisationDeltaAckResult =
 
 type IncrementalLocalisationResult =
     { affectedFiles: string array
-      errors: CWError list }
+      errors: CWError list
+      /// Phase 2 carries explicit empty replacements; publishing them is a Phase 3 manager swap.
+      localisationErrorReplacements: CWError array
+      globalLocalisationErrorReplacements: CWError array }
+
+/// Opaque, single-use localisation validation prepared against one exact journal prefix.
+/// Phase 2 deliberately stages only the detached result: swapping ValidationManager and
+/// localisation error caches atomically remains a Phase 3 concern.
+[<Sealed>]
+type StagedLocalisationRefresh internal
+    (
+        cursor: LocalisationDeltaCursor,
+        resourceEpoch: int,
+        typeRulesEpoch: int,
+        localisationEpoch: int,
+        fileSetEpoch: int,
+        result: IncrementalLocalisationResult
+    ) =
+    let mutable completed = 0
+    let mutable retainedResult = Some result
+    member internal _.Cursor = cursor
+    member internal _.ResourceEpoch = resourceEpoch
+    member internal _.TypeRulesEpoch = typeRulesEpoch
+    member internal _.LocalisationEpoch = localisationEpoch
+    member internal _.FileSetEpoch = fileSetEpoch
+    member internal _.TryComplete() = System.Threading.Interlocked.CompareExchange(&completed, 1, 0) = 0
+    member internal _.TakeResult() =
+        let current = retainedResult
+        retainedResult <- None
+        current
+    member internal _.ClearResult() = retainedResult <- None
+    member internal _.IsCompleted = System.Threading.Volatile.Read(&completed) <> 0
+
+type StagedLocalisationCommitResult =
+    | Committed of IncrementalLocalisationResult
+    | Superseded
+    | AlreadyCompleted
 
 /// Optional precise localisation invalidation. Games that do not implement it
 /// keep the existing full localisation refresh behaviour.
@@ -176,6 +212,13 @@ type IIncrementalLocalisation =
     abstract DiscardLocalisationDelta: LocalisationDeltaCursor -> unit
     abstract TakeLocalisationDelta: unit -> LocalisationDelta option
     abstract ValidateLocalisationDelta: LocalisationDelta -> IncrementalLocalisationResult
+    /// Require ready localisation caches, detach the current prefix, and fully validate it.
+    /// This does not acknowledge the journal or publish validation/cache mutations.
+    abstract PrepareLocalisationRefresh:
+        owner: string -> Result<StagedLocalisationRefresh option, LocalisationDeltaCursorError>
+    /// Recheck all dependency epochs and the exact active prefix, then acknowledge only.
+    abstract TryCommitLocalisationRefresh: StagedLocalisationRefresh -> StagedLocalisationCommitResult
+    abstract DiscardLocalisationRefresh: StagedLocalisationRefresh -> unit
     abstract ValidateLocalisationFiles: string array -> IncrementalLocalisationResult
     abstract RemoveLocalisationFile: string -> IncrementalLocalisationResult
 

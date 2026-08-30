@@ -359,9 +359,11 @@ module STLGameFunctions =
                 | Invalid(_, errors) -> errors |> onlyAffected
                 | _ -> []
 
-        game.LocalisationManager.ApplyIncrementalErrors(affectedFileSet, localErrors, globalErrors)
-        { affectedFiles = affectedFiles |> Seq.toArray
-          errors = cachedRuleErrors @ localErrors @ globalErrors }
+        // Keep staged validation detached from the live localisation error caches.
+        { affectedFiles = affectedFiles |> Seq.sortWith (fun left right -> pathComparer.Compare(left, right)) |> Seq.toArray
+          errors = cachedRuleErrors @ localErrors @ globalErrors
+          localisationErrorReplacements = [||]
+          globalLocalisationErrorReplacements = [||] }
 
     let validateIncrementalLocalisation (game: GameObject) (delta: LocalisationDelta) =
         validateIncrementalLocalisationFiles game delta.changedKeys delta.affectedLocalisationFiles
@@ -2583,6 +2585,8 @@ type STLGame(setupSettings: StellarisSettings) =
 
     member _.Lookup = lookup
     member internal _.LastLazyRefreshStats = game.LastLazyRefreshStats
+    member internal _.IncrementalLocalisationValidationCount = game.IncrementalLocalisationValidationCount
+    member internal _.LocalisationManager = game.LocalisationManager
 
     interface IScopeInferenceProvider with
         member _.ScopeInferenceAtPos pos file _text scopes =
@@ -2801,6 +2805,10 @@ type STLGame(setupSettings: StellarisSettings) =
         member _.DiscardLocalisationDelta cursor = game.DiscardLocalisationDelta cursor
         member _.TakeLocalisationDelta() = game.TakeLocalisationDelta()
         member _.ValidateLocalisationDelta delta = validateIncrementalLocalisation game delta
+        member _.PrepareLocalisationRefresh owner =
+            game.PrepareLocalisationRefresh(owner, validateIncrementalLocalisation game)
+        member _.TryCommitLocalisationRefresh staged = game.TryCommitLocalisationRefresh staged
+        member _.DiscardLocalisationRefresh staged = game.DiscardLocalisationRefresh staged
         member _.ValidateLocalisationFiles files = validateIncrementalLocalisationFiles game [||] files
         member _.RemoveLocalisationFile filepath =
             game.RemoveIncrementalLocalisationFile filepath

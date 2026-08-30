@@ -190,6 +190,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             debugMode
         )
     let errorCache = System.Collections.Concurrent.ConcurrentDictionary<string, CWError list>()
+    let mutable incrementalLocalisationValidationCount = 0
 
     let readTextWithDeclaredEncoding filepath =
         let strictPrimary =
@@ -332,10 +333,12 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             |> onlyAffected
 
         let globalErrors = globalLocalisation this |> onlyAffected
-        localisationManager.ApplyIncrementalErrors(affectedFileSet, localErrors, globalErrors)
-
-        { affectedFiles = affectedFiles |> Seq.toArray
-          errors = cachedRuleErrors @ localErrors @ globalErrors }
+        // Detached incremental validation must not publish localisation error-cache replacements.
+        // A future Phase 3 stage may carry and atomically swap those caches at commit.
+        { affectedFiles = affectedFiles |> Seq.sortWith (fun left right -> pathComparer.Compare(left, right)) |> Seq.toArray
+          errors = cachedRuleErrors @ localErrors @ globalErrors
+          localisationErrorReplacements = [||]
+          globalLocalisationErrorReplacements = [||] }
 
     let updateFile (shallow: bool) filepath (fileText: string option) =
         log $"updateFile %s{filepath}"
@@ -915,6 +918,71 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
     member _.ValidateIncrementalLocalisationDelta(delta: LocalisationDelta) =
         validateIncrementalLocalisationFiles delta.changedKeys delta.affectedLocalisationFiles
+
+    member _.PrepareLocalisationRefresh(owner: string, validate: LocalisationDelta -> IncrementalLocalisationResult) =
+        if localisationManager.localisationErrors.IsNone || localisationManager.globalLocalisationErrors.IsNone then
+            Ok None
+        else
+            let resourceEpoch = ResourceManagerEager.currentResource ()
+            let typeRulesEpoch = ResourceManagerEager.currentTypeRules ()
+            let localisationEpoch = ResourceManagerEager.currentLocalisation ()
+            let fileSetEpoch = ResourceManagerEager.currentFileSet ()
+            match localisationManager.PeekDelta owner with
+            | Error error -> Error error
+            | Ok None -> Ok None
+            | Ok(Some detached) ->
+                System.Threading.Interlocked.Increment(&incrementalLocalisationValidationCount) |> ignore
+                let validated = validate detached.delta
+                let pathComparer = if OperatingSystem.IsWindows() then StringComparer.OrdinalIgnoreCase else StringComparer.Ordinal
+                let materialised =
+                    { affectedFiles = validated.affectedFiles |> Array.copy |> Array.sortWith (fun left right -> pathComparer.Compare(left, right))
+                      errors = validated.errors |> List.ofSeq
+                      localisationErrorReplacements = [||]
+                      globalLocalisationErrorReplacements = [||] }
+                Ok(
+                    Some(
+                        StagedLocalisationRefresh(
+                            detached.cursor,
+                            resourceEpoch,
+                            typeRulesEpoch,
+                            localisationEpoch,
+                            fileSetEpoch,
+                            materialised
+                        )
+                    )
+                )
+
+    member _.TryCommitLocalisationRefresh(staged: StagedLocalisationRefresh) =
+        if not (staged.TryComplete()) then
+            StagedLocalisationCommitResult.AlreadyCompleted
+        elif
+            ResourceManagerEager.currentResource () <> staged.ResourceEpoch
+            || ResourceManagerEager.currentTypeRules () <> staged.TypeRulesEpoch
+            || ResourceManagerEager.currentLocalisation () <> staged.LocalisationEpoch
+            || ResourceManagerEager.currentFileSet () <> staged.FileSetEpoch
+        then
+            staged.ClearResult()
+            StagedLocalisationCommitResult.Superseded
+        else
+            match localisationManager.PeekDelta staged.Cursor.owner with
+            | Ok(Some current) when current.cursor = staged.Cursor ->
+                match localisationManager.AckDelta staged.Cursor, staged.TakeResult() with
+                | LocalisationDeltaAckResult.Acknowledged, Some result -> StagedLocalisationCommitResult.Committed result
+                | _ ->
+                    staged.ClearResult()
+                    StagedLocalisationCommitResult.Superseded
+            | _ ->
+                staged.ClearResult()
+                StagedLocalisationCommitResult.Superseded
+
+    member _.DiscardLocalisationRefresh(staged: StagedLocalisationRefresh) =
+        // Journal discard is itself exact and idempotent; allow cleanup after Superseded.
+        localisationManager.DiscardDelta staged.Cursor
+        staged.TryComplete() |> ignore
+        staged.ClearResult()
+
+    member internal _.IncrementalLocalisationValidationCount =
+        System.Threading.Volatile.Read(&incrementalLocalisationValidationCount)
 
     member _.ValidateIncrementalLocalisationFiles(files: string array) =
         validateIncrementalLocalisationFiles [||] files

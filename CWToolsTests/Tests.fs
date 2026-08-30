@@ -534,6 +534,147 @@ let tests =
                   fullFacts
                   "incremental diagnostics for affected files must equal a full localisation pass"
 
+          testWithCapturedLogs "staged localisation prepare is pure and commit is guarded"
+          <| fun () ->
+              let configtext =
+                  [ "./testfiles/localisationtests/test.cwt", File.ReadAllText "./testfiles/localisationtests/test.cwt"
+                    "./testfiles/localisationtests/localisation.cwt", File.ReadAllText "./testfiles/localisationtests/localisation.cwt" ]
+              let locPath = Path.GetFullPath("./testfiles/localisationtests/localisation/l_english.yml")
+              let originalLoc = File.ReadAllText locPath
+              let settings = emptyStellarisSettings "./testfiles/localisationtests/gamefiles"
+              let settings =
+                  { settings with
+                      embedded = FromConfig([ locPath, originalLoc ], [])
+                      validation = { settings.validation with langs = [| STL STLLang.English |] }
+                      rules =
+                          Some
+                              { ruleFiles = configtext
+                                validateRules = false
+                                debugRulesOnly = false
+                                debugMode = false } }
+              let concrete = STLGame(settings)
+              let stl = concrete :> IGame<STLComputedData>
+              let incremental = stl :?> IIncrementalLocalisation
+              let beforeReady = incremental.PrepareLocalisationRefresh "not-ready"
+              Expect.equal beforeReady (Result.Ok None) "prepare must require ready localisation caches"
+              stl.LocalisationErrors(true, true) |> ignore
+              let updated = String.concat Environment.NewLine [ originalLoc; " staged_key:0 \"ready\""; "" ]
+              stl.UpdateFile false locPath (Some updated) |> ignore
+              let peek = incremental.PeekLocalisationDelta "staged"
+              let cursor =
+                  match peek with
+                  | Result.Ok(Some batch) -> batch.cursor
+                  | other -> failtestf "staged update should have a cursor, got %A" other
+              let beforePrepare = concrete.IncrementalLocalisationValidationCount
+              let stage =
+                  match incremental.PrepareLocalisationRefresh "staged" with
+                  | Result.Ok(Some value) -> value
+                  | other -> failtestf "staged update should prepare, got %A" other
+              Expect.equal
+                  (incremental.PeekLocalisationDelta "staged")
+                  peek
+                  "prepare must neither acknowledge nor alter the active prefix"
+              let repeated =
+                  match incremental.PrepareLocalisationRefresh "staged" with
+                  | Result.Ok(Some value) -> value
+                  | other -> failtestf "repeated prepare should remain possible, got %A" other
+              Expect.equal
+                  concrete.IncrementalLocalisationValidationCount
+                  (beforePrepare + 2)
+                  "each prepare validates exactly once before commit"
+              let suffix = updated + " staged_suffix:0 \"newer\"" + Environment.NewLine
+              let currentLocResource =
+                  stl.AllFiles()
+                  |> List.pick (function
+                      | FileWithContentResource(_, file) when file.filepath = locPath -> Some file
+                      | _ -> None)
+              concrete.LocalisationManager.UpdateLocalisationFile { currentLocResource with filetext = suffix }
+              match incremental.TryCommitLocalisationRefresh stage with
+              | StagedLocalisationCommitResult.Committed result ->
+                  Expect.isTrue
+                      (result.affectedFiles = Array.sort result.affectedFiles)
+                      "staged replacements must be deterministic"
+                  Expect.isEmpty result.localisationErrorReplacements "detached local replacements must be explicit empty arrays"
+                  Expect.isEmpty result.globalLocalisationErrorReplacements "detached global replacements must be explicit empty arrays"
+              | other -> failtestf "exact staged prefix should commit, got %A" other
+              Expect.equal
+                  concrete.IncrementalLocalisationValidationCount
+                  (beforePrepare + 2)
+                  "commit must not run validation"
+              let suffixBatch =
+                  match incremental.PeekLocalisationDelta "staged" with
+                  | Result.Ok(Some batch) -> batch
+                  | other -> failtestf "a newer suffix must remain peekable after prefix commit, got %A" other
+              Expect.equal
+                  suffixBatch.cursor.fromRevision
+                  (cursor.throughRevision + 1L)
+                  "the retained suffix must begin immediately after the committed prefix"
+              Expect.equal
+                  suffixBatch.cursor.throughRevision
+                  suffixBatch.cursor.fromRevision
+                  "the retained suffix must contain exactly the one newer journal revision"
+              Expect.equal
+                  suffixBatch.delta.changedKeys
+                  [| "required"; "staged_key"; "staged_suffix"; "test_required_desc" |]
+                  "prefix commit must retain exactly the newer revision's key facts"
+              Expect.equal
+                  suffixBatch.delta.affectedLocalisationFiles
+                  [| locPath |]
+                  "prefix commit must retain exactly the newer file facts"
+              Expect.isTrue suffixBatch.delta.semanticChanged "the retained suffix must preserve its semantic change"
+              Expect.equal
+                  (incremental.AckLocalisationDelta suffixBatch.cursor)
+                  LocalisationDeltaAckResult.Acknowledged
+                  "test cleanup must acknowledge exactly the retained suffix"
+              Expect.equal
+                  (incremental.TryCommitLocalisationRefresh stage)
+                  StagedLocalisationCommitResult.AlreadyCompleted
+                  "a committed stage is single-use"
+              Expect.equal
+                  (incremental.TryCommitLocalisationRefresh repeated)
+                  StagedLocalisationCommitResult.Superseded
+                  "a second stage for an acknowledged cursor is superseded"
+
+              let second = suffix + " staged_second:0 \"ready\"" + Environment.NewLine
+              stl.UpdateFile false locPath (Some second) |> ignore
+              let staleCursor =
+                  match incremental.PeekLocalisationDelta "cursor-stale" with
+                  | Result.Ok(Some batch) -> batch.cursor
+                  | other -> failtestf "second staged update should have a cursor, got %A" other
+              let cursorStage =
+                  match incremental.PrepareLocalisationRefresh "cursor-stale" with
+                  | Result.Ok(Some value) -> value
+                  | other -> failtestf "second staged update should prepare, got %A" other
+              Expect.equal
+                  (incremental.AckLocalisationDelta staleCursor)
+                  LocalisationDeltaAckResult.Acknowledged
+                  "test setup should consume the cursor externally"
+              Expect.equal
+                  (incremental.TryCommitLocalisationRefresh cursorStage)
+                  StagedLocalisationCommitResult.Superseded
+                  "a stale cursor must supersede without another acknowledgement"
+
+              let third = second + " staged_third:0 \"ready\"" + Environment.NewLine
+              stl.UpdateFile false locPath (Some third) |> ignore
+              let epochStage =
+                  match incremental.PrepareLocalisationRefresh "epoch-stale" with
+                  | Result.Ok(Some value) -> value
+                  | other -> failtestf "third staged update should prepare, got %A" other
+              ResourceManagerEager.nextTypeRules () |> ignore
+              Expect.equal
+                  (incremental.TryCommitLocalisationRefresh epochStage)
+                  StagedLocalisationCommitResult.Superseded
+                  "a changed dependency epoch must supersede without acknowledgement"
+              Expect.isSome
+                  (incremental.PeekLocalisationDelta "epoch-stale" |> Result.toOption |> Option.flatten)
+                  "superseded commit must leave its prefix pending"
+              incremental.DiscardLocalisationRefresh epochStage
+              incremental.DiscardLocalisationRefresh epochStage
+              Expect.equal
+                  (incremental.TryCommitLocalisationRefresh epochStage)
+                  StagedLocalisationCommitResult.AlreadyCompleted
+                  "discard must be idempotent and terminal"
+
           testWithCapturedLogs "incremental key add follows localisation reference in-edges"
           <| fun () ->
               let tempFolder = Path.Combine(Path.GetTempPath(), "cwtools-loc-delta-" + Guid.NewGuid().ToString("N"))

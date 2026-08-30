@@ -595,12 +595,14 @@ test_item = {
                     renameBatch.delta.affectedLocalisationFiles
                     localisationFile
                     $"{gameName} detached rename payload must include its file replacement"
-                Expect.equal
-                    (localisation.AckLocalisationDelta renameBatch.cursor)
-                    LocalisationDeltaAckResult.Acknowledged
-                    $"{gameName} localisation rename prefix must acknowledge exactly"
+                let renameStage =
+                    match localisation.PrepareLocalisationRefresh "cross-game-contract" with
+                    | Result.Ok(Some staged) -> staged
+                    | other -> failtestf $"{gameName} localisation rename must prepare, got %A{other}"
                 let incrementalLocalisationErrors =
-                    localisation.ValidateLocalisationDelta renameBatch.delta
+                    match localisation.TryCommitLocalisationRefresh renameStage with
+                    | StagedLocalisationCommitResult.Committed result -> result
+                    | other -> failtestf $"{gameName} localisation rename stage must commit, got %A{other}"
                 fullGame.UpdateFile false localisationFile (Some renamedLocalisation) |> ignore
                 fullGame.RefreshLocalisationCaches()
                 let affectedAfterRename = incrementalLocalisationErrors.affectedFiles |> Set.ofArray

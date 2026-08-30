@@ -360,6 +360,10 @@ type CustomGame(setupSettings: CustomSettings, gameFolderName: string) =
         member _.DiscardLocalisationDelta cursor = game.DiscardLocalisationDelta cursor
         member _.TakeLocalisationDelta() = game.TakeLocalisationDelta()
         member _.ValidateLocalisationDelta delta = game.ValidateIncrementalLocalisationDelta delta
+        member _.PrepareLocalisationRefresh owner =
+            game.PrepareLocalisationRefresh(owner, game.ValidateIncrementalLocalisationDelta)
+        member _.TryCommitLocalisationRefresh staged = game.TryCommitLocalisationRefresh staged
+        member _.DiscardLocalisationRefresh staged = game.DiscardLocalisationRefresh staged
         member _.ValidateLocalisationFiles files = game.ValidateIncrementalLocalisationFiles files
         member _.RemoveLocalisationFile filepath = game.RemoveIncrementalLocalisationFile filepath
 
