@@ -967,7 +967,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             // Publication is intentionally a no-op until the prepared validation state has
             // a writer-owned swap. The manager still couples this callback and exact prefix
             // removal atomically, so a later publication callback cannot race acknowledgement.
-            match localisationManager.TryTransformDelta(staged.Cursor, ignore) with
+            match localisationManager.TryCommitDelta(staged.Cursor, ignore) with
             | LocalisationDeltaAckResult.Acknowledged ->
                 match staged.TakeResult() with
                 | Some result -> StagedLocalisationCommitResult.Committed result

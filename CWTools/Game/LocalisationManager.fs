@@ -219,7 +219,7 @@ type LocalisationManager<'T when 'T :> ComputedData>
     let canAckDelta cursor =
         lock deltaGate (fun () -> activeDeltaCursor = Some cursor)
 
-    let tryTransformDelta cursor (publish: unit -> unit) =
+    let tryCommitDelta cursor (publish: unit -> unit) =
         lock deltaGate (fun () ->
             match activeDeltaCursor with
             | Some active when active = cursor ->
@@ -238,7 +238,7 @@ type LocalisationManager<'T when 'T :> ComputedData>
             | _ when completedDeltaCursor = Some cursor -> LocalisationDeltaAckResult.AlreadyCompleted
             | _ -> LocalisationDeltaAckResult.Stale)
 
-    let ackDeltaExact cursor = tryTransformDelta cursor ignore
+    let ackDeltaExact cursor = tryCommitDelta cursor ignore
 
     let discardDelta cursor =
         lock deltaGate (fun () ->
@@ -435,8 +435,8 @@ type LocalisationManager<'T when 'T :> ComputedData>
     member _.AckDeltaExact(cursor: LocalisationDeltaCursor) = ackDeltaExact cursor
     /// Runs the synchronous publication callback and exact prefix acknowledgement under
     /// the manager gate. The caller must hold the game write lock while publishing.
-    member _.TryTransformDelta(cursor: LocalisationDeltaCursor, publish: unit -> unit) =
-        tryTransformDelta cursor publish
+    member _.TryCommitDelta(cursor: LocalisationDeltaCursor, publish: unit -> unit) =
+        tryCommitDelta cursor publish
     member _.AckDelta(cursor: LocalisationDeltaCursor) = ackDeltaExact cursor
     member _.DiscardDelta(cursor: LocalisationDeltaCursor) = discardDelta cursor
 

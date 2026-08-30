@@ -587,13 +587,13 @@ let tests =
                   "a different prefix must not be acknowledgeable"
               let mutable staleCallbackCalled = false
               Expect.equal
-                  (concrete.LocalisationManager.TryTransformDelta(wrongPrefix, fun () -> staleCallbackCalled <- true))
+                  (concrete.LocalisationManager.TryCommitDelta(wrongPrefix, fun () -> staleCallbackCalled <- true))
                   LocalisationDeltaAckResult.Stale
                   "a stale transform must be rejected"
               Expect.isFalse staleCallbackCalled "a stale transform must not invoke publication"
               let callbackFailure = InvalidOperationException("publication failed")
               try
-                  concrete.LocalisationManager.TryTransformDelta(cursor, fun () -> raise callbackFailure)
+                  concrete.LocalisationManager.TryCommitDelta(cursor, fun () -> raise callbackFailure)
                   |> ignore
                   failtest "the publication exception must escape"
               with ex ->
@@ -655,11 +655,13 @@ let tests =
               Expect.isTrue suffixBatch.delta.semanticChanged "the retained suffix must preserve its semantic change"
               use callbackStarted = new ManualResetEventSlim(false)
               use releaseCallback = new ManualResetEventSlim(false)
+              let mutable publishCount = 0
               let transformTask =
                   System.Threading.Tasks.Task.Run(fun () ->
-                      concrete.LocalisationManager.TryTransformDelta(
+                      concrete.LocalisationManager.TryCommitDelta(
                           suffixBatch.cursor,
                           fun () ->
+                              publishCount <- publishCount + 1
                               callbackStarted.Set()
                               releaseCallback.Wait()
                       ))
@@ -677,6 +679,7 @@ let tests =
                   transformTask.Result
                   LocalisationDeltaAckResult.Acknowledged
                   "the callback and exact prefix removal must complete atomically"
+              Expect.equal publishCount 1 "an exact commit must publish exactly once"
               Expect.isTrue (writerTask.Wait(1000)) "the queued writer must resume after acknowledgement"
               Expect.isFalse
                   (concrete.LocalisationManager.CanAckDelta suffixBatch.cursor)
