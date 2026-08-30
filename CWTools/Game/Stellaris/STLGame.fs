@@ -2799,13 +2799,7 @@ type STLGame(setupSettings: StellarisSettings) =
         member _.PeekLocalisationDelta owner = game.PeekLocalisationDelta owner
         member _.AckLocalisationDelta cursor = game.AckLocalisationDelta cursor
         member _.DiscardLocalisationDelta cursor = game.DiscardLocalisationDelta cursor
-        member _.TakeLocalisationDelta() =
-            let delta = game.LocalisationManager.TakeDelta()
-            if game.LocalisationManager.localisationErrors.IsSome
-               && game.LocalisationManager.globalLocalisationErrors.IsSome then
-                delta
-            else
-                None
+        member _.TakeLocalisationDelta() = game.TakeLocalisationDelta()
         member _.ValidateLocalisationDelta delta = validateIncrementalLocalisation game delta
         member _.ValidateLocalisationFiles files = validateIncrementalLocalisationFiles game [||] files
         member _.RemoveLocalisationFile filepath =

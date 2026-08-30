@@ -429,7 +429,6 @@ let tests =
                                 debugRulesOnly = false
                                 debugMode = false } }
               let stl = STLGame(settings) :> IGame<STLComputedData>
-              stl.LocalisationErrors(true, true) |> ignore
               let incremental = stl :?> IIncrementalLocalisation
               let locPath =
                   stl.AllFiles()
@@ -438,6 +437,18 @@ let tests =
                       | _ -> None)
               let updatedLoc = originalLoc + Environment.NewLine + " test:0 \"resolved\"" + Environment.NewLine
               stl.UpdateFile false locPath (Some updatedLoc) |> ignore
+              Expect.equal
+                  (incremental.PeekLocalisationDelta "before-baseline")
+                  (Result.Ok None)
+                  "peek must wait for localisation caches"
+              Expect.equal
+                  (incremental.PeekLocalisationDelta "before-baseline")
+                  (Result.Ok None)
+                  "repeated peek must remain empty before localisation caches are ready"
+              Expect.isNone
+                  (incremental.TakeLocalisationDelta())
+                  "TakeDelta must wait for localisation caches"
+              stl.LocalisationErrors(true, true) |> ignore
               let firstPeek = incremental.PeekLocalisationDelta "validation"
               let firstBatch =
                   match firstPeek with

@@ -892,17 +892,24 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             true
 
     member _.SemanticSignatureForFile(filepath) = semanticSignatureForFile filepath
-    member _.PeekLocalisationDelta(owner: string) = localisationManager.PeekDelta owner
-    member _.AckLocalisationDelta(cursor: LocalisationDeltaCursor) = localisationManager.AckDelta cursor
+
+    member _.PeekLocalisationDelta(owner: string) =
+        if localisationManager.localisationErrors.IsSome && localisationManager.globalLocalisationErrors.IsSome then
+            localisationManager.PeekDelta owner
+        else
+            Ok None
+
+    member _.AckLocalisationDelta(cursor: LocalisationDeltaCursor) =
+        if localisationManager.localisationErrors.IsSome && localisationManager.globalLocalisationErrors.IsSome then
+            localisationManager.AckDelta cursor
+        else
+            LocalisationDeltaAckResult.Stale
+
     member _.DiscardLocalisationDelta(cursor: LocalisationDeltaCursor) = localisationManager.DiscardDelta cursor
 
     member _.TakeLocalisationDelta() =
-        let delta = localisationManager.TakeDelta()
-        if
-            localisationManager.localisationErrors.IsSome
-            && localisationManager.globalLocalisationErrors.IsSome
-        then
-            delta
+        if localisationManager.localisationErrors.IsSome && localisationManager.globalLocalisationErrors.IsSome then
+            localisationManager.TakeDelta()
         else
             None
 
