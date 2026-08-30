@@ -178,10 +178,14 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     // PrepareTypeIndex. Every semantic input is represented either by reference
     // identity or by an explicit epoch; the single-entry bound prevents old
     // FrozenDictionary/service graphs from accumulating across edits.
+    let preparedTypeIndexServiceCacheLock = obj ()
     let mutable preparedTypeIndexServiceCache:
         (obj * obj * int * int * int * RuleValidationService) option = None
     let mutable preparedTypeIndexServiceCacheHits = 0L
     let mutable preparedTypeIndexServiceCacheMisses = 0L
+
+    let clearPreparedTypeIndexServiceCache () =
+        lock preparedTypeIndexServiceCacheLock (fun () -> preparedTypeIndexServiceCache <- None)
 
     let enumMapFrom (enumDefs: Map<string, string * (string * range option) array>) =
         (enumDefs
@@ -198,6 +202,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
 
     let loadBaseConfig (rulesSettings: RulesSettings) =
+        clearPreparedTypeIndexServiceCache ()
         let rules, types, enums, complexenums, values, metadata =
             rulesSettings.ruleFiles
             |> List.filter (fun (fn, _) ->
@@ -1414,6 +1419,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         rulesDataGenerated
 
     let refreshConfig () =
+        clearPreparedTypeIndexServiceCache ()
         let (ruleValidationService,
              infoService,
              completionService,
@@ -1547,40 +1553,41 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let fileSetEpoch = ResourceManagerEager.currentFileSet ()
 
         let tempRuleValidationService =
-            match preparedTypeIndexServiceCache with
-            | Some(cachedRules, cachedTypeMap, cachedTypeRules, cachedLocalisation, cachedFiles, service)
-                when Object.ReferenceEquals(cachedRules, configRulesIdentity)
-                     && Object.ReferenceEquals(cachedTypeMap, typeMapIdentity)
-                     && cachedTypeRules = typeRulesEpoch
-                     && cachedLocalisation = localisationEpoch
-                     && cachedFiles = fileSetEpoch ->
-                preparedTypeIndexServiceCacheHits <- preparedTypeIndexServiceCacheHits + 1L
-                service
-            | _ ->
-                preparedTypeIndexServiceCacheMisses <- preparedTypeIndexServiceCacheMisses + 1L
-                let rulesWrapper = rulesWrapperFor lookup.configRules
-                let loc = currentLoc ()
-                let allFiles = currentFiles ()
-                let emptyVarMap: FrozenDictionary<string, PrefixOptimisedStringSet> = FrozenDictionary.Empty
-                let baseFrozenTypeMap = baseTempTypeMap.ToFrozenDictionary()
-                let service =
-                    buildRuleValidationService
-                        rulesWrapper
-                        baseFrozenTypeMap
-                        emptyVarMap
-                        loc
-                        allFiles
-                        (Some(aliasKeyMapFor rulesWrapper baseTempTypeMap baseFrozenTypeMap))
-                preparedTypeIndexServiceCache <-
-                    Some(
-                        configRulesIdentity,
-                        typeMapIdentity,
-                        typeRulesEpoch,
-                        localisationEpoch,
-                        fileSetEpoch,
-                        service
-                    )
-                service
+            lock preparedTypeIndexServiceCacheLock (fun () ->
+                match preparedTypeIndexServiceCache with
+                | Some(cachedRules, cachedTypeMap, cachedTypeRules, cachedLocalisation, cachedFiles, service)
+                    when Object.ReferenceEquals(cachedRules, configRulesIdentity)
+                         && Object.ReferenceEquals(cachedTypeMap, typeMapIdentity)
+                         && cachedTypeRules = typeRulesEpoch
+                         && cachedLocalisation = localisationEpoch
+                         && cachedFiles = fileSetEpoch ->
+                    preparedTypeIndexServiceCacheHits <- preparedTypeIndexServiceCacheHits + 1L
+                    service
+                | _ ->
+                    preparedTypeIndexServiceCacheMisses <- preparedTypeIndexServiceCacheMisses + 1L
+                    let rulesWrapper = rulesWrapperFor lookup.configRules
+                    let loc = currentLoc ()
+                    let allFiles = currentFiles ()
+                    let emptyVarMap: FrozenDictionary<string, PrefixOptimisedStringSet> = FrozenDictionary.Empty
+                    let baseFrozenTypeMap = baseTempTypeMap.ToFrozenDictionary()
+                    let service =
+                        buildRuleValidationService
+                            rulesWrapper
+                            baseFrozenTypeMap
+                            emptyVarMap
+                            loc
+                            allFiles
+                            (Some(aliasKeyMapFor rulesWrapper baseTempTypeMap baseFrozenTypeMap))
+                    preparedTypeIndexServiceCache <-
+                        Some(
+                            configRulesIdentity,
+                            typeMapIdentity,
+                            typeRulesEpoch,
+                            localisationEpoch,
+                            fileSetEpoch,
+                            service
+                        )
+                    service)
 
         let entities =
             files
@@ -1682,7 +1689,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         lookup <- clone
         // Dynamic enum/config staging has additional clone-local inputs that are
         // intentionally not retained by the ordinary type-index cache.
-        preparedTypeIndexServiceCache <- None
+        clearPreparedTypeIndexServiceCache ()
 
         try
             refreshDynamicParameterEnums ()
@@ -1745,6 +1752,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                       lookupSnapshot = lookupSnapshot
                       services = services }
         finally
+            clearPreparedTypeIndexServiceCache ()
             lookup <- original
             tempEnumMap <- baseTempEnumMap
 
@@ -1764,6 +1772,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 || not (System.Object.ReferenceEquals(lookup.onlyScriptedTriggers, staged.baseOnlyScriptedTriggers)))
 
         if baseGuardsFailed || semanticGuardsFailed then
+            clearPreparedTypeIndexServiceCache ()
             None
         else
             match staged.lookupSnapshot with
@@ -1801,6 +1810,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     // call-local mutable state. The shared lookup and manager fields stay untouched
     // until CommitRefreshConfig applies the guarded snapshot.
     let prepareRefreshConfig () =
+        clearPreparedTypeIndexServiceCache ()
         let baseTypeDefInfo = lookup.typeDefInfo
         let baseVarDefInfo = lookup.varDefInfo
         let baseConfigRules = lookup.configRules
@@ -1826,6 +1836,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
               completionService = box completionService }
 
     let commitRefreshConfig (staged: StagedCacheRefresh) =
+        clearPreparedTypeIndexServiceCache ()
         let guardsHold =
             System.Object.ReferenceEquals(lookup.typeDefInfo, staged.baseTypeDefInfo)
             && System.Object.ReferenceEquals(lookup.varDefInfo, staged.baseVarDefInfo)
@@ -1968,6 +1979,12 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let rulesWrapper = rulesWrapperFor lookup.configRules
         let rules, _, _ = buildServices rulesWrapper typeMap (currentLoc ()) (currentFiles ())
         rules
+
+    member internal _.PreparedTypeIndexServiceCacheStats() =
+        lock preparedTypeIndexServiceCacheLock (fun () ->
+            preparedTypeIndexServiceCache.IsSome,
+            preparedTypeIndexServiceCacheHits,
+            preparedTypeIndexServiceCacheMisses)
 
     member _.LoadBaseConfig(rulesSettings) = loadBaseConfig rulesSettings
     member _.RefreshConfig() =

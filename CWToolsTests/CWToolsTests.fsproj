@@ -29,6 +29,7 @@
         <Compile Include="FolderValidationTests.fs"/>
         <Compile Include="EmbeddedResourceTests.fs"/>
         <Compile Include="OnActionTests.fs"/>
+        <Compile Include="MemoryLifecycleTests.fs"/>
         <Compile Include="ShaderFrontendTests.fs"/>
         <Compile Include="ShaderRuntimeTests.fs"/>
         <Compile Include="ShaderBaselineTests.fs"/>

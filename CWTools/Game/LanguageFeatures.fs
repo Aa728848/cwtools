@@ -26,8 +26,57 @@ module LanguageFeatures =
     let clearTypeReferenceIndexCache () =
         typeReferenceIndexCache.Clear()
 
-    let private scriptedEffectParamMapCache =
-        ConcurrentDictionary<string, struct (obj * Map<string, string list>)>()
+    [<Literal>]
+    let internal ScriptedEffectParamMapCacheMaxEntries = 256
+
+    type private ScriptedEffectParamMapCacheEntry =
+        { source: obj
+          value: Lazy<Map<string, string list>> }
+
+    let private scriptedEffectParamMapCacheLock = obj ()
+    let private scriptedEffectParamMapCache = Collections.Generic.Dictionary<string, ScriptedEffectParamMapCacheEntry>()
+    let private scriptedEffectParamMapCacheOrder = Collections.Generic.Queue<struct (string * ScriptedEffectParamMapCacheEntry)>()
+
+    let internal normaliseScriptedEffectParamMapCacheKey (filepath: string) =
+        let fullPath =
+            try Path.GetFullPath filepath
+            with _ -> filepath
+        let normalised = fullPath.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar)
+        if OperatingSystem.IsWindows() then normalised.ToUpperInvariant() else normalised
+
+    let internal clearScriptedEffectParamMapCache () =
+        lock scriptedEffectParamMapCacheLock (fun () ->
+            scriptedEffectParamMapCache.Clear()
+            scriptedEffectParamMapCacheOrder.Clear())
+
+    let internal removeScriptedEffectParamMapCache filepath =
+        let key = normaliseScriptedEffectParamMapCacheKey filepath
+        lock scriptedEffectParamMapCacheLock (fun () -> scriptedEffectParamMapCache.Remove key |> ignore)
+
+    let internal scriptedEffectParamMapCacheCount () =
+        lock scriptedEffectParamMapCacheLock (fun () -> scriptedEffectParamMapCache.Count)
+
+    let internal getOrBuildScriptedEffectParamMapCacheValue filepath source build =
+        let key = normaliseScriptedEffectParamMapCacheKey filepath
+        let value =
+            lock scriptedEffectParamMapCacheLock (fun () ->
+                match scriptedEffectParamMapCache.TryGetValue key with
+                | true, entry when Object.ReferenceEquals(entry.source, source) -> entry.value
+                | _ ->
+                    scriptedEffectParamMapCache.Remove key |> ignore
+                    let entry =
+                        { source = source
+                          value = lazy (build ()) }
+                    scriptedEffectParamMapCache.[key] <- entry
+                    scriptedEffectParamMapCacheOrder.Enqueue(struct (key, entry))
+                    while scriptedEffectParamMapCache.Count > ScriptedEffectParamMapCacheMaxEntries do
+                        let struct (oldestKey, oldestEntry) = scriptedEffectParamMapCacheOrder.Dequeue()
+                        match scriptedEffectParamMapCache.TryGetValue oldestKey with
+                        | true, current when Object.ReferenceEquals(current, oldestEntry) ->
+                            scriptedEffectParamMapCache.Remove oldestKey |> ignore
+                        | _ -> ()
+                    entry.value)
+        value.Value
 
     let private scriptedVariableReferencePattern =
         System.Text.RegularExpressions.Regex(
@@ -50,12 +99,7 @@ module LanguageFeatures =
         else addNodes e.entity raw
 
     let private entityScriptedParamMap (e: Entity) (lazyObj: obj) : Map<string, string list> =
-        match scriptedEffectParamMapCache.TryGetValue e.filepath with
-        | true, struct (cached, m) when System.Object.ReferenceEquals(cached, lazyObj) -> m
-        | _ ->
-            let m = buildScriptedEffectParamMap e
-            scriptedEffectParamMapCache.[e.filepath] <- struct (lazyObj, m)
-            m
+        getOrBuildScriptedEffectParamMapCacheValue e.filepath lazyObj (fun () -> buildScriptedEffectParamMap e)
 
     let private isSameText (left: string) (right: string) =
         String.Equals(left, right, StringComparison.Ordinal)

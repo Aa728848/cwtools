@@ -332,6 +332,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
     let updateFile (shallow: bool) filepath (fileText: string option) =
         log $"updateFile %s{filepath}"
+        LanguageFeatures.removeScriptedEffectParamMapCache filepath
         let timer = System.Diagnostics.Stopwatch()
         timer.Start()
 
@@ -414,6 +415,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     /// Install a prepared editor resource. Parsing and rule validation are not
     /// part of this mutation phase, keeping the caller's write lock short.
     let commitUpdateFileInteractive (staged: StagedFileUpdate) =
+        LanguageFeatures.removeScriptedEffectParamMapCache staged.filepath
         let resource, entity = resourceManager.CommitPreparedFile staged.resourceUpdate
 
         match staged.kind with
@@ -757,6 +759,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     let mutable prevCompletionServiceRef: System.WeakReference option = None
 
     let updateRulesCache () =
+        LanguageFeatures.clearScriptedEffectParamMapCache ()
         // Capture old service instances for leak detection
         let oldRule = this.RuleValidationService |> Option.map (fun x -> System.WeakReference(x))
         let oldInfo = this.InfoService |> Option.map (fun x -> System.WeakReference(x))
@@ -912,6 +915,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member _.ValidateFilesLocalCancellable(files, shouldCancel) =
         validateFilesLocalCancellable files shouldCancel
     member _.RemoveFile file =
+        LanguageFeatures.removeScriptedEffectParamMapCache file
         validationManager.MarkScriptedParamsDirty [ file ]
         resourceManager.Api.RemoveFile file
 
@@ -982,12 +986,15 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         |> Seq.sortBy (fun m -> m.id)
         |> Seq.toArray
 
-    member _.ReplaceConfigRules rules = rulesManager.LoadBaseConfig rules
+    member _.ReplaceConfigRules rules =
+        LanguageFeatures.clearScriptedEffectParamMapCache ()
+        rulesManager.LoadBaseConfig rules
     member _.RefreshCaches() = updateRulesCache ()
 
     member _.PrepareRefreshCaches() = rulesManager.PrepareRefreshConfig()
 
     member this.CommitRefreshCaches(staged) =
+        LanguageFeatures.clearScriptedEffectParamMapCache ()
         match rulesManager.CommitRefreshConfig(staged) with
         | Some(rules, info, completion) ->
             this.RuleValidationService <- Some rules
