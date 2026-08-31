@@ -380,10 +380,24 @@ type AllEntities<'T> = unit -> struct (Entity * Lazy<'T>) seq
 type ValidatableEntities<'T> = unit -> struct (Entity * Lazy<'T>) list
 type FileNames = unit -> string seq
 
+/// Inline caller expansions computed against one exact resource generation.
+/// Replacement entities are opaque outside ResourceManager and published only
+/// after the commit guard succeeds.
+type StagedResourceDeletion =
+    { files: string list
+      resourceEpoch: int }
+
+type StagedInlineScriptCallers =
+    { resourceEpoch: int
+      callerFiles: string list
+      replacements: obj }
+
 type IResourceAPI<'T when 'T :> ComputedData> =
     abstract UpdateFiles: UpdateFiles<'T>
     abstract UpdateFile: UpdateFile<'T>
     abstract RemoveFile: RemoveFile
+    abstract PrepareRemoveFiles: string list -> StagedResourceDeletion
+    abstract CommitRemoveFiles: StagedResourceDeletion -> bool
     abstract GetResources: GetResources
     abstract ValidatableFiles: ValidatableFiles
     abstract AllEntities: AllEntities<'T>
@@ -394,6 +408,8 @@ type IResourceAPI<'T when 'T :> ComputedData> =
     abstract ForceRulesDataGenerate: unit -> unit
     abstract GetInlineScriptCallers: string -> string list
     abstract RefreshInlineScriptCallers: string list -> string list
+    abstract PrepareInlineScriptCallers: string list -> StagedInlineScriptCallers option
+    abstract CommitInlineScriptCallers: StagedInlineScriptCallers -> bool
     abstract GetFileNames: FileNames
     abstract GetEntityByFilePath: string -> struct (Entity * Lazy<'T>) option
 
@@ -1140,7 +1156,7 @@ type ResourceManager<'T when 'T :> ComputedData>
         visit scriptName
         result |> List.ofSeq
 
-    let updateInlineScripts (news: (Resource * struct (Entity * Lazy<'T>) option) list) =
+    let updateInlineScripts applyToLive (news: (Resource * struct (Entity * Lazy<'T>) option) list) =
         // 如果被修改的文件是 inline_script 本身，先失效缓存
         for (resource, entityOpt) in news do
             match entityOpt with
@@ -1478,7 +1494,7 @@ type ResourceManager<'T when 'T :> ComputedData>
                         System.Lazy<_>((fun () -> computedDataFunction newEntity), LazyThreadSafetyMode.PublicationOnly)
 
                     let item = struct (newEntity, lazyi)
-                    entitiesMap[newEntity.filepath] <- item
+                    if applyToLive then entitiesMap[newEntity.filepath] <- item
                     resource, Some item
                 | None -> resource, Some struct (oldE, oldLazy)
             | resource, None -> resource, None)
@@ -1593,7 +1609,7 @@ type ResourceManager<'T when 'T :> ComputedData>
         let mutable res = news
 
         if enableInlineScripts then
-            res <- updateInlineScripts news |> Seq.toList
+            res <- updateInlineScripts true news |> Seq.toList
 
         rebuildInlineScriptCallerIndex ()
 
@@ -1677,7 +1693,7 @@ type ResourceManager<'T when 'T :> ComputedData>
         // Expand inline scripts for this file after it becomes the live resource.
         let mutable res = savedResults
         if enableInlineScripts then
-            res <- updateInlineScripts res |> Seq.toList
+            res <- updateInlineScripts true res |> Seq.toList
 
         // 增量维护 inline_script 反向调用索引（仅本文件的贡献）
         entity |> Option.iter updateInlineScriptCallerIndexForFile
@@ -1706,11 +1722,18 @@ type ResourceManager<'T when 'T :> ComputedData>
     let updateFile file =
         file |> prepareFile |> commitPreparedFile
 
+    let isWindows = OperatingSystem.IsWindows()
+
     let normaliseFilePath (path: string) =
-        try
-            FileInfo(path).FullName.Replace('\\', '/').ToLowerInvariant()
-        with _ ->
-            path.Replace('\\', '/').ToLowerInvariant()
+        let p =
+            if Path.IsPathRooted(path) then
+                path.Replace('\\', '/')
+            else
+                try
+                    FileInfo(path).FullName.Replace('\\', '/')
+                with _ ->
+                    path.Replace('\\', '/')
+        if isWindows then p.ToLowerInvariant() else p
 
     let tryFindStoredFileKey (filepath: string) =
         let target = normaliseFilePath filepath
@@ -1719,17 +1742,15 @@ type ResourceManager<'T when 'T :> ComputedData>
         |> Option.orElseWith (fun () ->
             entitiesMap.Keys |> Seq.tryFind (fun key -> normaliseFilePath key = target))
 
-    let refreshInlineScriptCallers (scriptNames: string list) =
-        if not enableInlineScripts || List.isEmpty scriptNames then
-            []
+    let prepareInlineScriptCallers (scriptNames: string list) =
+        if not enableInlineScripts || List.isEmpty scriptNames then None
         else
             invalidateInlineScriptsCache ()
-
+            let resourceEpoch = ResourceManagerEager.currentResource ()
             let callers =
                 scriptNames
                 |> List.collect getInlineScriptCallers
                 |> List.distinctBy normaliseFilePath
-
             let refreshInputs =
                 callers
                 |> List.choose (fun caller ->
@@ -1739,23 +1760,66 @@ type ResourceManager<'T when 'T :> ComputedData>
                         let rawEntity = { entity with entity = entity.rawEntity }
                         Some(storedPath, resource, Some struct (rawEntity, lazyData))
                     | _ -> None)
-
-            if not (List.isEmpty refreshInputs) then
+            let replacements =
                 refreshInputs
-                |> List.map (fun (_, resource, entity) -> resource, entity)
-                |> updateInlineScripts
-                |> Seq.length
-                |> ignore
+                |> List.map (fun (path, resource, entity) -> path, resource, entity)
+                |> List.map (fun (path, resource, entity) ->
+                    let expanded = updateInlineScripts false [ resource, entity ] |> Seq.exactlyOne
+                    path, expanded)
+            Some
+                { resourceEpoch = resourceEpoch
+                  callerFiles = refreshInputs |> List.map (fun (path, _, _) -> path)
+                  replacements = box replacements }
 
-                // Expanded caller entities were replaced without going through
-                // UpdateFile. Advance the resource epoch, and the carrier epoch only
-                // if one of the expanded callers actually contributes to carrier inference.
-                let changedEntities =
-                    refreshInputs |> List.choose (fun (_, _, entityOpt) -> entityOpt |> Option.map structFst)
+    let commitInlineScriptCallers (staged: StagedInlineScriptCallers) =
+        if ResourceManagerEager.currentResource () <> staged.resourceEpoch then false
+        else
+            let replacements =
+                staged.replacements
+                :?> (string * (Resource * struct (Entity * Lazy<'T>) option)) list
+            let changedEntities =
+                replacements
+                |> List.choose (fun (path, (_, entityOpt)) ->
+                    match entityOpt with
+                    | Some item ->
+                        entitiesMap[path] <- item
+                        Some(structFst item)
+                    | None -> None)
+            if not changedEntities.IsEmpty then advanceEpochsForChangedEntities changedEntities
+            true
 
-                advanceEpochsForChangedEntities changedEntities
+    let refreshInlineScriptCallers scriptNames =
+        match prepareInlineScriptCallers scriptNames with
+        | Some staged when commitInlineScriptCallers staged -> staged.callerFiles
+        | _ -> []
 
-            refreshInputs |> List.map (fun (path, _, _) -> path)
+    let prepareRemoveFiles files =
+        { files = files
+          resourceEpoch = ResourceManagerEager.currentResource () }
+
+    let commitRemoveFiles (staged: StagedResourceDeletion) =
+        if ResourceManagerEager.currentResource () <> staged.resourceEpoch then false
+        else
+            let mutable changed = false
+            let mutable carrierChanged = false
+            for filepath in staged.files do
+                let storedPath = tryFindStoredFileKey filepath |> Option.defaultValue filepath
+                match entitiesMap.TryGetValue storedPath with
+                | true, struct (entity, _) when carrierSemanticFingerprint entity |> Option.isSome -> carrierChanged <- true
+                | _ -> ()
+                let removedResource = fileMap.Remove storedPath
+                let removedEntity = entitiesMap.Remove storedPath
+                if removedResource || removedEntity then
+                    changed <- true
+                    removeCallerContributions storedPath
+            if changed then
+                ResourceManagerEager.nextResource () |> ignore
+                ResourceManagerEager.nextFileSet () |> ignore
+                if carrierChanged then ResourceManagerEager.nextCarrier () |> ignore
+                invalidateInlineScriptsCache ()
+                updateOverwrite ()
+                if enableInlineScripts then rebuildInlineScriptCallerIndex ()
+            changed
 
     let removeFile (filepath: string) =
         let storedPath = tryFindStoredFileKey filepath |> Option.defaultValue filepath
@@ -1828,6 +1892,8 @@ type ResourceManager<'T when 'T :> ComputedData>
             member _.UpdateFiles = updateFiles
             member _.UpdateFile = updateFile
             member _.RemoveFile = removeFile
+            member _.PrepareRemoveFiles files = prepareRemoveFiles files
+            member _.CommitRemoveFiles staged = commitRemoveFiles staged
             member _.GetResources = getResources
             member _.ValidatableFiles = validatableFiles
             member _.AllEntities = allEntities
@@ -1840,5 +1906,7 @@ type ResourceManager<'T when 'T :> ComputedData>
             member _.ForceRulesDataGenerate() = forceRulesData ()
             member _.GetInlineScriptCallers scriptName = getInlineScriptCallers scriptName
             member _.RefreshInlineScriptCallers scriptNames = refreshInlineScriptCallers scriptNames
+            member _.PrepareInlineScriptCallers scriptNames = prepareInlineScriptCallers scriptNames
+            member _.CommitInlineScriptCallers staged = commitInlineScriptCallers staged
             member _.GetFileNames = getFileNames
             member _.GetEntityByFilePath path = getEntityByFilePath path }

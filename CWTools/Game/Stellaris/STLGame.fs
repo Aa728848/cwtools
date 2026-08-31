@@ -538,7 +538,7 @@ module STLGameFunctions =
             let newScopes =
                 match o.requiredScopes with
                 | [] ->
-                    lookup.effectsMap.TryFind(StringResource.stringManager.GetStringForID s.normal)
+                    lookup.effectsMap.TryFind s
                     |> Option.map (fun se -> se.Scopes)
                     |> Option.defaultValue []
                 | x -> x
@@ -549,7 +549,7 @@ module STLGameFunctions =
             let newScopes =
                 match o.requiredScopes with
                 | [] ->
-                    lookup.triggersMap.TryFind(StringResource.stringManager.GetStringForID s.normal)
+                    lookup.triggersMap.TryFind s
                     |> Option.map (fun se -> se.Scopes)
                     |> Option.defaultValue []
                 | x -> x
@@ -2710,6 +2710,18 @@ type STLGame(setupSettings: StellarisSettings) =
             carrierScopeResolver.Invalidate()
             result
 
+        member _.PrepareConfigRules rules =
+            game.PrepareConfigRules
+                { ruleFiles = rules
+                  validateRules = true
+                  debugRulesOnly = false
+                  debugMode = false }
+
+        member _.CommitConfigRules staged =
+            let committed = game.CommitConfigRules staged
+            if committed then carrierScopeResolver.Invalidate()
+            committed
+
         member _.RefreshCaches() =
             game.RefreshCaches()
             carrierScopeResolver.Invalidate()
@@ -2745,6 +2757,24 @@ type STLGame(setupSettings: StellarisSettings) =
                     carrierScopeResolver.Invalidate()
                     true
 
+        member _.PrepareFileDeletion(files, scripted) =
+            let typeKeys = incrementalTypeKeysForFiles game files
+            let hasScriptedVariableContribution =
+                files |> List.exists ScriptedVariableContribution.isScriptedVariablesPath
+
+            if scripted then
+                if typeKeys.IsEmpty && not hasScriptedVariableContribution then
+                    game.PrepareFileDeletionForFiles(files, scripted, [])
+                else
+                    game.PrepareFileDeletionForFiles(files, scripted, typeKeys)
+            else
+                game.PrepareFileDeletionForFiles(files, scripted, typeKeys)
+
+        member _.CommitFileDeletion staged =
+            let committed = game.CommitFileDeletionForFiles staged
+            if committed then carrierScopeResolver.Invalidate()
+            committed
+
         member _.PrepareScriptedTypes(files, additionalSemanticChanged) =
             let typeKeys = incrementalTypeKeysForFiles game files
             let hasScriptedVariableContribution =
@@ -2771,6 +2801,8 @@ type STLGame(setupSettings: StellarisSettings) =
             resources.ForceDynamicParameterDataForFiles filepaths
         member _.GetInlineScriptCallers scriptName = resources.GetInlineScriptCallers scriptName
         member _.RefreshInlineScriptCallers scriptNames = game.RefreshInlineScriptCallers scriptNames
+        member _.PrepareInlineScriptCallers scriptNames = game.PrepareInlineScriptCallers scriptNames
+        member _.CommitInlineScriptCallers staged = game.CommitInlineScriptCallers staged
         member _.Types() = game.Lookup.typeDefInfo
         member _.TypeDefs() = game.Lookup.typeDefs
 

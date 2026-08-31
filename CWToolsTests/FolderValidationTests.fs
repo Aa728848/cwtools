@@ -16,6 +16,7 @@ open CWTools.Utilities.Position
 open CWTools.Utilities.Utils
 open CWTools
 open CWTools.Validation
+open CWTools.Validation.Stellaris
 open Expecto
 open Expecto.Logging
 open Expecto.Logging.Message
@@ -1655,7 +1656,34 @@ let incrementalScriptedRefreshTests =
     testSequenced
     <| testList
         "incremental scripted refresh"
-        [ testCase "scripted-variable path ordering is platform-aware and total" <| fun () ->
+        [ testCase "same-file scripted-variable arithmetic is rejected while cross-file remains valid" <| fun () ->
+              let parse path text =
+                  match CKParser.parseString text path with
+                  | Success(statements, _, _) -> STLProcess.shipProcess.ProcessNode () "root" (mkZeroFile path) statements
+                  | Failure(error, _, _) -> failtest error
+
+              let sameFile =
+                  parse
+                      "common/scripted_variables/same_file.txt"
+                      "@base = 500000\n@derived = @[ base * 1.5 ]"
+              let crossFile =
+                  parse
+                      "common/scripted_variables/derived_only.txt"
+                      "@derived = @[ base * 1.5 ]"
+
+              match STLValidation.sameFileScriptedVariableArithmeticErrors sameFile with
+              | Invalid(_, [ error ]) ->
+                  Expect.equal error.code "CW278" "the engine-incompatible same-file expression gets a dedicated error"
+                  Expect.stringContains error.message "@derived" "the diagnostic identifies the derived constant"
+                  Expect.stringContains error.message "@base" "the diagnostic identifies the same-file dependency"
+              | result -> failtestf "expected one same-file arithmetic diagnostic, got %A" result
+
+              Expect.equal
+                  (STLValidation.sameFileScriptedVariableArithmeticErrors crossFile)
+                  OK
+                  "a dependency defined in another scripted_variables file remains legal"
+
+          testCase "scripted-variable path ordering is platform-aware and total" <| fun () ->
               let upper = "common/scripted_variables/A.txt"
               let lower = "common/scripted_variables/a.txt"
               Expect.isLessThan
@@ -1829,6 +1857,148 @@ let incrementalScriptedRefreshTests =
 
               let committed = stl.CommitScriptedTypes staged.Value
               Expect.isFalse committed "commit must reject a staged result whose base type index was replaced"
+
+          testWithCapturedLogs "prepare deletion does not mutate live state" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let triggerFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
+              let typesBefore = stl.Types()
+              let entitiesBefore = stl.AllEntities() |> Seq.length
+
+              let staged = stl.PrepareFileDeletion([ triggerFile ], true)
+              Expect.isSome staged "prepare deletion should produce a stage"
+              Expect.equal (stl.Types()) typesBefore "prepare deletion must not mutate live types"
+              Expect.equal (stl.AllEntities() |> Seq.length) entitiesBefore "prepare deletion must not remove live entities"
+
+          testWithCapturedLogs "commit file deletion removes file and definitions" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let triggerFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
+              Expect.contains
+                  (stl.Types().["scripted_trigger"] |> Array.map (fun t -> t.id))
+                  "test_scripted_trigger_ship"
+                  "fixture should contain test_scripted_trigger_ship before deletion"
+
+              let staged = stl.PrepareFileDeletion([ triggerFile ], true)
+              Expect.isSome staged "prepare deletion should succeed"
+              let committed = stl.CommitFileDeletion staged.Value
+              Expect.isTrue committed "commit deletion should succeed"
+
+              let remainingTriggerIds =
+                  stl.Types()
+                  |> Map.tryFind "scripted_trigger"
+                  |> Option.defaultValue [||]
+                  |> Array.map (fun t -> t.id)
+              Expect.isFalse
+                  (remainingTriggerIds |> Array.contains "test_scripted_trigger_ship")
+                  "committed deletion must remove definitions defined in the deleted file"
+
+          testWithCapturedLogs "commit file deletion is rejected when resources changed since prepare" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let triggerFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
+              let otherFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_effects", "test.txt"))
+
+              let staged = stl.PrepareFileDeletion([ triggerFile ], true)
+              Expect.isSome staged "prepare deletion should succeed"
+
+              // Simulate a concurrent edit advancing the resource epoch
+              stl.UpdateFile false otherFile (Some "test_scripted_effect = { }") |> ignore
+
+              let committed = stl.CommitFileDeletion staged.Value
+              Expect.isFalse committed "commit deletion must reject a stage when resource epoch changed"
+
+          testWithCapturedLogs "commit file deletion is rejected when target file does not exist in resources and leaves state intact" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let typesBefore = stl.Types()
+              let entitiesBefore = stl.AllEntities() |> Seq.length
+              let nonExistentFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "non_existent.txt"))
+
+              let fakeStage: StagedFileDeletion =
+                  { files = [ nonExistentFile ]
+                    resourceEpoch = ResourceManagerEager.currentResource ()
+                    typeIndex = None
+                    scriptedTypes = None }
+
+              let committed = stl.CommitFileDeletion fakeStage
+              Expect.isFalse committed "commit deletion must reject a stage with missing target files"
+              Expect.equal (stl.Types()) typesBefore "rejected deletion must leave live types unchanged"
+              Expect.equal (stl.AllEntities() |> Seq.length) entitiesBefore "rejected deletion must leave live entities unchanged"
+
+          testWithCapturedLogs "commit file deletion is rejected when batch contains both existing and missing files and leaves state intact" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let typesBefore = stl.Types()
+              let entitiesBefore = stl.AllEntities() |> Seq.length
+              let existingFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
+              let missingFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "missing_other.txt"))
+
+              let fakeStage: StagedFileDeletion =
+                  { files = [ existingFile; missingFile ]
+                    resourceEpoch = ResourceManagerEager.currentResource ()
+                    typeIndex = None
+                    scriptedTypes = None }
+
+              let committed = stl.CommitFileDeletion fakeStage
+              Expect.isFalse committed "commit deletion must reject a batch when any file is missing"
+              Expect.equal (stl.Types()) typesBefore "rejected mixed deletion must leave live types unchanged"
+              Expect.equal (stl.AllEntities() |> Seq.length) entitiesBefore "rejected mixed deletion must leave live entities unchanged"
+              let stillExists =
+                  stl.AllEntities()
+                  |> Seq.exists (fun struct (e, _) -> e.filepath = existingFile)
+              Expect.isTrue stillExists "existing file in rejected mixed batch must remain in entities"
+
+          testWithCapturedLogs "commit file deletion is rejected when semantic-only guards changed and does not delete resources" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let triggerFile = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "test.txt"))
+              let staged = stl.PrepareFileDeletion([ triggerFile ], true)
+              Expect.isSome staged "prepare deletion should succeed"
+              Expect.isSome staged.Value.scriptedTypes "staged scripted types should be present"
+
+              // Keep all base identities and resourceEpoch intact, but alter baseOnlyScriptedEffects to simulate a semantic-only guard drift
+              let scripted = staged.Value.scriptedTypes.Value
+              let driftStage =
+                  { staged.Value with
+                      scriptedTypes =
+                          Some
+                              { scripted with
+                                  semanticChanged = true
+                                  baseOnlyScriptedEffects = box [||] } }
+
+              let committed = stl.CommitFileDeletion driftStage
+              Expect.isFalse committed "commit deletion must reject when semantic-only guard fails"
+
+              // Verify that the resource was NOT deleted
+              let resourceStillExists =
+                  stl.AllEntities()
+                  |> Seq.exists (fun struct (e, _) -> e.filepath = triggerFile)
+              Expect.isTrue resourceStillExists "semantic-only rejected commit must NOT delete target file resource"
+
+          testWithCapturedLogs "deletion path normalization respects platform case sensitivity on live resources" <| fun () ->
+              let stl, folder = stlScriptedGame ()
+              let fileLower = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "case_test.txt"))
+              let fileUpper = Path.GetFullPath(Path.Combine(folder, "common", "scripted_triggers", "CASE_TEST.TXT"))
+
+              let isWindows = System.OperatingSystem.IsWindows()
+              if isWindows then
+                  // On Windows: updating lowercase file and deleting using uppercase alias must match and delete properly
+                  stl.UpdateFile false fileLower (Some "case_test = { }") |> ignore
+                  let staged = stl.PrepareFileDeletion([ fileUpper ], true)
+                  Expect.isSome staged "prepare deletion using case alias on Windows should succeed"
+                  let committed = stl.CommitFileDeletion staged.Value
+                  Expect.isTrue committed "committing deletion using case alias on Windows should succeed"
+
+                  let allEntities = stl.AllEntities() |> Seq.map (fun struct (e, _) -> e.filepath.ToLowerInvariant()) |> Seq.toList
+                  Expect.isFalse (allEntities |> List.contains (fileLower.ToLowerInvariant())) "resource must be deleted on Windows"
+              else
+                  // On Unix: fileLower and fileUpper are two distinct files; deleting fileLower must keep fileUpper intact
+                  stl.UpdateFile false fileLower (Some "case_test_lower = { }") |> ignore
+                  stl.UpdateFile false fileUpper (Some "case_test_upper = { }") |> ignore
+
+                  let staged = stl.PrepareFileDeletion([ fileLower ], true)
+                  Expect.isSome staged "prepare deletion for fileLower should succeed"
+                  let committed = stl.CommitFileDeletion staged.Value
+                  Expect.isTrue committed "committing deletion for fileLower should succeed"
+
+                  let allEntities = stl.AllEntities() |> Seq.map (fun struct (e, _) -> e.filepath) |> Seq.toList
+                  Expect.isFalse (allEntities |> List.contains fileLower) "fileLower must be deleted on Unix"
+                  Expect.isTrue (allEntities |> List.contains fileUpper) "case-distinct fileUpper must remain intact on Unix"
 
           testWithCapturedLogs "type-index stage distinguishes range-only and semantic changes" <| fun () ->
               let stl, folder = stlScriptedGame ()

@@ -305,6 +305,15 @@ type CustomGame(setupSettings: CustomSettings, gameFolderName: string) =
                   debugRulesOnly = false
                   debugMode = false } //refreshRuleCaches game (Some { ruleFiles = rules; validateRules = true; debugRulesOnly = false; debugMode = false})
 
+        member _.PrepareConfigRules rules =
+            game.PrepareConfigRules
+                { ruleFiles = rules
+                  validateRules = true
+                  debugRulesOnly = false
+                  debugMode = false }
+
+        member _.CommitConfigRules staged = game.CommitConfigRules staged
+
         member _.RefreshCaches() = game.RefreshCaches()
         member _.PrepareRefreshCaches() = game.PrepareRefreshCaches()
         member _.CommitRefreshCaches(staged) = game.CommitRefreshCaches(staged)
@@ -317,6 +326,12 @@ type CustomGame(setupSettings: CustomSettings, gameFolderName: string) =
                 true
 
         member _.RemoveScriptedTypes files = game.RemoveIncrementalScriptedTypes files
+
+        member _.PrepareFileDeletion(files, scripted) =
+            game.PrepareIncrementalFileDeletion(files, scripted)
+
+        member _.CommitFileDeletion staged =
+            game.CommitFileDeletionForFiles staged
 
         member _.PrepareScriptedTypes(files, additionalSemanticChanged) =
             game.PrepareIncrementalScriptedTypes(files, additionalSemanticChanged)
@@ -336,6 +351,8 @@ type CustomGame(setupSettings: CustomSettings, gameFolderName: string) =
             resources.ForceDynamicParameterDataForFiles filepaths
         member _.GetInlineScriptCallers scriptName = resources.GetInlineScriptCallers scriptName
         member _.RefreshInlineScriptCallers scriptNames = game.RefreshInlineScriptCallers scriptNames
+        member _.PrepareInlineScriptCallers scriptNames = game.PrepareInlineScriptCallers scriptNames
+        member _.CommitInlineScriptCallers staged = game.CommitInlineScriptCallers staged
         member _.Types() = game.Lookup.typeDefInfo
         member _.TypeDefs() = game.Lookup.typeDefs
         member _.GetPossibleCodeEdits file text = []

@@ -108,7 +108,13 @@ type StagedScriptedTypes =
       lookupSnapshot: LookupFieldSnapshot option
       services: struct (obj * obj * obj) option }
 
-type StagedTypeIndex =
+type StagedFileDeletion =
+    { files: string list
+      resourceEpoch: int
+      typeIndex: StagedTypeIndex option
+      scriptedTypes: StagedScriptedTypes option }
+
+and StagedTypeIndex =
     { typeDefInfo: Map<string, TypeDefInfo array>
       tempTypeMap: Map<string, CWTools.Utilities.Utils2.PrefixOptimisedStringSet>
       typeDefInfoForValidation: Map<string, struct (string * range) array>
@@ -134,6 +140,13 @@ type StagedCacheRefresh =
       ruleService: obj
       infoService: obj
       completionService: obj }
+
+/// Parsed replacement rules and fully prepared derived services. The live lookup
+/// is unchanged until CommitConfigRules validates the captured generation guards.
+type StagedRulesReplacement =
+    { refresh: StagedCacheRefresh
+      baseRules: obj
+      newBaseRules: obj }
 
 /// Incremental localisation dependency delta accumulated since the previous
 /// deep analysis pass. Keys are language-agnostic because script references
@@ -304,6 +317,10 @@ type IGame =
     abstract FindAllRefsByType: string -> string -> range list
     abstract TypeReferenceIndex: unit -> Map<string * string, range list>
     abstract ReplaceConfigRules: (string * string) list -> unit
+    /// Parse and fully prepare replacement rules without mutating the live lookup.
+    abstract PrepareConfigRules: (string * string) list -> StagedRulesReplacement option
+    /// Guarded write-locked snapshot/service swap.
+    abstract CommitConfigRules: StagedRulesReplacement -> bool
     abstract RefreshCaches: unit -> unit
     /// Lockless build phase of a staged full cache refresh; None when not supported.
     abstract PrepareRefreshCaches: unit -> StagedCacheRefresh option
@@ -311,6 +328,10 @@ type IGame =
     abstract CommitRefreshCaches: StagedCacheRefresh -> bool
     abstract RefreshScriptedTypes: string list -> bool
     abstract RemoveScriptedTypes: string list -> bool
+    /// Build deletion indexes/services against a filtered resource snapshot.
+    abstract PrepareFileDeletion: string list * scripted: bool -> StagedFileDeletion option
+    /// Guarded resource removal plus index/service publication.
+    abstract CommitFileDeletion: StagedFileDeletion -> bool
     /// Lockless build phase of an incremental scripted-type refresh; None when not applicable.
     abstract PrepareScriptedTypes: string list * additionalSemanticChanged: bool -> StagedScriptedTypes option
     /// Write-locked swap phase; false when a guard fails and a full refresh is needed.
@@ -324,6 +345,8 @@ type IGame =
     abstract ForceDynamicParameterDataForFiles: string list -> int
     abstract GetInlineScriptCallers: string -> string list
     abstract RefreshInlineScriptCallers: string list -> string list
+    abstract PrepareInlineScriptCallers: string list -> StagedInlineScriptCallers option
+    abstract CommitInlineScriptCallers: StagedInlineScriptCallers -> bool
     abstract Types: unit -> Map<string, TypeDefInfo array>
     abstract TypeDefs: unit -> CWTools.Rules.TypeDefinition list
     abstract InfoAtPos: pos -> string -> string -> SymbolInformation option

@@ -98,6 +98,16 @@ type ErrorCodes =
               Severity = Severity.Warning
               Message = sprintf "%s is not defined" variable }
 
+    static member SameFileScriptedVariableArithmetic =
+        fun variable dependency ->
+            { ID = "CW278"
+              Severity = Severity.Error
+              Message =
+                sprintf
+                    "Scripted variable %s cannot use same-file scripted variable %s in an arithmetic expression; Stellaris does not evaluate this result. Move the dependency to another scripted_variables file or use a literal value."
+                    variable
+                    dependency }
+
     static member UndefinedTrigger =
         fun trigger ->
             { ID = "CW102"

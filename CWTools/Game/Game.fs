@@ -940,6 +940,40 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             this.RefreshScriptedTypesForFiles(files, typeKeys)
             true
 
+    member _.PrepareIncrementalFileDeletion(files, scripted) =
+        let typeKeys = incrementalTypeKeysForFiles files
+        let hasScriptedVariableContribution =
+            files |> List.exists ScriptedVariableContribution.isScriptedVariablesPath
+        let resourceEpoch = ResourceManagerEager.currentResource ()
+        if scripted then
+            if typeKeys.IsEmpty && not hasScriptedVariableContribution then
+                match rulesManager.PrepareDeletedScriptedTypes(files, [], false) with
+                | Some stagedScripted ->
+                    Some
+                        { files = files
+                          resourceEpoch = resourceEpoch
+                          typeIndex = None
+                          scriptedTypes = Some stagedScripted }
+                | None -> None
+            else
+                match rulesManager.PrepareDeletedScriptedTypes(files, typeKeys, true) with
+                | Some stagedScripted ->
+                    Some
+                        { files = files
+                          resourceEpoch = resourceEpoch
+                          typeIndex = None
+                          scriptedTypes = Some stagedScripted }
+                | None -> None
+        else
+            match rulesManager.PrepareDeletedTypeIndex(files, typeKeys) with
+            | Some stagedTypeIndex ->
+                Some
+                    { files = files
+                      resourceEpoch = resourceEpoch
+                      typeIndex = Some stagedTypeIndex
+                      scriptedTypes = None }
+            | None -> None
+
     member _.SemanticSignatureForFile(filepath) = semanticSignatureForFile filepath
 
     member internal _.LocalisationPublicationIdentity =
@@ -1133,6 +1167,10 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
     member _.RefreshValidationManager() =
         validationManager <- createValidationManager (validationManager.ErrorCache())
+
+    member _.ResetValidationManager() =
+        validationManager <- createValidationManager (ErrorCache())
+        errorCache.Clear()
     
     /// 清理不存在文件的缓存条目，防止内存泄漏
     member _.CleanupCache(existingFiles: Set<string>) =
@@ -1153,6 +1191,16 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         for filepath in callers do
             errorCache.TryRemove(filepath) |> ignore
         callers
+
+    member _.PrepareInlineScriptCallers scriptNames =
+        resourceManager.Api.PrepareInlineScriptCallers scriptNames
+
+    member _.CommitInlineScriptCallers(staged: StagedInlineScriptCallers) =
+        if resourceManager.Api.CommitInlineScriptCallers staged then
+            for filepath in staged.callerFiles do
+                errorCache.TryRemove(filepath) |> ignore
+            true
+        else false
 
     member this.InfoAtPos pos file text =
         if PdxShaderFeatures.isShaderFile file then
@@ -1190,10 +1238,29 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         |> Seq.sortBy (fun m -> m.id)
         |> Seq.toArray
 
-    member _.ReplaceConfigRules rules =
+    member this.ReplaceConfigRules rules =
         LanguageFeatures.clearScriptedEffectParamMapCache ()
         rulesManager.LoadBaseConfig rules
-    member _.RefreshCaches() = updateRulesCache ()
+        this.ResetValidationManager()
+
+    member _.PrepareConfigRules rules = rulesManager.PrepareConfigRules rules
+
+    member this.CommitConfigRules(staged) =
+        LanguageFeatures.clearScriptedEffectParamMapCache ()
+        match rulesManager.CommitConfigRules staged with
+        | Some(rules, info, completion) ->
+            this.RuleValidationService <- Some rules
+            this.InfoService <- Some info
+            this.completionService <- Some completion
+            this.ResetValidationManager()
+            LanguageFeatures.clearCompletionEntityCache ()
+            LanguageFeatures.clearTypeReferenceIndexCache ()
+            true
+        | None -> false
+
+    member this.RefreshCaches() =
+        updateRulesCache ()
+        this.ResetValidationManager()
 
     member _.PrepareRefreshCaches() = rulesManager.PrepareRefreshConfig()
 
@@ -1216,7 +1283,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                       afterRecomputeCreated = afterRecomputeCreated
                       newlyCreated = max 0 (afterRefreshCreated - beforeCreated)
                       total = total }
-            this.RefreshValidationManager()
+            this.ResetValidationManager()
             LanguageFeatures.clearCompletionEntityCache ()
             LanguageFeatures.clearTypeReferenceIndexCache ()
             true
@@ -1252,6 +1319,88 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         match rulesManager.PrepareTypeIndex(files, typeKeys) with
         | Some staged -> this.CommitTypeIndexForFiles staged
         | None -> false
+
+    member _.PrepareFileDeletionForFiles(files: string list, scripted: bool, typeKeys: string list) : StagedFileDeletion option =
+        let resourceEpoch = ResourceManagerEager.currentResource ()
+        if scripted then
+            match rulesManager.PrepareDeletedScriptedTypes(files, typeKeys, true) with
+            | Some stagedScripted ->
+                Some
+                    { files = files
+                      resourceEpoch = resourceEpoch
+                      typeIndex = None
+                      scriptedTypes = Some stagedScripted }
+            | None -> None
+        else
+            match rulesManager.PrepareDeletedTypeIndex(files, typeKeys) with
+            | Some stagedTypeIndex ->
+                Some
+                    { files = files
+                      resourceEpoch = resourceEpoch
+                      typeIndex = Some stagedTypeIndex
+                      scriptedTypes = None }
+            | None -> None
+
+    member this.CommitFileDeletionForFiles(staged: StagedFileDeletion) : bool =
+        if ResourceManagerEager.currentResource () <> staged.resourceEpoch then
+            false
+        else
+            // Preflight 1: 确保待删文件全部存在于当前资源集合中
+            let existingResourcePaths =
+                resourceManager.Api.GetResources()
+                |> List.map (fun r ->
+                    let path =
+                        match r with
+                        | EntityResource(_, e) -> e.filepath
+                        | FileResource(_, f) -> f.filepath
+                        | FileWithContentResource(_, f) -> f.filepath
+                    normaliseIncrementalPath path)
+                |> Set.ofList
+
+            let allTargetFilesExist =
+                not staged.files.IsEmpty
+                && staged.files |> List.forall (fun file ->
+                    existingResourcePaths.Contains(normaliseIncrementalPath file))
+
+            // Preflight 2: 完整校验 lookup / typeIndex / scriptedTypes 的所有 base & semantic guards
+            let typeGuardsHold =
+                match staged.scriptedTypes with
+                | Some scriptedStaged -> rulesManager.CanCommitScriptedTypes scriptedStaged
+                | None ->
+                    match staged.typeIndex with
+                    | Some typeIndexStaged -> rulesManager.CanCommitTypeIndex typeIndexStaged
+                    | None -> true
+
+            if not allTargetFilesExist || not typeGuardsHold then
+                false
+            else
+                let indexCommitted =
+                    match staged.scriptedTypes with
+                    | Some scriptedStaged ->
+                        this.CommitScriptedTypesForFiles(scriptedStaged)
+                    | None ->
+                        match staged.typeIndex with
+                        | Some typeIndexStaged ->
+                            this.CommitTypeIndexForFiles(typeIndexStaged)
+                        | None -> true
+
+                if not indexCommitted then
+                    false
+                else
+                    let stagedResource: StagedResourceDeletion =
+                        { files = staged.files
+                          resourceEpoch = staged.resourceEpoch }
+                    let resourceCommitted = resourceManager.Api.CommitRemoveFiles stagedResource
+
+                    if not resourceCommitted then
+                        false
+                    else
+                        for file in staged.files do
+                            LanguageFeatures.removeScriptedEffectParamMapCache file
+                            validationManager.MarkScriptedParamsDirty [ file ]
+                            errorCache.TryRemove(file) |> ignore
+                            validationManager.InvalidateFile file
+                        true
 
     member _.InitialConfigRules() = initialConfigRules ()
     member private _.DebugSettings = debugSettings

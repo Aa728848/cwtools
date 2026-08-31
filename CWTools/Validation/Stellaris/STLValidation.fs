@@ -232,6 +232,47 @@ module STLValidation =
             |> List.distinct
 
 
+    let private arithmeticVariablePattern =
+        System.Text.RegularExpressions.Regex(
+            @"(?<![A-Za-z0-9_$])@?([A-Za-z_][A-Za-z0-9_$]*)(?![A-Za-z0-9_$])",
+            System.Text.RegularExpressions.RegexOptions.Compiled
+        )
+
+    let sameFileScriptedVariableArithmeticErrors (node: Node) =
+        if not (node.Position.FileName.Replace('\\', '/').Contains("common/scripted_variables/", StringComparison.OrdinalIgnoreCase)) then
+            OK
+        else
+            let definitions =
+                node.Leaves
+                |> Seq.choose (fun leaf ->
+                    if leaf.Key.StartsWith("@", StringComparison.Ordinal)
+                       && not (isArithmeticExpr leaf.Key) then
+                        Some(leaf.Key, leaf)
+                    else
+                        None)
+                |> Seq.toArray
+            let sameFileNames = definitions |> Seq.map fst |> Set.ofSeq
+
+            definitions
+            |> Seq.collect (fun (name, leaf) ->
+                let value = leaf.Value.ToRawString().Trim().Trim('\"')
+                if isArithmeticExpr value && value.EndsWith("]", StringComparison.Ordinal) then
+                    let prefixLength = if value.StartsWith(@"@\[", StringComparison.Ordinal) then 3 else 2
+                    let expression = value.Substring(prefixLength, value.Length - prefixLength - 1)
+                    arithmeticVariablePattern.Matches(expression)
+                    |> Seq.cast<System.Text.RegularExpressions.Match>
+                    |> Seq.map (fun matched -> "@" + matched.Groups[1].Value)
+                    |> Seq.distinct
+                    |> Seq.filter sameFileNames.Contains
+                    |> Seq.map (fun dependency ->
+                        inv (ErrorCodes.SameFileScriptedVariableArithmetic name dependency) leaf)
+                else
+                    Seq.empty)
+            |> Seq.toList
+            |> function
+                | [] -> OK
+                | errors -> Invalid(Guid.NewGuid(), errors)
+
     let validateVariables: STLStructureValidator =
         fun os es ->
             let globalVarPairsFromEntities =
@@ -331,12 +372,8 @@ module STLValidation =
                     (definedPairs, globalVarValues)
                     ||> List.foldBack (fun (name, value) values -> Map.add name value values)
 
-                let errors =
-                    checkUsedVariables
-                        node
-                        variables
-                        variableValues
-                errors)
+                checkUsedVariables node variables variableValues
+                <&&> sameFileScriptedVariableArithmeticErrors node)
     //x |> List.fold (<&&>) OK
 
     /// Make sure an event either has a mean_time_to_happen or is stopped from checking all the time

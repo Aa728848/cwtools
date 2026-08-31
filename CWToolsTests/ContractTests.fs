@@ -342,7 +342,8 @@ let stringResourceManagerTests =
               let existing = restored.InternIdentifierToken "MixedCase"
               let variant = restored.InternIdentifierToken "MIXEDCASE"
               Expect.equal existing original "existing tokens should survive serialization"
-              Expect.equal variant.lower original.lower "new case variants should reuse the lowercase token" } ]
+              Expect.equal variant.lower original.lower "new case variants should reuse the lowercase token" }
+ ]
 
 [<Tests>]
 let scriptedTriggerScopeInferenceTests =
@@ -438,6 +439,42 @@ let scriptedDefinitionCommentTests =
 
                   Expect.equal distinctComments [ " other" ] "non-node children should reset pending comments"
               | Failure(error, _, _) -> failtest error } ]
+
+[<Tests>]
+let stagedConfigRulesTests =
+    testSequenced
+    <| testList
+        "staged config rules"
+        [ testWithCapturedLogs "replacement rules prepare without mutating live state and commit atomically" <| fun () ->
+              let folder = Path.Combine(Path.GetTempPath(), "cwtools-staged-rules-" + Guid.NewGuid().ToString("N"))
+              let itemFolder = Path.Combine(folder, "common", "test_items")
+              let itemFile = Path.Combine(itemFolder, "items.txt")
+              Directory.CreateDirectory(itemFolder) |> ignore
+              File.WriteAllText(itemFile, "first_item = { old_value = 1 }")
+              let rules oldField =
+                  $"""types = {{
+    type[test_item] = {{ path = "game/common/test_items" }}
+}}
+test_item = {{
+    {oldField} = int
+}}
+"""
+              let rulesPath = Path.Combine(folder, "rules.cwt")
+              try
+                  let initial = [ rulesPath, rules "old_value" ]
+                  let game =
+                      CWTools.Games.Custom.CustomGame(
+                          crossGameSettings<JominiLookup> folder initial [| Lang.Custom CustomLang.English |],
+                          "custom") :> IGame
+                  let before = game.ValidationErrors() |> List.map _.message
+                  let staged = game.PrepareConfigRules [ rulesPath, rules "new_value" ]
+                  Expect.isSome staged "replacement rules must prepare outside publication"
+                  Expect.equal (game.ValidationErrors() |> List.map _.message) before "prepare must leave live validation unchanged"
+                  Expect.isTrue (game.CommitConfigRules staged.Value) "the current candidate must commit"
+                  let after = game.ValidationErrors()
+                  Expect.isTrue (after |> List.exists (fun error -> error.message.Contains("old_value"))) "committed rules must reject the old field"
+              finally
+                  try Directory.Delete(folder, true) with _ -> () ]
 
 [<Tests>]
 let crossGameIncrementalEquivalenceTests =
@@ -550,9 +587,11 @@ test_item = {
                     (typeFacts fullGame)
                     $"{gameName} incremental scripted refresh must match full refresh"
 
+                let deleteStage = incrementalGame.PrepareFileDeletion([ scriptFile ], false)
+                Expect.isSome deleteStage $"{gameName} must prepare a staged file deletion"
                 Expect.isTrue
-                    (index.RemoveTypeIndex [ scriptFile ])
-                    $"{gameName} must remove a file from the type index"
+                    (incrementalGame.CommitFileDeletion deleteStage.Value)
+                    $"{gameName} must commit a staged file deletion"
                 fullGame.UpdateFile false scriptFile (Some "") |> ignore
                 fullGame.RefreshCaches()
                 Expect.equal

@@ -137,7 +137,7 @@ let loadConfigRulesHook (rules: RootRule array) (lookup: Lookup) embedded =
             let newScopes =
                 match o.requiredScopes with
                 | [] ->
-                    lookup.effectsMap.TryFind(StringResource.stringManager.GetStringForID s.normal)
+                    lookup.effectsMap.TryFind s
                     |> Option.map (fun se -> se.Scopes)
                     |> Option.defaultValue []
                 | x -> x
@@ -145,7 +145,7 @@ let loadConfigRulesHook (rules: RootRule array) (lookup: Lookup) embedded =
             let innerScope =
                 match o.pushScope with
                 | None ->
-                    lookup.effectsMap.TryFind(StringResource.stringManager.GetStringForID s.normal)
+                    lookup.effectsMap.TryFind s
                     |> Option.bind (function
                         | :? DocEffect as se -> Some se
                         | _ -> None)

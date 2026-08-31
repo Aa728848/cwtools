@@ -193,9 +193,11 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
          |> PSeq.map (fun (k, (d, s)) -> KeyValuePair(k, (d, s |> Array.map fst |> createStringSet))))
             .ToFrozenDictionary()
 
-    let refreshDynamicParameterEnums () =
-        settings.refreshConfigBeforeFirstTypesHook lookup resources embeddedSettings
+    let refreshDynamicParameterEnumsFrom (resourceSource: IResourceAPI<'T>) =
+        settings.refreshConfigBeforeFirstTypesHook lookup resourceSource embeddedSettings
         tempEnumMap <- enumMapFrom lookup.enumDefs
+
+    let refreshDynamicParameterEnums () = refreshDynamicParameterEnumsFrom resources
 
     let mutable rulesDataGenerated = false
     let mutable baseConfigRules: RootRule array = [||]
@@ -238,8 +240,10 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     let currentLoc () =
         addEmbeddedLoc languages localisation.localisationKeys
 
-    let currentFiles () =
-        addEmbeddedFiles(resources.GetFileNames().ToHashSet()).ToFrozenSet()
+    let currentFilesFrom (resourceSource: IResourceAPI<'T>) =
+        addEmbeddedFiles(resourceSource.GetFileNames().ToHashSet()).ToFrozenSet()
+
+    let currentFiles () = currentFilesFrom resources
 
     let typeMapFromTypeDefInfo
         (previousTypeMap: Map<string, PrefixOptimisedStringSet>)
@@ -1443,16 +1447,66 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         rulesDataGenerated <- refreshedRulesDataGenerated
         ruleValidationService, infoService, completionService
 
+    let isWindows = System.OperatingSystem.IsWindows()
+
     let normaliseFilePath (path: string) =
         // Resource paths are absolute: skip the FileInfo allocation on the hot path;
         // FileInfo is only needed to resolve genuinely relative paths.
-        if Path.IsPathRooted(path) then
-            path.Replace('\\', '/').ToLowerInvariant()
-        else
-            try
-                FileInfo(path).FullName.Replace('\\', '/').ToLowerInvariant()
-            with _ ->
-                path.Replace('\\', '/').ToLowerInvariant()
+        let p =
+            if Path.IsPathRooted(path) then
+                path.Replace('\\', '/')
+            else
+                try
+                    FileInfo(path).FullName.Replace('\\', '/')
+                with _ ->
+                    path.Replace('\\', '/')
+        if isWindows then p.ToLowerInvariant() else p
+
+    let resourcesExcluding (files: string list) =
+        let fileSet = files |> List.map normaliseFilePath |> Set.ofList
+        let readOnly () = invalidOp "Detached deletion resources are read-only"
+        { new IResourceAPI<'T> with
+            member _.UpdateFiles = fun _ -> readOnly ()
+            member _.UpdateFile = fun _ -> readOnly ()
+            member _.RemoveFile = fun _ -> readOnly ()
+            member _.PrepareRemoveFiles _ = readOnly ()
+            member _.CommitRemoveFiles _ = readOnly ()
+            member _.GetResources =
+                fun () ->
+                    resources.GetResources()
+                    |> List.filter (function
+                        | EntityResource(_, entity) -> not (fileSet.Contains(normaliseFilePath entity.filepath))
+                        | FileResource(_, file) -> not (fileSet.Contains(normaliseFilePath file.filepath))
+                        | FileWithContentResource(_, file) -> not (fileSet.Contains(normaliseFilePath file.filepath)))
+            member _.ValidatableFiles =
+                fun () ->
+                    resources.ValidatableFiles()
+                    |> List.filter (fun f -> not (fileSet.Contains(normaliseFilePath f.filepath)))
+            member _.AllEntities =
+                fun () ->
+                    resources.AllEntities()
+                    |> Seq.filter (fun struct (entity, _) -> not (fileSet.Contains(normaliseFilePath entity.filepath)))
+            member _.ValidatableEntities =
+                fun () ->
+                    resources.ValidatableEntities()
+                    |> List.filter (fun struct (entity, _) -> not (fileSet.Contains(normaliseFilePath entity.filepath)))
+            member _.ForceRecompute() = readOnly ()
+            member _.ForceDynamicParameterData(_, _) = readOnly ()
+            member _.ForceDynamicParameterDataForFiles _ = readOnly ()
+            member _.ForceRulesDataGenerate() = ()
+            member _.GetInlineScriptCallers scriptName =
+                resources.GetInlineScriptCallers scriptName
+                |> List.filter (fun f -> not (fileSet.Contains(normaliseFilePath f)))
+            member _.RefreshInlineScriptCallers _ = readOnly ()
+            member _.PrepareInlineScriptCallers _ = readOnly ()
+            member _.CommitInlineScriptCallers _ = readOnly ()
+            member _.GetFileNames =
+                fun () ->
+                    resources.GetFileNames()
+                    |> Seq.filter (fun f -> not (fileSet.Contains(normaliseFilePath f)))
+            member _.GetEntityByFilePath path =
+                if fileSet.Contains(normaliseFilePath path) then None
+                else resources.GetEntityByFilePath path }
     let getEntityByFilePathWithFallback (path: string) =
         match resources.GetEntityByFilePath path with
         | Some entity -> Some entity
@@ -1545,7 +1599,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         logInfo $"Refresh scripted types: files=%d{files.Length}, typeKeys=%d{typeKeys.Length}, elapsed=%0.3f{float timer.ElapsedMilliseconds / 1000.0}s"
         ruleValidationService, infoService, completionService
 
-    let prepareTypeIndex (files: string list) (typeKeys: string list) : StagedTypeIndex option =
+    let prepareTypeIndexFrom (resourceSource: IResourceAPI<'T>) (files: string list) (typeKeys: string list) : StagedTypeIndex option =
         let timer = System.Diagnostics.Stopwatch.StartNew()
         let typeKeys = typeKeys |> List.distinct
         let typeKeySet = typeKeys |> Set.ofList
@@ -1577,7 +1631,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     preparedTypeIndexServiceCacheMisses <- preparedTypeIndexServiceCacheMisses + 1L
                     let rulesWrapper = rulesWrapperFor lookup.configRules
                     let loc = currentLoc ()
-                    let allFiles = currentFiles ()
+                    let allFiles = currentFilesFrom resourceSource
                     let emptyVarMap: FrozenDictionary<string, PrefixOptimisedStringSet> = FrozenDictionary.Empty
                     let baseFrozenTypeMap = baseTempTypeMap.ToFrozenDictionary()
                     let service =
@@ -1602,7 +1656,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let entities =
             files
             |> List.choose (fun path ->
-                getEntityByFilePathWithFallback path
+                resourceSource.GetEntityByFilePath path
                 |> Option.map (fun struct (entity, _) -> entity))
 
         let changedTypes =
@@ -1679,7 +1733,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
               semanticChanged = semanticChanged
               baseTypeDefInfo = baseTypeDefInfo }
 
-    let prepareScriptedTypes
+    let prepareScriptedTypesFrom
+        (resourceSource: IResourceAPI<'T>)
         (files: string list)
         (typeKeys: string list)
         (additionalSemanticChanged: bool)
@@ -1702,13 +1757,13 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         clearPreparedTypeIndexServiceCache ()
 
         try
-            refreshDynamicParameterEnums ()
+            refreshDynamicParameterEnumsFrom resourceSource
 
-            match prepareTypeIndex files typeKeys with
+            match prepareTypeIndexFrom resourceSource files typeKeys with
             | None -> None
             | Some stagedIndex ->
                 let scriptedVariables, globalScriptedVariableNames =
-                    resources.AllEntities() |> Seq.toList |> scriptedVariableContributions
+                    resourceSource.AllEntities() |> Seq.toList |> scriptedVariableContributions
 
                 let scriptedVariablesChanged =
                     scriptedVariables <> baseScriptedVariables
@@ -1733,7 +1788,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                         lookup.typeDefInfoForValidation <- stagedIndex.typeDefInfoForValidation
                         let rulesWrapper = rulesWrapperFor lookup.configRules
                         let loc = currentLoc ()
-                        let allFiles = currentFiles ()
+                        let allFiles = currentFilesFrom resourceSource
                         let ruleValidationService, infoService, completionService =
                             buildServices rulesWrapper stagedIndex.tempTypeMap loc allFiles
                         Some(clone.CreateFieldSnapshot()),
@@ -1766,22 +1821,39 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             lookup <- original
             tempEnumMap <- baseTempEnumMap
 
+    let prepareTypeIndex files typeKeys = prepareTypeIndexFrom resources files typeKeys
+
+    let prepareScriptedTypes files typeKeys additionalSemanticChanged =
+        prepareScriptedTypesFrom resources files typeKeys additionalSemanticChanged
+
+    let prepareDeletedTypeIndex files typeKeys =
+        prepareTypeIndexFrom (resourcesExcluding files) files typeKeys
+
+    let prepareDeletedScriptedTypes files typeKeys additionalSemanticChanged =
+        prepareScriptedTypesFrom (resourcesExcluding files) files typeKeys additionalSemanticChanged
+
+    let canCommitScriptedTypes (staged: StagedScriptedTypes) =
+        let baseGuardsHold =
+            System.Object.ReferenceEquals(lookup.typeDefInfo, staged.baseTypeDefInfo)
+            && System.Object.ReferenceEquals(lookup.enumDefs, staged.baseEnumDefs)
+            && System.Object.ReferenceEquals(lookup.scriptedVariables, staged.baseScriptedVariables)
+            && System.Object.ReferenceEquals(lookup.globalScriptedVariableNames, staged.baseGlobalScriptedVariableNames)
+            && ResourceManagerEager.currentResource () = staged.resourceEpoch
+
+        let semanticGuardsHold =
+            not staged.semanticChanged
+            || (System.Object.ReferenceEquals(lookup.configRules, staged.baseConfigRules)
+                && System.Object.ReferenceEquals(lookup.allCoreLinks, staged.baseCoreLinks)
+                && System.Object.ReferenceEquals(lookup.onlyScriptedEffects, staged.baseOnlyScriptedEffects)
+                && System.Object.ReferenceEquals(lookup.onlyScriptedTriggers, staged.baseOnlyScriptedTriggers))
+
+        baseGuardsHold && semanticGuardsHold
+
+    let canCommitTypeIndex (staged: StagedTypeIndex) =
+        System.Object.ReferenceEquals(lookup.typeDefInfo, staged.baseTypeDefInfo)
+
     let commitScriptedTypes (staged: StagedScriptedTypes) =
-        let baseGuardsFailed =
-            not (System.Object.ReferenceEquals(lookup.typeDefInfo, staged.baseTypeDefInfo))
-            || not (System.Object.ReferenceEquals(lookup.enumDefs, staged.baseEnumDefs))
-            || not (System.Object.ReferenceEquals(lookup.scriptedVariables, staged.baseScriptedVariables))
-            || not (System.Object.ReferenceEquals(lookup.globalScriptedVariableNames, staged.baseGlobalScriptedVariableNames))
-            || ResourceManagerEager.currentResource () <> staged.resourceEpoch
-
-        let semanticGuardsFailed =
-            staged.semanticChanged
-            && (not (System.Object.ReferenceEquals(lookup.configRules, staged.baseConfigRules))
-                || not (System.Object.ReferenceEquals(lookup.allCoreLinks, staged.baseCoreLinks))
-                || not (System.Object.ReferenceEquals(lookup.onlyScriptedEffects, staged.baseOnlyScriptedEffects))
-                || not (System.Object.ReferenceEquals(lookup.onlyScriptedTriggers, staged.baseOnlyScriptedTriggers)))
-
-        if baseGuardsFailed || semanticGuardsFailed then
+        if not (canCommitScriptedTypes staged) then
             clearPreparedTypeIndexServiceCache ()
             None
         else
@@ -1844,6 +1916,24 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
               ruleService = box ruleValidationService
               infoService = box infoService
               completionService = box completionService }
+
+    let prepareConfigRules (rulesSettings: RulesSettings) =
+        clearPreparedTypeIndexServiceCache ()
+        let baseRules = baseConfigRules
+        let detachedLookup = lookup.ShallowClone() :?> 'L
+        let detachedManager =
+            RulesManager<'T, 'L>(
+                resources, detachedLookup, settings, localisation, embeddedSettings, languages, debugMode)
+        detachedManager.LoadBaseConfig rulesSettings
+        detachedManager.PrepareRefreshConfig()
+        |> Option.map (fun refresh ->
+            { refresh =
+                { refresh with
+                    baseTypeDefInfo = box lookup.typeDefInfo
+                    baseVarDefInfo = box lookup.varDefInfo
+                    baseConfigRules = box lookup.configRules }
+              baseRules = box baseRules
+              newBaseRules = box detachedManager.BaseConfigRules })
 
     let commitRefreshConfig (staged: StagedCacheRefresh) =
         clearPreparedTypeIndexServiceCache ()
@@ -1910,6 +2000,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 member _.UpdateFiles = fun _ -> readOnly ()
                 member _.UpdateFile = fun _ -> readOnly ()
                 member _.RemoveFile = fun _ -> readOnly ()
+                member _.PrepareRemoveFiles _ = readOnly ()
+                member _.CommitRemoveFiles _ = readOnly ()
                 member _.GetResources = fun () -> allResources
                 member _.ValidatableFiles = fun () -> resources.ValidatableFiles()
                 member _.AllEntities = fun () -> allEntities :> seq<_>
@@ -1931,6 +2023,8 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                             if hasCall entity.rawEntity then Some entity.filepath else None)
                     List.append overlayCallers (resources.GetInlineScriptCallers scriptName) |> List.distinct
                 member _.RefreshInlineScriptCallers _ = readOnly ()
+                member _.PrepareInlineScriptCallers _ = readOnly ()
+                member _.CommitInlineScriptCallers _ = readOnly ()
                 member _.GetFileNames = fun () -> overlayFiles :> seq<_>
                 member _.GetEntityByFilePath path = overlayByPath |> Map.tryFind (normaliseFilePath path)
                                                     |> Option.orElseWith (fun () -> resources.GetEntityByFilePath path) }
@@ -1997,6 +2091,16 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             preparedTypeIndexServiceCacheMisses)
 
     member _.LoadBaseConfig(rulesSettings) = loadBaseConfig rulesSettings
+    member internal _.BaseConfigRules = baseConfigRules
+    member _.PrepareConfigRules(rulesSettings) = prepareConfigRules rulesSettings
+    member _.CommitConfigRules(staged: StagedRulesReplacement) =
+        if not (Object.ReferenceEquals(baseConfigRules, staged.baseRules)) then None
+        else
+            match commitRefreshConfig staged.refresh with
+            | Some services ->
+                baseConfigRules <- staged.newBaseRules :?> RootRule array
+                Some services
+            | None -> None
     member _.RefreshConfig() =
         let result = refreshConfig ()
         ResourceManagerEager.nextTypeRules () |> ignore
@@ -2005,7 +2109,12 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member _.CommitRefreshConfig(staged) = commitRefreshConfig staged
     member _.RefreshScriptedTypes(files, typeKeys) = refreshScriptedTypes files typeKeys
     member _.PrepareTypeIndex(files, typeKeys) = prepareTypeIndex files typeKeys
+    member _.PrepareDeletedTypeIndex(files, typeKeys) = prepareDeletedTypeIndex files typeKeys
+    member _.PrepareDeletedScriptedTypes(files, typeKeys, additionalSemanticChanged) =
+        prepareDeletedScriptedTypes files typeKeys additionalSemanticChanged
     member _.CommitTypeIndex(staged) = commitTypeIndex staged
     member _.PrepareScriptedTypes(files, typeKeys, additionalSemanticChanged) =
         prepareScriptedTypes files typeKeys additionalSemanticChanged
     member _.CommitScriptedTypes(staged) = commitScriptedTypes staged
+    member _.CanCommitTypeIndex(staged) = canCommitTypeIndex staged
+    member _.CanCommitScriptedTypes(staged) = canCommitScriptedTypes staged
