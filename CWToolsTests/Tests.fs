@@ -568,10 +568,22 @@ let tests =
               let beforePrepare = concrete.IncrementalLocalisationValidationCount
               let beforeState = concrete.LocalisationPublicationIdentity
               let beforeGeneration, _, _ = concrete.LocalisationPublicationStats
-              let stage =
+              let firstStage =
                   match incremental.PrepareLocalisationRefresh "staged" with
                   | Result.Ok(Some value) -> value
                   | other -> failtestf "staged update should prepare, got %A" other
+              stl.RefreshCaches()
+              Expect.equal
+                  (incremental.TryCommitLocalisationRefresh firstStage)
+                  StagedLocalisationCommitResult.Superseded
+                  "a validation manager refresh must supersede a prepared candidate"
+              Expect.isTrue
+                  (Object.ReferenceEquals(beforeState, concrete.LocalisationPublicationIdentity))
+                  "a superseded candidate must not publish state"
+              let stage =
+                  match incremental.PrepareLocalisationRefresh "staged" with
+                  | Result.Ok(Some value) -> value
+                  | other -> failtestf "staged update should reprepare, got %A" other
               Expect.equal
                   (incremental.PeekLocalisationDelta "staged")
                   peek
@@ -616,7 +628,7 @@ let tests =
                   | other -> failtestf "repeated prepare should remain possible, got %A" other
               Expect.equal
                   concrete.IncrementalLocalisationValidationCount
-                  (beforePrepare + 2)
+                  (beforePrepare + 3)
                   "each prepare validates exactly once before commit"
               let suffix = updated + " staged_suffix:0 \"newer\"" + Environment.NewLine
               let currentLocResource =
@@ -706,7 +718,7 @@ let tests =
               Expect.equal committedGeneration (beforeGeneration + 1L) "commit must advance publication generation once"
               Expect.equal
                   concrete.IncrementalLocalisationValidationCount
-                  (beforePrepare + 2)
+                  (beforePrepare + 3)
                   "commit must not run validation"
               let suffixBatch =
                   match incremental.PeekLocalisationDelta "staged" with

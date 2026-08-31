@@ -27,6 +27,10 @@ type internal LazyRefreshStats =
       newlyCreated: int
       total: int }
 
+type private StagedValidationManagers<'T when 'T :> ComputedData> =
+    { baseline: ValidationManager<'T>
+      candidate: ValidationManager<'T> }
+
 type GameSettings<'L> =
     { rootDirectories: WorkspaceDirectoryInput array
       embedded: EmbeddedSettings
@@ -169,15 +173,18 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             (fun _ -> addEmbeddedLoc settings.validation.langs (localisationManager.LocalisationKeys()))
           fileManager = fileManager }
 
-    let mutable validationManager: ValidationManager<'T> =
+    let createValidationManager errorCache =
         ValidationManager(
             validationSettings,
             validationServices (),
             locFunctions >> snd,
             defaultContext,
             (if debugMode then noneContext else defaultContext),
-            ErrorCache()
+            errorCache
         )
+
+    let mutable validationManager: ValidationManager<'T> =
+        createValidationManager (ErrorCache())
 
     let rulesManager =
         RulesManager<'T, 'L>(
@@ -995,7 +1002,13 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             | Ok None -> Ok None
             | Ok(Some detached) ->
                 System.Threading.Interlocked.Increment(&incrementalLocalisationValidationCount) |> ignore
+                let baselineValidationManager = validationManager
                 let validated = validate detached.delta
+                let candidateValidationManager =
+                    createValidationManager (baselineValidationManager.ErrorCache())
+                let stagedValidationManagers =
+                    { baseline = baselineValidationManager
+                      candidate = candidateValidationManager }
                 let pathComparer = if OperatingSystem.IsWindows() then StringComparer.OrdinalIgnoreCase else StringComparer.Ordinal
                 let materialised =
                     { affectedFiles = validated.affectedFiles |> Array.copy |> Array.sortWith (fun left right -> pathComparer.Compare(left, right))
@@ -1017,7 +1030,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                             typeRulesEpoch,
                             localisationEpoch,
                             fileSetEpoch,
-                            box validationManager,
+                            box stagedValidationManagers,
                             baseState,
                             candidateState,
                             materialised
@@ -1036,13 +1049,15 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     staged.ClearResult()
                     StagedLocalisationCommitResult.Superseded
                 | Some candidate ->
+                    let stagedManagers = staged.ValidationManagerIdentity :?> StagedValidationManagers<'T>
                     let currentState = readLocalisationPublicationState ()
                     let guardsValid =
                         ResourceManagerEager.currentResource () = staged.ResourceEpoch
                         && ResourceManagerEager.currentTypeRules () = staged.TypeRulesEpoch
                         && ResourceManagerEager.currentLocalisation () = staged.LocalisationEpoch
                         && ResourceManagerEager.currentFileSet () = staged.FileSetEpoch
-                        && Object.ReferenceEquals(validationManager, staged.ValidationManagerIdentity)
+                        && (Object.ReferenceEquals(validationManager, stagedManagers.baseline)
+                            || Object.ReferenceEquals(validationManager, stagedManagers.candidate))
                         && (Object.ReferenceEquals(currentState, staged.BaseState)
                             || Object.ReferenceEquals(currentState, candidate))
                         && localisationManager.CanAckDelta staged.Cursor
@@ -1054,7 +1069,9 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                         match
                             localisationManager.TryCommitDelta(
                                 staged.Cursor,
-                                fun () -> System.Threading.Volatile.Write(&localisationPublicationState, candidate)
+                                fun () ->
+                                    validationManager <- stagedManagers.candidate
+                                    System.Threading.Volatile.Write(&localisationPublicationState, candidate)
                             )
                         with
                         | LocalisationDeltaAckResult.Acknowledged ->
@@ -1115,15 +1132,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         resourceManager.Api.RemoveFile file
 
     member _.RefreshValidationManager() =
-        validationManager <-
-            ValidationManager(
-                validationSettings,
-                validationServices (),
-                locFunctions >> snd,
-                defaultContext,
-                (if debugMode then noneContext else defaultContext),
-                validationManager.ErrorCache()
-            )
+        validationManager <- createValidationManager (validationManager.ErrorCache())
     
     /// 清理不存在文件的缓存条目，防止内存泄漏
     member _.CleanupCache(existingFiles: Set<string>) =
