@@ -454,8 +454,10 @@ module Helpers =
                     else
                         false)
 
-            let generation, _, _ = game.LocalisationPublicationStats
-            let publishedLocal, publishedGlobal = game.PublishedLocalisationErrors()
+            let publication = game.LocalisationPublicationSnapshot
+            let generation = publication.generation
+            let publishedLocal = publication.flattenedLocalErrors
+            let publishedGlobal = publication.flattenedGlobalErrors
             let localErrors =
                 if force || generation = 0L then game.ValidationManager.ValidateAllLocalisation(validatableEntities)
                 else publishedLocal

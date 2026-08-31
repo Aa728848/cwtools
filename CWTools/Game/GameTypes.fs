@@ -173,7 +173,9 @@ type IncrementalLocalisationResult =
 type internal LocalisationPublicationState =
     { generation: int64
       localErrors: Map<string, CWError array>
-      globalErrors: Map<string, CWError array> }
+      globalErrors: Map<string, CWError array>
+      flattenedLocalErrors: CWError list
+      flattenedGlobalErrors: CWError list }
 
 /// Opaque, single-use localisation validation and immutable publication candidate
 /// prepared against one exact journal prefix.

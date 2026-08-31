@@ -625,6 +625,68 @@ let tests =
                       | FileWithContentResource(_, file) when file.filepath = locPath -> Some file
                       | _ -> None)
               concrete.LocalisationManager.UpdateLocalisationFile { currentLocResource with filetext = suffix }
+              let assertRetryableFailure hookName exceptionValue invoke =
+                  try
+                      invoke ()
+                      failtestf "%s fault must escape" hookName
+                  with ex ->
+                      Expect.equal ex exceptionValue (hookName + " fault must escape unchanged")
+                  Expect.isFalse stage.IsCompleted (hookName + " fault must leave the stage retryable")
+                  Expect.isTrue
+                      (concrete.LocalisationManager.CanAckDelta cursor)
+                      (hookName + " fault must leave the exact journal prefix active")
+
+              let projectionFailure = InvalidOperationException("projection failed")
+              concrete.LocalisationManager.BeforeDeltaProjection <- fun () -> raise projectionFailure
+              assertRetryableFailure
+                  "projection"
+                  projectionFailure
+                  (fun () -> incremental.TryCommitLocalisationRefresh stage |> ignore)
+              concrete.LocalisationManager.BeforeDeltaProjection <- ignore
+              Expect.isTrue
+                  (Object.ReferenceEquals(beforeState, concrete.LocalisationPublicationIdentity))
+                  "projection failure must not publish state"
+
+              let callbackFailure = InvalidOperationException("callback failed before swap")
+              concrete.LocalisationManager.BeforeDeltaPublish <- fun () -> raise callbackFailure
+              assertRetryableFailure
+                  "pre-callback"
+                  callbackFailure
+                  (fun () -> incremental.TryCommitLocalisationRefresh stage |> ignore)
+              concrete.LocalisationManager.BeforeDeltaPublish <- ignore
+              Expect.isTrue
+                  (Object.ReferenceEquals(beforeState, concrete.LocalisationPublicationIdentity))
+                  "failure before the callback must not publish state"
+              Expect.equal
+                  concrete.LocalisationManager.localisationErrors
+                  (Some stage.BaseState.flattenedLocalErrors)
+                  "compatibility local errors must be getter-backed by the canonical snapshot"
+              Expect.equal
+                  concrete.LocalisationManager.globalLocalisationErrors
+                  (Some stage.BaseState.flattenedGlobalErrors)
+                  "compatibility global errors must be getter-backed by the canonical snapshot"
+
+              let journalFailure = InvalidOperationException("journal failed after callback")
+              concrete.LocalisationManager.AfterDeltaPublish <- fun () -> raise journalFailure
+              assertRetryableFailure
+                  "post-callback journal"
+                  journalFailure
+                  (fun () -> incremental.TryCommitLocalisationRefresh stage |> ignore)
+              concrete.LocalisationManager.AfterDeltaPublish <- ignore
+              let candidateState = concrete.LocalisationPublicationIdentity
+              Expect.isFalse
+                  (Object.ReferenceEquals(beforeState, candidateState))
+                  "a post-callback fault occurs after the canonical swap"
+              let publishedCandidate = stage.CandidateState |> Option.get
+              Expect.equal
+                  concrete.LocalisationManager.localisationErrors
+                  (Some publishedCandidate.flattenedLocalErrors)
+                  "compatibility local errors must follow the swapped canonical snapshot"
+              Expect.equal
+                  concrete.LocalisationManager.globalLocalisationErrors
+                  (Some publishedCandidate.flattenedGlobalErrors)
+                  "compatibility global errors must follow the swapped canonical snapshot"
+
               match incremental.TryCommitLocalisationRefresh stage with
               | StagedLocalisationCommitResult.Committed result ->
                   Expect.isTrue
@@ -632,7 +694,10 @@ let tests =
                       "staged replacements must be deterministic"
                   Expect.isEmpty result.localisationErrorReplacements "explicit empty local replacements must clear affected paths"
                   Expect.isEmpty result.globalLocalisationErrorReplacements "explicit empty global replacements must clear affected paths"
-              | other -> failtestf "exact staged prefix should commit, got %A" other
+              | other -> failtestf "retry after fault should commit the exact staged prefix, got %A" other
+              Expect.isTrue
+                  (Object.ReferenceEquals(candidateState, concrete.LocalisationPublicationIdentity))
+                  "retry after a post-callback fault must reuse the published candidate"
               let committedState = concrete.LocalisationPublicationIdentity
               let committedGeneration, _, _ = concrete.LocalisationPublicationStats
               Expect.isFalse

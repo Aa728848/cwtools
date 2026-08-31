@@ -194,7 +194,9 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     let mutable localisationPublicationState =
         { generation = 0L
           localErrors = Map.empty
-          globalErrors = Map.empty }
+          globalErrors = Map.empty
+          flattenedLocalErrors = []
+          flattenedGlobalErrors = [] }
 
     let readLocalisationPublicationState () =
         System.Threading.Volatile.Read(&localisationPublicationState)
@@ -216,9 +218,18 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     let flattenPublicationErrors (errors: Map<string, CWError array>) : CWError list =
         errors |> Map.toSeq |> Seq.collect snd |> Seq.toList
 
-    let syncLocalisationManagerFromState (state: LocalisationPublicationState) =
-        localisationManager.localisationErrors <- Some(flattenPublicationErrors state.localErrors)
-        localisationManager.globalLocalisationErrors <- Some(flattenPublicationErrors state.globalErrors)
+    let createLocalisationPublicationState generation localErrors globalErrors =
+        { generation = generation
+          localErrors = localErrors
+          globalErrors = globalErrors
+          flattenedLocalErrors = flattenPublicationErrors localErrors
+          flattenedGlobalErrors = flattenPublicationErrors globalErrors }
+
+    do
+        localisationManager.SetPublishedErrorsProvider(fun () ->
+            let state = readLocalisationPublicationState ()
+            if state.generation = 0L then None, None
+            else Some state.flattenedLocalErrors, Some state.flattenedGlobalErrors)
 
     let readTextWithDeclaredEncoding filepath =
         let strictPrimary =
@@ -934,16 +945,15 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     member internal _.PublishFullLocalisationErrors(localErrors: CWError list, globalErrors: CWError list) =
         let current = readLocalisationPublicationState ()
         let published =
-            { generation = current.generation + 1L
-              localErrors = errorsByPath localErrors
-              globalErrors = errorsByPath globalErrors }
+            createLocalisationPublicationState
+                (current.generation + 1L)
+                (errorsByPath localErrors)
+                (errorsByPath globalErrors)
         System.Threading.Volatile.Write(&localisationPublicationState, published)
-        syncLocalisationManagerFromState published
         published
 
-    member internal _.PublishedLocalisationErrors() =
-        let state = readLocalisationPublicationState ()
-        flattenPublicationErrors state.localErrors, flattenPublicationErrors state.globalErrors
+    member internal _.LocalisationPublicationSnapshot =
+        readLocalisationPublicationState ()
 
     member _.PeekLocalisationDelta(owner: string) =
         let state = readLocalisationPublicationState ()
@@ -995,9 +1005,10 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 let baseState = readLocalisationPublicationState ()
                 let affectedFileSet = materialised.affectedFiles |> Set.ofArray
                 let candidateState =
-                    { generation = baseState.generation + 1L
-                      localErrors = replacePublicationErrors affectedFileSet materialised.localisationErrorReplacements baseState.localErrors
-                      globalErrors = replacePublicationErrors affectedFileSet materialised.globalLocalisationErrorReplacements baseState.globalErrors }
+                    createLocalisationPublicationState
+                        (baseState.generation + 1L)
+                        (replacePublicationErrors affectedFileSet materialised.localisationErrorReplacements baseState.localErrors)
+                        (replacePublicationErrors affectedFileSet materialised.globalLocalisationErrorReplacements baseState.globalErrors)
                 Ok(
                     Some(
                         StagedLocalisationRefresh(
@@ -1015,34 +1026,47 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 )
 
     member _.TryCommitLocalisationRefresh(staged: StagedLocalisationRefresh) =
-        if not (staged.TryComplete()) then
-            StagedLocalisationCommitResult.AlreadyCompleted
-        elif
-            ResourceManagerEager.currentResource () <> staged.ResourceEpoch
-            || ResourceManagerEager.currentTypeRules () <> staged.TypeRulesEpoch
-            || ResourceManagerEager.currentLocalisation () <> staged.LocalisationEpoch
-            || ResourceManagerEager.currentFileSet () <> staged.FileSetEpoch
-            || not (Object.ReferenceEquals(validationManager, staged.ValidationManagerIdentity))
-            || not (Object.ReferenceEquals(readLocalisationPublicationState (), staged.BaseState))
-        then
-            staged.ClearResult()
-            StagedLocalisationCommitResult.Superseded
-        else
-            let publish () =
+        lock staged (fun () ->
+            if staged.IsCompleted then
+                StagedLocalisationCommitResult.AlreadyCompleted
+            else
                 match staged.CandidateState with
+                | None ->
+                    staged.TryComplete() |> ignore
+                    staged.ClearResult()
+                    StagedLocalisationCommitResult.Superseded
                 | Some candidate ->
-                    System.Threading.Volatile.Write(&localisationPublicationState, candidate)
-                    syncLocalisationManagerFromState candidate
-                | None -> ()
-            match localisationManager.TryCommitDelta(staged.Cursor, publish) with
-            | LocalisationDeltaAckResult.Acknowledged ->
-                match staged.TakeResult() with
-                | Some result -> StagedLocalisationCommitResult.Committed result
-                | None -> StagedLocalisationCommitResult.Superseded
-            | LocalisationDeltaAckResult.AlreadyCompleted
-            | LocalisationDeltaAckResult.Stale ->
-                staged.ClearResult()
-                StagedLocalisationCommitResult.Superseded
+                    let currentState = readLocalisationPublicationState ()
+                    let guardsValid =
+                        ResourceManagerEager.currentResource () = staged.ResourceEpoch
+                        && ResourceManagerEager.currentTypeRules () = staged.TypeRulesEpoch
+                        && ResourceManagerEager.currentLocalisation () = staged.LocalisationEpoch
+                        && ResourceManagerEager.currentFileSet () = staged.FileSetEpoch
+                        && Object.ReferenceEquals(validationManager, staged.ValidationManagerIdentity)
+                        && (Object.ReferenceEquals(currentState, staged.BaseState)
+                            || Object.ReferenceEquals(currentState, candidate))
+                        && localisationManager.CanAckDelta staged.Cursor
+                    if not guardsValid then
+                        staged.TryComplete() |> ignore
+                        staged.ClearResult()
+                        StagedLocalisationCommitResult.Superseded
+                    else
+                        match
+                            localisationManager.TryCommitDelta(
+                                staged.Cursor,
+                                fun () -> System.Threading.Volatile.Write(&localisationPublicationState, candidate)
+                            )
+                        with
+                        | LocalisationDeltaAckResult.Acknowledged ->
+                            staged.TryComplete() |> ignore
+                            match staged.TakeResult() with
+                            | Some result -> StagedLocalisationCommitResult.Committed result
+                            | None -> StagedLocalisationCommitResult.Superseded
+                        | LocalisationDeltaAckResult.AlreadyCompleted
+                        | LocalisationDeltaAckResult.Stale ->
+                            staged.TryComplete() |> ignore
+                            staged.ClearResult()
+                            StagedLocalisationCommitResult.Superseded)
 
     member _.DiscardLocalisationRefresh(staged: StagedLocalisationRefresh) =
         // Journal discard is itself exact and idempotent; allow cleanup after Superseded.

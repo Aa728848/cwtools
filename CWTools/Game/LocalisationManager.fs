@@ -31,6 +31,10 @@ type LocalisationManager<'T when 'T :> ComputedData>
     let processedSourcesByReference = Dictionary<struct (Lang * string), HashSet<string>>()
     let deltaJournal = ResizeArray<struct (int64 * LocalisationDelta)>()
     let deltaGate = obj ()
+    let mutable publishedErrors = fun () -> None, None
+    let mutable beforeDeltaProjection = ignore
+    let mutable beforeDeltaPublish = ignore
+    let mutable afterDeltaPublish = ignore
     let mutable nextDeltaRevision = 0L
     let mutable activeDeltaCursor: LocalisationDeltaCursor option = None
     let mutable completedDeltaCursor: LocalisationDeltaCursor option = None
@@ -223,14 +227,16 @@ type LocalisationManager<'T when 'T :> ComputedData>
         lock deltaGate (fun () ->
             match activeDeltaCursor with
             | Some active when active = cursor ->
-                // The callback is synchronous and runs under the manager gate. Callers that
-                // publish game state must already hold the game write lock. If it throws,
-                // journal and cursor state remain unchanged.
-                publish ()
+                beforeDeltaProjection ()
                 let prefixCount =
                     deltaJournal
                     |> Seq.takeWhile (fun struct (revision, _) -> revision <= cursor.throughRevision)
                     |> Seq.length
+                // Projection is complete before the callback. All seams run synchronously under
+                // the manager gate; a throw leaves the exact cursor and journal prefix active.
+                beforeDeltaPublish ()
+                publish ()
+                afterDeltaPublish ()
                 if prefixCount > 0 then deltaJournal.RemoveRange(0, prefixCount)
                 activeDeltaCursor <- None
                 completedDeltaCursor <- Some cursor
@@ -413,8 +419,16 @@ type LocalisationManager<'T when 'T :> ComputedData>
             activeDeltaCursor <- None
             completedDeltaCursor <- None)
 
-    member val localisationErrors: CWError list option = None with get, set
-    member val globalLocalisationErrors: CWError list option = None with get, set
+    member _.localisationErrors = publishedErrors () |> fst
+    member _.globalLocalisationErrors = publishedErrors () |> snd
+    member internal _.SetPublishedErrorsProvider(provider: unit -> CWError list option * CWError list option) =
+        publishedErrors <- provider
+    member internal _.BeforeDeltaProjection
+        with set hook = beforeDeltaProjection <- hook
+    member internal _.BeforeDeltaPublish
+        with set hook = beforeDeltaPublish <- hook
+    member internal _.AfterDeltaPublish
+        with set hook = afterDeltaPublish <- hook
     member val localisationKeys: (Lang * Set<string>) array = [||] with get, set
     member val taggedLocalisationKeys: (Lang * LocKeySet) array = [||] with get, set
 
@@ -464,16 +478,6 @@ type LocalisationManager<'T when 'T :> ComputedData>
         |> Seq.choose (fun ((filepath, _), struct (validate, api)) ->
             if files.Contains filepath then Some(struct (validate, api)) else None)
         |> Seq.toList
-
-    member _.ApplyIncrementalErrors(files: Set<string>, localErrors: CWError list, globalErrors: CWError list) =
-        let replaceAffected (existing: CWError list option) (replacements: CWError list) =
-            existing
-            |> Option.defaultValue []
-            |> List.filter (fun error -> not (files.Contains error.range.FileName))
-            |> fun retained -> retained @ replacements
-
-        this.localisationErrors <- Some(replaceAffected this.localisationErrors localErrors)
-        this.globalLocalisationErrors <- Some(replaceAffected this.globalLocalisationErrors globalErrors)
 
     member _.GetLocalisationAPIs() : (struct (bool * ILocalisationAPI)) list = localisationAPIMap.Values |> Seq.toList
 
