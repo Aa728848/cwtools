@@ -155,3 +155,57 @@ let largeIntegerRegressionTests =
                   Expect.equal CWTools.Rules.RulesParserConstants.IntFieldDefaultMaximum 92_000_000_000_000L "default int rule max must match the game"
                   Expect.equal CWTools.Rules.RulesParserConstants.IntFieldDefaultMinimum -92_000_000_000_000L "default int rule min must match the game"
               | Failure(error, _, _) -> failtestf "Parsing large integer failed: %s" error ]
+
+[<Tests>]
+let cwtScopeAnnotationTests =
+    testList
+        "cwt scope annotation parsing"
+        [ testCase "parses ## scopes and ## scope annotations correctly"
+          <| fun () ->
+              let cwt =
+                  "## scopes = { country planet }\n\
+                   alias[effect:test_multi_scope] = { }\n\
+                   ## scope = country\n\
+                   alias[effect:test_single_scope] = { }\n\
+                   ## scopes = { all }\n\
+                   alias[effect:test_all_scope] = { }\n"
+              CWTools.Parser.UtilityParser.initializeScopes None (Some(CWTools.Common.STLConstants.defaultScopeInputs ()))
+              let parseScope name = scopeManager.ParseScope () name
+              let rules, _, _, _, _ =
+                  CWTools.Rules.RulesParser.parseConfig
+                      parseScope
+                      scopeManager.AllScopes
+                      scopeManager.AnyScope
+                      scopeManager.ScopeGroups
+                      "test.cwt"
+                      cwt
+              let multiRule =
+                  rules
+                  |> List.choose (function
+                      | CWTools.Rules.AliasRule("effect", (CWTools.Rules.NodeRule(CWTools.Rules.SpecificField(CWTools.Rules.SpecificValue s), _), options))
+                          when CWTools.Utilities.StringResource.stringManager.GetStringForIDs s = "test_multi_scope" ->
+                          Some options.requiredScopes
+                      | _ -> None)
+                  |> List.tryHead
+              let singleRule =
+                  rules
+                  |> List.choose (function
+                      | CWTools.Rules.AliasRule("effect", (CWTools.Rules.NodeRule(CWTools.Rules.SpecificField(CWTools.Rules.SpecificValue s), _), options))
+                          when CWTools.Utilities.StringResource.stringManager.GetStringForIDs s = "test_single_scope" ->
+                          Some options.requiredScopes
+                      | _ -> None)
+                  |> List.tryHead
+              let allRule =
+                  rules
+                  |> List.choose (function
+                      | CWTools.Rules.AliasRule("effect", (CWTools.Rules.NodeRule(CWTools.Rules.SpecificField(CWTools.Rules.SpecificValue s), _), options))
+                          when CWTools.Utilities.StringResource.stringManager.GetStringForIDs s = "test_all_scope" ->
+                          Some options.requiredScopes
+                      | _ -> None)
+                  |> List.tryHead
+              Expect.isSome multiRule "multi-scope rule should be parsed"
+              Expect.equal (multiRule.Value |> List.map (fun s -> s.ToString()) |> Set.ofList) (Set.ofList [ "Country"; "Planet" ]) "multi scopes should contain Country and Planet"
+              Expect.isSome singleRule "single-scope rule should be parsed"
+              Expect.equal (singleRule.Value |> List.map (fun s -> s.ToString())) [ "Country" ] "single scope should be Country"
+              Expect.isSome allRule "all-scope rule should be parsed"
+              Expect.equal allRule.Value.Length scopeManager.AllScopes.Length "all scopes should expand to allScopes" ]

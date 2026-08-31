@@ -393,10 +393,16 @@ let scriptedTriggerScopeInferenceTests =
                           true
                           "test_trigger = { left = yes AND = { right = yes } }"
 
+                  let withControlBlocks =
+                      infer
+                          true
+                          "test_trigger = { custom_tooltip = { left = yes } while = { limit = { left = yes } right = yes } }"
+
                   let withUnknown =
                       "test_trigger = { left = yes AND = { right = yes unknown = yes } }"
 
                   Expect.equal known (Set.singleton shared) "known scopes should intersect across mask words"
+                  Expect.equal withControlBlocks (Set.singleton shared) "control blocks like custom_tooltip/while/limit should recursively infer scopes"
                   Expect.isEmpty (infer true withUnknown) "strict inference should reject an unknown trigger"
 
                   Expect.equal

@@ -57,12 +57,20 @@ module YAMLLocalisationParser =
 
             list
 
-    let file =
+    let emptyFile =
+        spaces
+        >>. skipMany (attempt comment)
+        >>. eof
+        >>% { key = ""; entries = LinkedList<Entry>() }
+
+    let nonEmptyFile =
         spaces
         >>. skipMany (attempt comment)
         >>. pipe2 key (manyOption ((attempt comment >>% ValueNone) <|> (entry |>> ValueSome)) .>> eof) (fun k es ->
             { key = k; entries = es })
-        <?> "file"
+
+    let file =
+        (attempt emptyFile) <|> nonEmptyFile <?> "file"
 
     let parseLocFile filepath =
         runParserOnFile file () filepath System.Text.Encoding.UTF8

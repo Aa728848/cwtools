@@ -1032,4 +1032,42 @@ let legacyLocalisationCommandTests =
               | CWTools.Process.Localisation.LocNotFound "BogusCommand" -> ()
               | result -> failtestf "Expected unknown chained command to be invalid, got %A" result ]
 
+[<Tests>]
+let locFileValidationRegressionTests =
+    testList
+        "localisation file validation regression"
+        [ testCase "comment-only localisation file parses without syntax error and validates OK"
+          <| fun () ->
+              let text = "# === [LocEditor:RedundantFile] ===\n# === [LocEditor:OrphanedFile] ===\n# l_braz_por:\n# Moved key `PORLOC_0`\n"
+              let parsed = CWTools.Localisation.YAMLLocalisationParser.parseLocText text "test_l_braz_por.yml"
+              match parsed with
+              | FParsec.CharParsers.ParserResult.Success(res, _, _) ->
+                  Expect.equal res.key "" "empty/comment-only file should parse with empty key"
+                  Expect.equal res.entries.Count 0 "empty/comment-only file should have 0 entries"
+              | FParsec.CharParsers.ParserResult.Failure(err, _, _) ->
+                  failtestf "comment-only file should not fail parsing: %s" err
+
+              let tempFile = Path.Combine(Path.GetTempPath(), "new_scripted_loc_POR_l_braz_por.yml")
+              File.WriteAllText(tempFile, text)
+              try
+                  let result = CWTools.Validation.Stellaris.STLLocalisationString.checkLocFileName tempFile
+                  Expect.isTrue (result = CWTools.Validation.OK) "comment-only localisation file should pass validation without error"
+              finally
+                  if File.Exists tempFile then File.Delete tempFile
+
+          testCase "languages.yml is allowed and does not report missing language suffix"
+          <| fun () ->
+              let tempFile = Path.Combine(Path.GetTempPath(), "languages.yml")
+              let text = "l_english:\n l_english:0 \"English\"\nl_braz_por:\n l_english:0 \"Inglês\"\n"
+              File.WriteAllText(tempFile, text)
+              try
+                  let result = CWTools.Validation.Stellaris.STLLocalisationString.checkLocFileName tempFile
+                  Expect.isTrue (result = CWTools.Validation.OK) "languages.yml should be accepted"
+              finally
+                  if File.Exists tempFile then File.Delete tempFile
+
+          testCase "missing language suffix is classified as Warning severity"
+          <| fun () ->
+              Expect.equal CWTools.Validation.ErrorCodes.MissingLocFileLang.Severity CWTools.Common.Severity.Warning "CW255 should be Warning" ]
+
 

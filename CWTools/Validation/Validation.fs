@@ -478,7 +478,7 @@ type ErrorCodes =
 
     static member MissingLocFileLang =
         { ID = "CW255"
-          Severity = Severity.Error
+          Severity = Severity.Warning
           Message = "Localisation file name should contain (and ideally end with) \"l_language.yml\"" }
 
     static member MissingLocFileLangHeader =

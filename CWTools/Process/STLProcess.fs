@@ -73,8 +73,23 @@ module STLProcess =
         || key == "NOT"
         || key == "if"
         || key == "else"
+        || key == "else_if"
+        || key == "while"
+        || key == "switch"
+        || key == "trigger_switch"
+        || key == "random_list"
+        || key == "random"
+        || key == "count_exact"
+        || key == "count_at_least"
+        || key == "count_at_most"
+        || key == "any_of"
         || key == "hidden_effect"
+        || key == "hidden_trigger"
+        || key == "custom_tooltip"
+        || key == "tooltip"
         || key == "limit"
+        || (let mutable parsed = 0 in System.Int32.TryParse(key, &parsed))
+        || key.StartsWith("scaled_modifier", StringComparison.OrdinalIgnoreCase)
 
     let private inferScriptedTriggerScopes
         (strict: bool)

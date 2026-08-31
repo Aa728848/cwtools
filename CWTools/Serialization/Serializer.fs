@@ -653,7 +653,7 @@ let loadGame<'T when 'T :> ComputedData>
     let game: IGame =
         match game with
         | Game.HOI4 -> HOI4Game(HOI4options) :> IGame
-        | Game.STL -> STLGame(STLoptions) :> IGame
+        | Game.STL -> new STLGame(STLoptions) :> IGame
         | Game.EU4 -> EU4Game(EU4options) :> IGame
         | Game.EU5 -> EU5Game(EU5options) :> IGame
         | Game.CK2 -> CK2Game(CK2options) :> IGame

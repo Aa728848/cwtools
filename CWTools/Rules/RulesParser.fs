@@ -357,19 +357,48 @@ module private RulesParserImpl =
             commentSetting "push_scope" |> Option.map parseScope
 
         let reqScope =
-            match comments |> List.tryFind (fun s -> s.StartsWith("# scope =")) with
-            | Some s ->
-                let rhs = s.Substring(s.IndexOf '=' + 1).Trim()
-
-                match rhs.StartsWith('{') && rhs.EndsWith('}') with
-                | true ->
-                    rhs.Trim('{', '}')
-                    |> (fun s -> s.Split(' '))
+            match commentSetting "scopes" |> Option.orElseWith (fun () -> commentSetting "scope") with
+            | Some rhs ->
+                let trimmed = rhs.Trim()
+                if trimmed.StartsWith('{') && trimmed.EndsWith('}') then
+                    trimmed.Trim('{', '}').Split([| ' '; '\t'; ',' |], StringSplitOptions.RemoveEmptyEntries)
+                    |> Array.map (fun s -> s.Trim())
                     |> Array.filter (fun s -> s <> "")
-                    |> Array.map parseScope
+                    |> Array.collect (fun s ->
+                        let parsed = parseScope s
+                        if parsed = anyScope || s.Equals("all", StringComparison.OrdinalIgnoreCase) || s.Equals("any", StringComparison.OrdinalIgnoreCase) then
+                            allScopes |> Array.ofList
+                        else
+                            [| parsed |])
                     |> List.ofArray
-                | false -> let scope = rhs |> parseScope in if scope = anyScope then allScopes else [ scope ]
-            | None -> []
+                else
+                    let parsed = parseScope trimmed
+                    if parsed = anyScope || trimmed.Equals("all", StringComparison.OrdinalIgnoreCase) || trimmed.Equals("any", StringComparison.OrdinalIgnoreCase) then
+                        allScopes
+                    else
+                        [ parsed ]
+            | None ->
+                match comments |> List.tryFind (fun s -> s.StartsWith("# scope =")) with
+                | Some s ->
+                    let rhs = s.Substring(s.IndexOf '=' + 1).Trim()
+                    if rhs.StartsWith('{') && rhs.EndsWith('}') then
+                        rhs.Trim('{', '}').Split([| ' '; '\t'; ',' |], StringSplitOptions.RemoveEmptyEntries)
+                        |> Array.map (fun s -> s.Trim())
+                        |> Array.filter (fun s -> s <> "")
+                        |> Array.collect (fun s ->
+                            let parsed = parseScope s
+                            if parsed = anyScope || s.Equals("all", StringComparison.OrdinalIgnoreCase) || s.Equals("any", StringComparison.OrdinalIgnoreCase) then
+                                allScopes |> Array.ofList
+                            else
+                                [| parsed |])
+                        |> List.ofArray
+                    else
+                        let scope = rhs |> parseScope
+                        if scope = anyScope || rhs.Equals("all", StringComparison.OrdinalIgnoreCase) || rhs.Equals("any", StringComparison.OrdinalIgnoreCase) then
+                            allScopes
+                        else
+                            [ scope ]
+                | None -> []
 
         let severity =
             commentSetting "severity" |> Option.map parseSeverity
@@ -2242,51 +2271,30 @@ module RulesParser =
         stellarisScopeTriggers
         (files: (string * string) list)
         =
-        let cacheFile =
-            RulesCache.globalRulesCacheDir
-            |> Option.map (fun cd ->
-                let fp = RulesCache.computeFilesFingerprint files
-                Path.Combine(cd, "rules_cache", sprintf "cwt_rules_%s.cwdf" fp))
+        let parsedFiles =
+            files
+            |> Seq.map (fun (filename, fileString) ->
+                filename, parseConfigWithMetadata parseScope allScopes anyScope scopeGroup filename fileString)
+            |> Seq.toList
 
-        match cacheFile |> Option.bind RulesCache.tryLoadRulesCache with
-        | Some cached ->
-            cached.rules, cached.types, cached.enums, cached.complexenums, cached.values, cached.metadata
-        | None ->
-            let parsedFiles =
-                files
-                |> Seq.map (fun (filename, fileString) ->
-                    filename, parseConfigWithMetadata parseScope allScopes anyScope scopeGroup filename fileString)
-                |> Seq.toList
+        let rules, types, enums, complexenums, values, metadata =
+            parsedFiles
+            |> Seq.fold
+                (fun (rs, ts, es, ces, vs, md) (_, (r, t, e, ce, v, fileMd)) ->
+                    r @ rs, t @ ts, e @ es, ce @ ces, v @ vs, ExtendedConfigMetadata.merge md fileMd)
+                ([], [], [], [], [], ExtendedConfigMetadata.empty)
 
-            let rules, types, enums, complexenums, values, metadata =
-                parsedFiles
-                |> Seq.fold
-                    (fun (rs, ts, es, ces, vs, md) (_, (r, t, e, ce, v, fileMd)) ->
-                        r @ rs, t @ ts, e @ es, ce @ ces, v @ vs, ExtendedConfigMetadata.merge md fileMd)
-                    ([], [], [], [], [], ExtendedConfigMetadata.empty)
+        let sourceRulesByFile =
+            parsedFiles
+            |> List.map (fun (filename, (fileRules, _, _, _, _, _)) -> filename, fileRules)
 
-            let sourceRulesByFile =
-                parsedFiles
-                |> List.map (fun (filename, (fileRules, _, _, _, _, _)) -> filename, fileRules)
+        let rules =
+            rules
+            |> Array.ofList
+            |> applyConfigInjections sourceRulesByFile
+            |> replaceValueMarkerFields useFormulas stellarisScopeTriggers
+            |> replaceSingleAliases
+            |> replaceColourField
+            |> replaceIgnoreMarkerFields
 
-            let rules =
-                rules
-                |> Array.ofList
-                |> applyConfigInjections sourceRulesByFile
-                |> replaceValueMarkerFields useFormulas stellarisScopeTriggers
-                |> replaceSingleAliases
-                |> replaceColourField
-                |> replaceIgnoreMarkerFields
-
-            cacheFile
-            |> Option.iter (fun cf ->
-                let cacheData =
-                    { rules = rules
-                      types = types
-                      enums = enums
-                      complexenums = complexenums
-                      values = values
-                      metadata = metadata }
-                RulesCache.saveRulesCache cf cacheData)
-
-            rules, types, enums, complexenums, values, metadata
+        rules, types, enums, complexenums, values, metadata

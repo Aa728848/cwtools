@@ -22,53 +22,64 @@ module STLLocalisationString =
 
     let checkLocFileName (file: string) =
         let filename = Path.GetFileNameWithoutExtension file
+        let fullFileName = Path.GetFileName file
 
-        if filename = "languages.yml" then
+        if fullFileName.Equals("languages.yml", StringComparison.OrdinalIgnoreCase) || filename.Equals("languages", StringComparison.OrdinalIgnoreCase) then
             OK
         else
-            let fileHeader =
+            let nonCommentLines =
                 File.ReadLines(file)
-                |> Seq.tryFind (fun l -> l.Trim().StartsWith("#") |> not && l.Trim().Length > 0)
-                |> Option.map (fun h -> h.Trim().Replace(":", ""))
-            // log "lcfn %s %A" filename fileHeader
-            let keyToLanguage =
-                function
-                | (x: string) when x.IndexOf("l_english", StringComparison.OrdinalIgnoreCase) >= 0 ->
-                    Some STLLang.English
-                | x when x.IndexOf("l_french", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.French
-                | x when x.IndexOf("l_spanish", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.Spanish
-                | x when x.IndexOf("l_german", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.German
-                | x when x.IndexOf("l_russian", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.Russian
-                | x when x.IndexOf("l_polish", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.Polish
-                | x when x.IndexOf("l_braz_por", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.Braz_Por
-                | x when x.IndexOf("l_simp_chinese", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.Chinese
-                | x when x.IndexOf("l_japanese", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.Japanese
-                | x when x.IndexOf("l_korean", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.Korean
-                | _ -> None
+                |> Seq.filter (fun l ->
+                    let t = l.Trim()
+                    t.Length > 0 && not (t.StartsWith("#")))
+                |> Seq.toList
 
-            let keyAtEnd =
-                function
-                | (x: string) when x.EndsWith("l_english", StringComparison.OrdinalIgnoreCase) -> true
-                | x when x.EndsWith("l_french", StringComparison.OrdinalIgnoreCase) -> true
-                | x when x.EndsWith("l_spanish", StringComparison.OrdinalIgnoreCase) -> true
-                | x when x.EndsWith("l_german", StringComparison.OrdinalIgnoreCase) -> true
-                | x when x.EndsWith("l_russian", StringComparison.OrdinalIgnoreCase) -> true
-                | x when x.EndsWith("l_polish", StringComparison.OrdinalIgnoreCase) -> true
-                | x when x.EndsWith("l_braz_por", StringComparison.OrdinalIgnoreCase) -> true
-                | x when x.EndsWith("l_default", StringComparison.OrdinalIgnoreCase) -> true
-                | x when x.EndsWith("l_simp_chinese", StringComparison.OrdinalIgnoreCase) -> true
-                | x when x.EndsWith("l_japanese", StringComparison.OrdinalIgnoreCase) -> true
-                | x when x.EndsWith("l_korean", StringComparison.OrdinalIgnoreCase) -> true
-                | _ -> false
+            if nonCommentLines.IsEmpty then
+                OK
+            else
+                let fileHeader =
+                    nonCommentLines
+                    |> List.tryHead
+                    |> Option.map (fun h -> h.Trim().Replace(":", ""))
+                // log "lcfn %s %A" filename fileHeader
+                let keyToLanguage =
+                    function
+                    | (x: string) when x.IndexOf("l_english", StringComparison.OrdinalIgnoreCase) >= 0 ->
+                        Some STLLang.English
+                    | x when x.IndexOf("l_french", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.French
+                    | x when x.IndexOf("l_spanish", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.Spanish
+                    | x when x.IndexOf("l_german", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.German
+                    | x when x.IndexOf("l_russian", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.Russian
+                    | x when x.IndexOf("l_polish", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.Polish
+                    | x when x.IndexOf("l_braz_por", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.Braz_Por
+                    | x when x.IndexOf("l_simp_chinese", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.Chinese
+                    | x when x.IndexOf("l_japanese", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.Japanese
+                    | x when x.IndexOf("l_korean", StringComparison.OrdinalIgnoreCase) >= 0 -> Some STLLang.Korean
+                    | _ -> None
 
-            match keyToLanguage filename, Option.bind keyToLanguage fileHeader with
-            | _, Some STLLang.Default -> OK
-            | _, None ->
-                Invalid(Guid.NewGuid(), [ invManual ErrorCodes.MissingLocFileLangHeader (rangeN file 1) "" None ])
-            | None, _ -> Invalid(Guid.NewGuid(), [ invManual ErrorCodes.MissingLocFileLang (rangeN file 1) "" None ])
-            | Some l1, Some l2 when l1 = l2 -> OK
-            | Some l1, Some l2 ->
-                Invalid(Guid.NewGuid(), [ invManual (ErrorCodes.LocFileLangMismatch l1 l2) (rangeN file 1) "" None ])
+                let keyAtEnd =
+                    function
+                    | (x: string) when x.EndsWith("l_english", StringComparison.OrdinalIgnoreCase) -> true
+                    | x when x.EndsWith("l_french", StringComparison.OrdinalIgnoreCase) -> true
+                    | x when x.EndsWith("l_spanish", StringComparison.OrdinalIgnoreCase) -> true
+                    | x when x.EndsWith("l_german", StringComparison.OrdinalIgnoreCase) -> true
+                    | x when x.EndsWith("l_russian", StringComparison.OrdinalIgnoreCase) -> true
+                    | x when x.EndsWith("l_polish", StringComparison.OrdinalIgnoreCase) -> true
+                    | x when x.EndsWith("l_braz_por", StringComparison.OrdinalIgnoreCase) -> true
+                    | x when x.EndsWith("l_default", StringComparison.OrdinalIgnoreCase) -> true
+                    | x when x.EndsWith("l_simp_chinese", StringComparison.OrdinalIgnoreCase) -> true
+                    | x when x.EndsWith("l_japanese", StringComparison.OrdinalIgnoreCase) -> true
+                    | x when x.EndsWith("l_korean", StringComparison.OrdinalIgnoreCase) -> true
+                    | _ -> false
+
+                match keyToLanguage filename, Option.bind keyToLanguage fileHeader with
+                | _, Some STLLang.Default -> OK
+                | _, None ->
+                    Invalid(Guid.NewGuid(), [ invManual ErrorCodes.MissingLocFileLangHeader (rangeN file 1) "" None ])
+                | None, _ -> Invalid(Guid.NewGuid(), [ invManual ErrorCodes.MissingLocFileLang (rangeN file 1) "" None ])
+                | Some l1, Some l2 when l1 = l2 -> OK
+                | Some l1, Some l2 ->
+                    Invalid(Guid.NewGuid(), [ invManual (ErrorCodes.LocFileLangMismatch l1 l2) (rangeN file 1) "" None ])
 
 
 
