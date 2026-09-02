@@ -52,15 +52,20 @@ module CwtProjectIndex =
     /// Symlinked files are resolved to their real target before the check.
     let tryResolveInjectSource (ruleRoot: string) (sourcePath: string) =
         try
-            let joined = Path.GetFullPath(Path.Combine(ruleRoot, sourcePath))
-            let fi = FileInfo(joined)
-            let resolved =
-                if fi.Exists && fi.LinkTarget <> null then
-                    let target = fi.ResolveLinkTarget(true)
-                    if target <> null then target.FullName else joined
-                else
-                    joined
-            if isPathWithin ruleRoot resolved then Some resolved else None
+            if Path.IsPathRooted(sourcePath)
+               || (sourcePath.Length >= 2 && Char.IsLetter(sourcePath.[0]) && sourcePath.[1] = ':')
+               || sourcePath.StartsWith("\\\\", StringComparison.Ordinal) then
+                None
+            else
+                let joined = Path.GetFullPath(Path.Combine(ruleRoot, sourcePath))
+                let fi = FileInfo(joined)
+                let resolved =
+                    if fi.Exists && fi.LinkTarget <> null then
+                        let target = fi.ResolveLinkTarget(true)
+                        if target <> null then target.FullName else joined
+                    else
+                        joined
+                if isPathWithin ruleRoot resolved then Some resolved else None
         with _ -> None
 
     // ------------------------------------------------------------ symbols
