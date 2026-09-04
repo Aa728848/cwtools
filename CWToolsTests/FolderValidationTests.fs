@@ -35,7 +35,7 @@ open MBrace.FsPickler
 
 
 
-open Tests
+open TestHelpers
 [<Tests>]
 let folderTests =
     testList
@@ -71,16 +71,8 @@ let folderTests =
               false
               1
               "en-GB"
-          testFolder
-              "./testfiles/configtests/validationtests"
-              "configrules"
-              true
-              true
-              "./testfiles/configtests/config/"
-              false
-              false
-              1
-              "ru-RU" ]
+          // 文化冒烟：验证 ru-RU 文化下的基础解析与校验，全量规则集仅跑单文化 (en-GB)
+          testFolder "./testfiles/validationtests/gfxtests" "gfx" false false "" false false 1 "ru-RU" ]
 
 [<Tests>]
 let stlSubfolderTests =

@@ -279,7 +279,7 @@ let private buildSnapshot (stellarisRoot: string) =
 
     snapshotJson, files, diagnostics, summaryLines
 
-let private diffBaseline (baselinePath: string) (snapshotJson: JsonValue) (files: FileFact[]) (diagnostics: DiagnosticFact list) =
+let private diffBaseline (baselinePath: string) (snapshotJson: JsonValue) (files: FileFact[]) (diagnostics: DiagnosticFact list) : bool =
     try
         let old = JsonValue.Parse(File.ReadAllText baselinePath)
         let mutable drift = false
@@ -360,8 +360,10 @@ let private diffBaseline (baselinePath: string) (snapshotJson: JsonValue) (files
 
         if not drift then
             printfn "baseline diff: no drift detected"
+        drift
     with ex ->
         printfn "baseline diff: failed to compare with existing baseline (%s); keeping new snapshot" ex.Message
+        true
 
 [<Tests>]
 let vanillaShaderBaselineTests =
@@ -385,12 +387,23 @@ let vanillaShaderBaselineTests =
           for line in summaryLines do
               printfn "  %s" line
 
-          if File.Exists baselinePath then
-              diffBaseline baselinePath snapshotJson files diagnostics
+          let updateBaseline =
+              let flag = Environment.GetEnvironmentVariable("CWTOOLS_UPDATE_SHADER_BASELINE")
+              not (String.IsNullOrWhiteSpace flag) && (flag = "1" || flag.Equals("true", StringComparison.OrdinalIgnoreCase))
 
-          let jsonText = snapshotJson.ToString(JsonSaveOptions.None) + "\n"
-          File.WriteAllText(baselinePath, jsonText, Encoding.UTF8)
-          printfn "baseline snapshot written to %s" baselinePath)
+          if File.Exists baselinePath then
+              let drift = diffBaseline baselinePath snapshotJson files diagnostics
+              if drift then
+                  if updateBaseline then
+                      let jsonText = snapshotJson.ToString(JsonSaveOptions.None) + "\n"
+                      File.WriteAllText(baselinePath, jsonText, Encoding.UTF8)
+                      printfn "baseline snapshot updated to %s" baselinePath
+                  else
+                      failtestf "Vanilla shader baseline drift detected against %s. Set CWTOOLS_UPDATE_SHADER_BASELINE=1 to overwrite." baselinePath
+          else
+              let jsonText = snapshotJson.ToString(JsonSaveOptions.None) + "\n"
+              File.WriteAllText(baselinePath, jsonText, Encoding.UTF8)
+              printfn "baseline snapshot written to %s" baselinePath)
 
         testCase "interface sprite shader graph smoke" (fun () ->
           let stellarisPath = Environment.GetEnvironmentVariable("CWTOOLS_STELLARIS_PATH")

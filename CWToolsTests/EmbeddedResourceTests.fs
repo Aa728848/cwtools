@@ -34,7 +34,7 @@ open MBrace.FsPickler
 
 
 
-open Tests
+open TestHelpers
 let rec replaceFirst predicate value =
     function
     | [] -> []

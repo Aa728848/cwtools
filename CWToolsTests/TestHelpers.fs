@@ -3,6 +3,7 @@ module TestHelpers
 
 open System.Collections.Frozen
 open Expecto
+open LoggingTestHelper
 open FParsec
 open CWTools.Common
 open CWTools.Process
@@ -412,3 +413,378 @@ let configFilesFromDir folder =
     |> List.ofSeq
     |> List.filter (fun f -> Path.GetExtension f = ".cwt")
     |> List.map (fun f -> f, File.ReadAllText f)
+
+let getNodeComments (clause: IClause) =
+    let findComments t s (a: Child) =
+        match (s, a) with
+        | (b, c), _ when b -> (b, c)
+        | (_, c), CommentC comment when comment.Comment.StartsWith('#') -> (false, c)
+        | (_, c), CommentC comment when comment.Comment.StartsWith('@') -> (false, c)
+        | (_, c), CommentC comment -> (false, comment.Comment :: c)
+        | (_, c), NodeC n when n.Position = t -> (true, c)
+        | (_, c), LeafC v when v.Position = t -> (true, c)
+        | (_, c), LeafValueC v when v.Position = t -> (true, c)
+        | (_, c), ValueClauseC vc when vc.Position = t -> (true, c)
+        | _ -> (false, [])
+
+    let fNode =
+        (fun (clause: IClause) children ->
+            let one =
+                clause.Leaves
+                |> Seq.map (fun e ->
+                    e.Position, clause.AllArray |> Array.fold (findComments e.Position) (false, []) |> snd)
+                |> List.ofSeq
+
+            let two =
+                clause.Nodes
+                |> Seq.map (fun e ->
+                    e.Position, clause.AllArray |> Array.fold (findComments e.Position) (false, []) |> snd)
+                |> List.ofSeq
+
+            let three =
+                clause.LeafValues
+                |> Seq.toList
+                |> List.map (fun e ->
+                    e.Position, clause.AllArray |> Array.fold (findComments e.Position) (false, []) |> snd)
+
+            let four =
+                clause.ValueClauses
+                |> Seq.toList
+                |> List.map (fun e ->
+                    e.Position, clause.AllArray |> Array.fold (findComments e.Position) (false, []) |> snd)
+
+            let new2 =
+                one @ two @ three @ four |> List.filter (fun (_, c) -> not (List.isEmpty c))
+
+            new2 @ children)
+
+    let fCombine = (@)
+    clause |> (foldClause2 fNode fCombine [])
+
+let getCompletionTests (clause: IClause) =
+    let findComments t s (a: Child) =
+        match (s, a) with
+        | (b, c), _ when b -> (b, c)
+        | (_, c), CommentC comment when comment.Comment.StartsWith('@') -> (false, comment.Comment :: c)
+        | (_, c), CommentC _ -> (false, c)
+        | (_, c), NodeC n when n.Position = t -> (true, c)
+        | (_, c), LeafC v when v.Position = t -> (true, c)
+        | (_, c), LeafValueC v when v.Position = t -> (true, c)
+        | (_, c), ValueClauseC vc when vc.Position = t -> (true, c)
+        | _ -> (false, [])
+
+    let fNode =
+        (fun (clause: IClause) children ->
+            let one =
+                clause.Leaves
+                |> Seq.map (fun e ->
+                    e.Position, clause.AllArray |> Array.fold (findComments e.Position) (false, []) |> snd)
+                |> List.ofSeq
+
+            let two =
+                clause.Nodes
+                |> Seq.map (fun e ->
+                    e.Position, clause.AllArray |> Array.fold (findComments e.Position) (false, []) |> snd)
+                |> List.ofSeq
+
+            let three =
+                clause.LeafValues
+                |> Seq.toList
+                |> List.map (fun e ->
+                    e.Position, clause.AllArray |> Array.fold (findComments e.Position) (false, []) |> snd)
+
+            let four =
+                clause.ValueClauses
+                |> Seq.toList
+                |> List.map (fun e ->
+                    e.Position, clause.AllArray |> Array.fold (findComments e.Position) (false, []) |> snd)
+
+            let new2 =
+                one @ two @ three @ four |> List.filter (fun (_, c) -> not (List.isEmpty c))
+
+            new2 @ children)
+
+    let fCombine = (@)
+
+    let res =
+        clause
+        |> (foldClause2 fNode fCombine [])
+        |> List.collect (fun (r, sl) -> sl |> List.map (fun s -> r, s))
+
+    let convertResToCompletionTest (pos: range, comment: string) =
+        match comment.Split(' ', 3) with
+        | [| option; column; text |] ->
+            let negate = option = "@!"
+            let lowscore = option = "@?"
+            let pos = mkPos pos.Start.Line (pos.Start.Column + (int column) - 1)
+            pos, text, negate, lowscore
+        | _ -> failwith "invalid comment"
+
+    res |> List.map convertResToCompletionTest
+
+let rec remove_first f lst item =
+    match lst with
+    | h :: t when f item = f h -> t
+    | h :: t -> h :: remove_first f t item
+    | _ -> []
+
+let remove_all_by x y f = y |> List.fold (remove_first f) x
+let remove_all x y = remove_all_by x y id
+
+let testFolder folder testsname config configValidate configfile configOnly configLoc stl (culture: string) =
+    testWithCapturedLogs (folder + testsname + culture)
+    <| fun () ->
+        Thread.CurrentThread.CurrentCulture <- CultureInfo(culture)
+        Thread.CurrentThread.CurrentUICulture <- CultureInfo(culture)
+        let configtext = if config then configFilesFromDir configfile else []
+        let completionTest (game: IGame) filename filetext (pos: pos, text: string, negate: bool, lowscore: bool) =
+            let getLabel =
+                function
+                | Simple(label, score, _)
+                | Detailed(label, _, score, _)
+                | Snippet(label, _, _, score, _) -> label, score
+
+            let compRes = game.Complete pos filename filetext |> List.map getLabel
+            let labels = compRes |> List.map fst
+
+            let lowscorelables =
+                compRes
+                |> List.choose (fun (label, score) ->
+                    score |> Option.bind (fun s -> if s <= 20 then Some label else None))
+
+            let scoreMap = compRes |> Map.ofList
+
+            match negate, lowscore with
+            | true, _ ->
+                Expect.hasCountOf
+                    labels
+                    0u
+                    ((=) text)
+                    $"Completion shouldn't contain value %s{text} at %A{pos} in %s{filename}"
+            | false, true ->
+                let firstLowScore = text, scoreMap[text]
+
+                Expect.contains
+                    lowscorelables
+                    text
+                    $"Incorrect completion values (missing low score) at %A{pos} in %s{filename}. Score (%A{firstLowScore})"
+            | false, false ->
+                Expect.contains labels text $"Incorrect completion values at %A{pos} in %s{filename}, %A{labels}"
+                Expect.isNonEmpty labels $"No completion results, expected %s{text}"
+
+        let completionTestPerFile (game: IGame) (filename: string, tests) =
+            let filetext = File.ReadAllText filename
+            tests |> List.iter (completionTest game filename filetext)
+
+        let (game: IGame), errors, testVals, completionVals, parseErrors =
+            if stl = 1 then
+                let configtext =
+                    ("./testfiles/validationtests/trigger_docs.log",
+                     File.ReadAllText "./testfiles/validationtests/trigger_docs.log")
+                    :: configtext
+
+                let settings = emptyStellarisSettings folder
+
+                let settings =
+                    { settings with
+                        rules =
+                            if config then
+                                Some
+                                    { ruleFiles = configtext
+                                      validateRules = configValidate
+                                      debugRulesOnly = configOnly
+                                      debugMode = false }
+                            else
+                                None }
+
+                let stl = STLGame(settings) :> IGame<STLComputedData>
+
+                let errors =
+                    stl.ValidationErrors()
+                    @ (if configLoc then
+                           stl.LocalisationErrors(false, false)
+                       else
+                           [])
+                    |> List.map (fun e -> e.message, e.range)
+
+                let testVals =
+                    stl.AllEntities()
+                    |> Seq.toList
+                    |> List.map (fun struct (e, _) ->
+                        e.filepath,
+                        getNodeComments e.entity
+                        |> List.collect (fun (r, cs) -> cs |> List.map (fun _ -> r)))
+
+                let completionTests =
+                    stl.AllEntities()
+                    |> Seq.toList
+                    |> List.map (fun struct (e, _) -> e.filepath, getCompletionTests e.entity)
+
+                (stl :> IGame), errors, testVals, completionTests, stl.ParserErrors()
+            else if stl = 0 then
+                let configtext =
+                    ("./testfiles/configtests/rulestests/IR/triggers.log",
+                     File.ReadAllText "./testfiles/configtests/rulestests/IR/triggers.log")
+                    :: configtext
+
+                let configtext =
+                    ("./testfiles/configtests/rulestests/IR/effects.log",
+                     File.ReadAllText "./testfiles/configtests/rulestests/IR/effects.log")
+                    :: configtext
+
+                let settings = emptyImperatorSettings folder
+
+                let settings =
+                    { settings with
+                        rules =
+                            if config then
+                                Some
+                                    { ruleFiles = configtext
+                                      validateRules = configValidate
+                                      debugRulesOnly = configOnly
+                                      debugMode = false }
+                            else
+                                None }
+
+                let ir = CWTools.Games.IR.IRGame(settings) :> IGame<IRComputedData>
+
+                let errors =
+                    ir.ValidationErrors()
+                    @ (if configLoc then
+                           ir.LocalisationErrors(false, false)
+                       else
+                           [])
+                    |> List.map (fun e -> e.message, e.range)
+
+                let testVals =
+                    ir.AllEntities()
+                    |> Seq.toList
+                    |> List.map (fun struct (e, _) ->
+                        e.filepath,
+                        getNodeComments e.entity
+                        |> List.collect (fun (r, cs) -> cs |> List.map (fun _ -> r)))
+
+                let completionTests =
+                    ir.AllEntities()
+                    |> Seq.toList
+                    |> List.map (fun struct (e, _) -> e.filepath, getCompletionTests e.entity)
+
+                (ir :> IGame), errors, testVals, completionTests, ir.ParserErrors()
+            else if stl = 2 then
+                let configtext =
+                    ("./testfiles/configtests/rulestests/IR/triggers.log",
+                     File.ReadAllText "./testfiles/configtests/rulestests/IR/triggers.log")
+                    :: configtext
+
+                let configtext =
+                    ("./testfiles/configtests/rulestests/IR/effects.log",
+                     File.ReadAllText "./testfiles/configtests/rulestests/IR/effects.log")
+                    :: configtext
+
+                let settings = emptyVictoriaSettings folder
+
+                let settings =
+                    { settings with
+                        rules =
+                            if config then
+                                Some
+                                    { ruleFiles = configtext
+                                      validateRules = configValidate
+                                      debugRulesOnly = configOnly
+                                      debugMode = false }
+                            else
+                                None }
+
+                let vic3 = CWTools.Games.VIC3.VIC3Game(settings) :> IGame<VIC3ComputedData>
+
+                let errors =
+                    vic3.ValidationErrors()
+                    @ (if configLoc then
+                           vic3.LocalisationErrors(false, false)
+                       else
+                           [])
+                    |> List.map (fun e -> e.message, e.range)
+
+                let testVals =
+                    vic3.AllEntities()
+                    |> Seq.toList
+                    |> List.map (fun struct (e, _) ->
+                        e.filepath,
+                        getNodeComments e.entity
+                        |> List.collect (fun (r, cs) -> cs |> List.map (fun _ -> r)))
+
+                let completionTests =
+                    vic3.AllEntities()
+                    |> Seq.toList
+                    |> List.map (fun struct (e, _) -> e.filepath, getCompletionTests e.entity)
+
+                (vic3 :> IGame), errors, testVals, completionTests, vic3.ParserErrors()
+            else
+                let settings = emptyImperatorSettings folder
+
+                let settings =
+                    { settings with
+                        rules =
+                            if config then
+                                Some
+                                    { ruleFiles = configtext
+                                      validateRules = configValidate
+                                      debugRulesOnly = configOnly
+                                      debugMode = false }
+                            else
+                                None }
+
+                let hoi4 = CWTools.Games.HOI4.HOI4Game(settings) :> IGame<HOI4ComputedData>
+
+                let errors =
+                    hoi4.ValidationErrors()
+                    @ (if configLoc then
+                           hoi4.LocalisationErrors(false, false)
+                       else
+                           [])
+                    |> List.map (fun e -> e.message, e.range)
+
+                let testVals =
+                    hoi4.AllEntities()
+                    |> Seq.toList
+                    |> List.map (fun struct (e, _) ->
+                        e.filepath,
+                        getNodeComments e.entity
+                        |> List.collect (fun (r, cs) -> cs |> List.map (fun _ -> r)))
+
+                let completionTests =
+                    hoi4.AllEntities()
+                    |> Seq.toList
+                    |> List.map (fun struct (e, _) -> e.filepath, getCompletionTests e.entity)
+
+                (hoi4 :> IGame), errors, testVals, completionTests, hoi4.ParserErrors()
+
+        let inner (file: string, expected: range list) =
+            if (Path.GetExtension file) = ".gui" || (Path.GetExtension file) = ".gfx" then
+                ()
+            else
+                let fileErrors = errors |> List.filter (fun (_, f) -> f.FileName = file)
+                let fileErrorPositions = fileErrors
+                let missing = remove_all_by expected fileErrorPositions snd
+                let extras = remove_all_by fileErrorPositions expected snd
+                Expect.isEmpty
+                    extras
+                    $"Following lines are not expected to have an error %A{extras}, expected %A{expected}, actual %A{fileErrors}"
+
+                Expect.isEmpty missing $"Following lines are expected to have an error %A{missing}"
+
+        Expect.isEmpty
+            parseErrors
+            (parseErrors
+             |> List.tryHead
+             |> Option.map (sprintf "%A")
+             |> Option.defaultValue "")
+
+        testVals |> List.iter inner
+        completionVals |> List.iter (completionTestPerFile game)
+
+let testSubdirectories stl rulesonly dir =
+    let dirs = Directory.EnumerateDirectories dir
+
+    dirs
+    |> Seq.map (fun d -> testFolder d "detailedconfigrules" true true d rulesonly true stl "en-GB")

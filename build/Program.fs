@@ -85,7 +85,6 @@ let testAll () =
     DotNet.test
         (fun settings ->
             { settings with
-                RunSettingsArguments = Some "Expecto.parallel=false"
                 Configuration = DotNet.BuildConfiguration.Release })
         "CWToolsTests/CWToolsTests.fsproj"
 
