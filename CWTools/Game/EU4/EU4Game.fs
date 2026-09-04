@@ -1,5 +1,6 @@
 namespace CWTools.Games.EU4
 
+open CWTools.Game
 open CWTools.Localisation
 open CWTools.Utilities.Utils2
 open CWTools.Validation
@@ -25,6 +26,8 @@ open CWTools.Parser
 open System.IO
 open CWTools.Process.Localisation
 open System.Linq
+
+type EU4Settings = GameSetupSettings<EU4Lookup>
 
 module EU4GameFunctions =
     type GameObject = GameObject<EU4ComputedData, EU4Lookup>
@@ -75,18 +78,6 @@ module EU4GameFunctions =
         { scriptedLocCommands = lookup.scriptedLoc |> Array.map (fun s -> s, [ scopeManager.AnyScope ])
           eventTargets = eventTargets.Select(fun s -> s, scopeManager.AnyScope).ToArray()
           setVariables = definedVars |> IgnoreCaseStringSet }
-
-    let globalLocalisation (game: GameObject) =
-        let globalTypeLoc = game.ValidationManager.ValidateGlobalLocalisation()
-
-        game.Lookup.proccessedLoc
-        |> validateProcessedLocalisation
-            (game.Lookup.scriptedVariables |> List.map fst |> Set.ofList)
-            game.LocalisationManager.taggedLocalisationKeys
-        <&&> globalTypeLoc
-        |> (function
-        | Invalid(_, es) -> es
-        | _ -> [])
 
     let updateScriptedLoc (game: GameObject) =
         let rawLocs =
@@ -321,308 +312,138 @@ module EU4GameFunctions =
           cachedRuleMetadata = cachedRuleMetadata
           featureSettings = featureSettings }
 
-type EU4Settings = GameSetupSettings<EU4Lookup>
-open EU4GameFunctions
+    let initGame (setupSettings: EU4Settings) =
+        let validationSettings =
+            { validators =
+                CWTools.Validation.ValidationCore.toLocalStructureValidators [ validateEU4NaiveNot, "not"; validateIfWithNoEffect, "ifnoeffect" ]
+              globalValidators = []
+              dynamicValidators = []
+              experimentalValidators = []
+              heavyExperimentalValidators = []
+              experimental = false
+              fileValidators = []
+              globalFileValidators = []
+              lookupValidators = []
+              globalLookupValidators = commonValidationRules
+              lookupFileValidators = []
+              scriptedParamsValidators = [ valScriptedEffectParams, "scripted_effects" ]
+              useRules = true
+              debugRulesOnly = false
+              localisationValidators = [] }
 
-type EU4Game(setupSettings: EU4Settings) =
-    let validationSettings =
-        { validators =
-            CWTools.Validation.ValidationCore.toLocalStructureValidators [ validateEU4NaiveNot, "not"; validateIfWithNoEffect, "ifnoeffect" ]
-          globalValidators = []
-          dynamicValidators = []
-          experimentalValidators = []
-          heavyExperimentalValidators = []
-          experimental = false
-          fileValidators = []
-          globalFileValidators = []
-          lookupValidators = []
-          globalLookupValidators = commonValidationRules
-          lookupFileValidators = []
-          scriptedParamsValidators = [ valScriptedEffectParams, "scripted_effects" ]
-          useRules = true
-          debugRulesOnly = false
-          localisationValidators = [] }
+        let embeddedSettings =
+            match setupSettings.embedded with
+            | FromConfig(ef, crd) ->
+                createEmbeddedSettings
+                    ef
+                    crd
+                    (setupSettings.rules
+                     |> Option.map (fun r -> r.ruleFiles)
+                     |> Option.defaultValue [])
+                    None
+            | Metadata cmd ->
+                createEmbeddedSettings
+                    []
+                    []
+                    (setupSettings.rules
+                     |> Option.map (fun r -> r.ruleFiles)
+                     |> Option.defaultValue [])
+                    (Some cmd)
+            | ManualSettings e -> e
 
-    let embeddedSettings =
-        match setupSettings.embedded with
-        | FromConfig(ef, crd) ->
-            createEmbeddedSettings
-                ef
-                crd
-                (setupSettings.rules
-                 |> Option.map (fun r -> r.ruleFiles)
-                 |> Option.defaultValue [])
-                None
-        | Metadata cmd ->
-            createEmbeddedSettings
-                []
-                []
-                (setupSettings.rules
-                 |> Option.map (fun r -> r.ruleFiles)
-                 |> Option.defaultValue [])
-                (Some cmd)
-        | ManualSettings e -> e
+        let settings =
+            { rootDirectories = setupSettings.rootDirectories
+              excludeGlobPatterns = setupSettings.excludeGlobPatterns
+              embedded = embeddedSettings
+              GameSettings.rules = setupSettings.rules
+              validation = setupSettings.validation
+              scriptFolders = setupSettings.scriptFolders
+              modFilter = setupSettings.modFilter
+              initialLookup = EU4Lookup()
+              maxFileSize = setupSettings.maxFileSize
+              enableInlineScripts = false }
 
-    let settings =
-        { rootDirectories = setupSettings.rootDirectories
-          excludeGlobPatterns = setupSettings.excludeGlobPatterns
-          embedded = embeddedSettings
-          GameSettings.rules = setupSettings.rules
-          validation = setupSettings.validation
-          scriptFolders = setupSettings.scriptFolders
-          modFilter = setupSettings.modFilter
-          initialLookup = EU4Lookup()
-          maxFileSize = setupSettings.maxFileSize
-          enableInlineScripts = false }
-
-    do
         if scopeManager.Initialized |> not then
             eprintfn "%A has no scopes" (settings.rootDirectories |> Array.head)
         else
             ()
 
-    let locSettings =
-        settings.embedded.localisationCommands
-        |> function
-            | Legacy(l, v, links) ->
-                (if l.Length = 0 then
-                     Legacy([], [], [])
-                 else
-                     Legacy(l, v, links))
-            | _ -> Legacy([], [], [])
-
-    let settings =
-        { settings with
-            embedded =
-                { settings.embedded with
-                    localisationCommands = locSettings }
-            initialLookup = EU4Lookup() }
-
-
-    let legacyLocDataTypes =
-        settings.embedded.localisationCommands
-        |> function
-            | Legacy(c, v, links) -> (c, v, links)
-            | _ -> ([], [], [])
-
-    let processLocalisationFunction lookup =
-        (createLocalisationFunctions EU4.locStaticSettings createLocDynamicSettings legacyLocDataTypes lookup)
-
-
-    let rulesManagerSettings =
-        { rulesSettings = settings.rules
-          useFormulas = false
-          stellarisScopeTriggers = false
-          parseScope = scopeManager.ParseScope()
-          allScopes = scopeManager.AllScopes
-          anyScope = scopeManager.AnyScope
-          scopeGroups = scopeManager.ScopeGroups
-          changeScope = changeScope
-          scopeContextOverride = fun _ _ -> None
-          defaultContext = defaultContext
-          defaultLang = EU4 EU4Lang.Default
-          oneToOneScopesNames = oneToOneScopesNames
-          loadConfigRulesHook = loadConfigRulesHook
-          refreshConfigBeforeFirstTypesHook = refreshConfigBeforeFirstTypesHook
-          refreshConfigAfterFirstTypesHook = refreshConfigAfterFirstTypesHook
-          refreshConfigAfterVarDefHook = refreshConfigAfterVarDefHook
-          locFunctions = processLocalisationFunction }
-
-    let game =
-        GameObject.CreateGame
-            ((settings,
-              "europa universalis iv",
-              scriptFolders,
-              Compute.EU4.computeEU4Data,
-              Compute.EU4.computeEU4DataUpdate,
-              (EU4LocalisationService >> (fun f -> f :> ILocalisationAPICreator)),
-              processLocalisationFunction,
-              defaultContext,
-              noneContext,
-              Encoding.UTF8,
-              Encoding.GetEncoding(1252),
-              validationSettings,
-              globalLocalisation,
-              (fun _ _ -> ()),
-              ".yml",
-              rulesManagerSettings,
-              setupSettings.debugSettings))
-            afterInit
-
-    let lookup = game.Lookup
-    let resources = game.Resources
-    let fileManager = game.FileManager
-
-    let references =
-        References<_>(resources, lookup, game.LocalisationManager.GetCleanLocalisationAPIs())
-
-    let parseErrors () =
-        resources.GetResources()
-        |> List.choose (function
-            | EntityResource(_, e) -> Some e
-            | _ -> None)
-        |> List.choose (fun r ->
-            r.result
+        let locSettings =
+            settings.embedded.localisationCommands
             |> function
-                | Fail result when r.validate -> Some(r.filepath, result.error, result.position)
-                | _ -> None)
+                | Legacy(l, v, links) ->
+                    (if l.Length = 0 then
+                         Legacy([], [], [])
+                     else
+                         Legacy(l, v, links))
+                | _ -> Legacy([], [], [])
 
-    interface IGame<EU4ComputedData> with
-        member _.ParserErrors() = parseErrors ()
+        let settings =
+            { settings with
+                embedded =
+                    { settings.embedded with
+                        localisationCommands = locSettings }
+                initialLookup = EU4Lookup() }
 
-        member _.ValidationErrors() =
-            let s, d = game.ValidationManager.Validate(false, resources.ValidatableEntities()) in s @ d
 
-        member _.LocalisationErrors(force: bool, forceGlobal: bool) =
-            getLocalisationErrors game globalLocalisation (force, forceGlobal)
+        let legacyLocDataTypes =
+            settings.embedded.localisationCommands
+            |> function
+                | Legacy(c, v, links) -> (c, v, links)
+                | _ -> ([], [], [])
 
-        member _.Folders() = fileManager.AllFolders()
-        member _.AllFiles() = resources.GetResources()
+        let processLocalisationFunction lookup =
+            (createLocalisationFunctions EU4.locStaticSettings createLocDynamicSettings legacyLocDataTypes lookup)
 
-        member _.AllLoadedLocalisation() =
-            game.LocalisationManager.LocalisationFileNames()
 
-        member _.ScriptedTriggers() = lookup.triggers
-        member _.ScriptedEffects() = lookup.effects
-        member _.ScriptedVariables() = lookup.scriptedVariables
-        member _.StaticModifiers() = [||] //lookup.staticModifiers
-        member _.UpdateFile shallow file text = game.UpdateFile shallow file text
-        member _.UpdateFileInteractive file text = game.UpdateFileInteractive file text
-        member _.PrepareUpdateFileInteractive file text = game.PrepareUpdateFileInteractive file text
-        member _.CommitUpdateFileInteractive staged = game.CommitUpdateFileInteractive staged
-        member _.ValidateFileInteractive staged = game.ValidateFileInteractive staged
-        member _.ValidateOverlayFile(file, text) = game.ValidateOverlayFile file text
-        member _.ValidateOverlayFilesCancellable(files, shouldCancel) =
-            game.ValidateOverlayFilesCancellable files shouldCancel
-        member _.ValidateFile shallow file = game.ValidateFile shallow file
-        member _.ValidateFiles files = game.ValidateFiles files
-        member _.ValidateFilesLocalCancellable(files, shouldCancel) =
-            game.ValidateFilesLocalCancellable(files, shouldCancel)
-        member _.AllEntities() = resources.AllEntities()
+        let rulesManagerSettings =
+            { rulesSettings = settings.rules
+              useFormulas = false
+              stellarisScopeTriggers = false
+              parseScope = scopeManager.ParseScope()
+              allScopes = scopeManager.AllScopes
+              anyScope = scopeManager.AnyScope
+              scopeGroups = scopeManager.ScopeGroups
+              changeScope = changeScope
+              scopeContextOverride = fun _ _ -> None
+              defaultContext = defaultContext
+              defaultLang = EU4 EU4Lang.Default
+              oneToOneScopesNames = oneToOneScopesNames
+              loadConfigRulesHook = loadConfigRulesHook
+              refreshConfigBeforeFirstTypesHook = refreshConfigBeforeFirstTypesHook
+              refreshConfigAfterFirstTypesHook = refreshConfigAfterFirstTypesHook
+              refreshConfigAfterVarDefHook = refreshConfigAfterVarDefHook
+              locFunctions = processLocalisationFunction }
 
-        member _.References() =
-            References<_>(resources, lookup, game.LocalisationManager.GetCleanLocalisationAPIs())
+        let game =
+            GameObject.CreateGame
+                ((settings,
+                  "europa universalis iv",
+                  scriptFolders,
+                  Compute.EU4.computeEU4Data,
+                  Compute.EU4.computeEU4DataUpdate,
+                  (EU4LocalisationService >> (fun f -> f :> ILocalisationAPICreator)),
+                  processLocalisationFunction,
+                  defaultContext,
+                  noneContext,
+                  Encoding.UTF8,
+                  Encoding.GetEncoding(1252),
+                  validationSettings,
+                  Hooks.globalLocalisation,
+                  (fun _ _ -> ()),
+                  ".yml",
+                  rulesManagerSettings,
+                  setupSettings.debugSettings))
+                afterInit
 
-        member _.Complete pos file text =
-            completion fileManager game.completionService game.InfoService game.ResourceManager pos file text
+        let defaultLang =
+            settings.validation.langs
+            |> Array.tryHead
+            |> Option.defaultValue (EU4 EU4Lang.Default)
 
-        member _.ScopesAtPos pos file text =
-            scopesAtPos fileManager game.ResourceManager game.InfoService scopeManager.AnyScope pos file text
+        (game, defaultLang)
 
-        member _.GoToType pos file text =
-            getInfoAtPos
-                fileManager
-                game.ResourceManager
-                game.InfoService
-                game.LocalisationManager
-                lookup
-                (settings.validation.langs |> Array.tryHead |> Option.defaultValue (EU4 EU4Lang.English))
-                pos
-                file
-                text
+open EU4GameFunctions
 
-        member _.FindAllRefs pos file text =
-            findAllRefsFromPos fileManager game.ResourceManager game.InfoService pos file text
-
-        member _.FindAllRefsByType typeName id =
-            findAllRefsByType game.ResourceManager game.InfoService typeName id
-
-        member _.TypeReferenceIndex() =
-            getOrBuildTypeReferenceIndex game.ResourceManager game.InfoService
-
-        member _.InfoAtPos pos file text = game.InfoAtPos pos file text
-
-        member _.OverrideModeAtPath file = game.OverrideModeAtPath file
-
-        member _.OverrideModes() = game.OverrideModes()
-
-        member _.OverrideModesInfo() = game.OverrideModesInfo()
-
-        member _.ReplaceConfigRules rules =
-            game.ReplaceConfigRules
-                { ruleFiles = rules
-                  validateRules = true
-                  debugRulesOnly = false
-                  debugMode = false } //refreshRuleCaches game (Some { ruleFiles = rules; validateRules = true; debugRulesOnly = false; debugMode = false})
-
-        member _.PrepareConfigRules rules =
-            game.PrepareConfigRules
-                { ruleFiles = rules
-                  validateRules = true
-                  debugRulesOnly = false
-                  debugMode = false }
-
-        member _.CommitConfigRules staged = game.CommitConfigRules staged
-
-        member _.RefreshCaches() = game.RefreshCaches()
-        member _.PrepareRefreshCaches() = game.PrepareRefreshCaches()
-        member _.CommitRefreshCaches(staged) = game.CommitRefreshCaches(staged)
-
-        member _.RefreshScriptedTypes files =
-            let typeKeys = game.IncrementalTypeKeysForFiles files
-            if typeKeys.IsEmpty then false
-            else
-                game.RefreshScriptedTypesForFiles(files, typeKeys)
-                true
-
-        member _.RemoveScriptedTypes files = game.RemoveIncrementalScriptedTypes files
-
-        member _.PrepareFileDeletion(files, scripted) =
-            game.PrepareIncrementalFileDeletion(files, scripted)
-
-        member _.CommitFileDeletion staged =
-            game.CommitFileDeletionForFiles staged
-
-        member _.PrepareScriptedTypes(files, additionalSemanticChanged) =
-            game.PrepareIncrementalScriptedTypes(files, additionalSemanticChanged)
-
-        member _.CommitScriptedTypes staged = game.CommitScriptedTypesForFiles staged
-
-        member _.RefreshLocalisationCaches() =
-            game.LocalisationManager.UpdateProcessedLocalisation()
-
-        member _.CleanupCache(existingFiles) = game.CleanupCache existingFiles
-        member _.InvalidateFileCache(filepath) = game.InvalidateFileCache filepath
-
-        member _.ForceRecompute() = resources.ForceRecompute()
-        member _.ForceDynamicParameterData(timeoutMs, maxEntities) =
-            resources.ForceDynamicParameterData(timeoutMs, maxEntities)
-        member _.ForceDynamicParameterDataForFiles filepaths =
-            resources.ForceDynamicParameterDataForFiles filepaths
-        member _.GetInlineScriptCallers scriptName = resources.GetInlineScriptCallers scriptName
-        member _.RefreshInlineScriptCallers scriptNames = game.RefreshInlineScriptCallers scriptNames
-        member _.PrepareInlineScriptCallers scriptNames = game.PrepareInlineScriptCallers scriptNames
-        member _.CommitInlineScriptCallers staged = game.CommitInlineScriptCallers staged
-        member _.Types() = game.Lookup.typeDefInfo
-        member _.TypeDefs() = game.Lookup.typeDefs
-        member _.GetPossibleCodeEdits file text = []
-        member _.GetCodeEdits file text = None
-
-        member _.GetEventGraphData: GraphDataRequest =
-            (fun files gameType depth ->
-                graphEventDataForFiles references game.ResourceManager lookup files gameType depth)
-
-        member _.GetEmbeddedMetadata() =
-            getEmbeddedMetadata lookup game.LocalisationManager game.ResourceManager
-
-    interface IIncrementalTypeIndex with
-        member _.PrepareTypeIndex files = game.PrepareIncrementalTypeIndex files
-        member _.CommitTypeIndex staged = game.CommitTypeIndexForFiles staged
-        member _.RemoveTypeIndex files = game.RemoveIncrementalTypeIndex files
-
-    interface IIncrementalLocalisation with
-        member _.IsLocalisationFile filepath = game.IsLocalisationFile filepath
-        member _.PeekLocalisationDelta owner = game.PeekLocalisationDelta owner
-        member _.AckLocalisationDelta cursor = game.AckLocalisationDelta cursor
-        member _.DiscardLocalisationDelta cursor = game.DiscardLocalisationDelta cursor
-        member _.TakeLocalisationDelta() = game.TakeLocalisationDelta()
-        member _.ValidateLocalisationDelta delta = game.ValidateIncrementalLocalisationDelta delta
-        member _.PrepareLocalisationRefresh owner =
-            game.PrepareLocalisationRefresh(owner, game.ValidateIncrementalLocalisationDelta)
-        member _.TryCommitLocalisationRefresh staged = game.TryCommitLocalisationRefresh staged
-        member _.DiscardLocalisationRefresh staged = game.DiscardLocalisationRefresh staged
-        member _.ValidateLocalisationFiles files = game.ValidateIncrementalLocalisationFiles files
-        member _.RemoveLocalisationFile filepath = game.RemoveIncrementalLocalisationFile filepath
-
-    interface ISemanticDeltaProvider with
-        member _.SemanticSignatureForFile filepath = game.SemanticSignatureForFile filepath
+type EU4Game(setupSettings: EU4Settings) =
+    inherit CWToolsGameBase<EU4ComputedData, EU4Lookup>(initGame setupSettings)

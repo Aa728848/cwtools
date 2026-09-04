@@ -18,32 +18,6 @@ module CommonValidation =
     let private scriptedParameterPattern =
         Regex(@"\$([^$|]+)(?:\|([^$]*))?\$", RegexOptions.Compiled)
 
-    let private parameterName (text: string) =
-        let pipeIndex = text.IndexOf('|')
-        if pipeIndex >= 0 then text.Substring(0, pipeIndex) else text
-
-    let private normalizeParameterKey (key: string) =
-        key.Trim().Trim('$') |> parameterName
-
-    let private bracketParameterName (text: string) =
-        let text = text.TrimStart()
-
-        if text.StartsWith("[[") then
-            let inner = text.Substring(2).TrimStart()
-            let negated = inner.StartsWith("!")
-            let inner = if negated then inner.Substring(1).TrimStart() else inner
-            let endIndex = inner.IndexOfAny([| ']'; ' '; '\t'; '\r'; '\n' |])
-            let paramName =
-                if endIndex >= 0 then inner.Substring(0, endIndex).Trim()
-                else inner.Trim()
-
-            if paramName.Length > 0 && (System.Char.IsLetterOrDigit(paramName.[0]) || paramName.[0] = '_') then
-                Some(paramName, negated)
-            else
-                None
-        else
-            None
-
     let internal applyBracketConditionals (parameters: (string * string) list) (children: Child array) =
         let values =
             parameters

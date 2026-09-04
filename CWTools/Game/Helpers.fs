@@ -10,6 +10,29 @@ open CWTools.Utilities
 open CWTools.Utilities.Utils
 
 module Helpers =
+    let loadDefinitionCsvProvinces (resources: IResourceAPI<_>) : string array =
+        let provinceFile =
+            resources.GetResources()
+            |> List.choose (function
+                | FileWithContentResource(_, e) -> Some e
+                | _ -> None)
+            |> List.tryFind (fun f ->
+                f.overwrite <> Overwrite.Overwritten
+                && Path.GetFileName(f.filepath.AsSpan()).Equals("definition.csv", StringComparison.OrdinalIgnoreCase))
+
+        match provinceFile with
+        | None -> [||]
+        | Some pf ->
+            let resizeArray = ResizeArray<string>(pf.filetext.AsSpan().Count('\n'))
+            for line: ReadOnlySpan<char> in pf.filetext.AsSpan().EnumerateLines() do
+                let trimmed = line.TrimStart()
+                if not (trimmed.IsEmpty || trimmed.StartsWith("#")) then
+                    let idx = trimmed.IndexOf(';')
+                    let first = (if idx >= 0 then trimmed.Slice(0, idx) else trimmed).Trim()
+                    if not first.IsEmpty then
+                        resizeArray.Add(first.ToString())
+            resizeArray.ToArray()
+
     let updateEventTargetLinks (embeddedSettings: EmbeddedSettings) =
         let simpleEventTargetLinks =
             embeddedSettings.eventTargetLinks

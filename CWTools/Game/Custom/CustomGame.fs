@@ -11,6 +11,9 @@ open System.Text
 open CWTools.Games.LanguageFeatures
 open CWTools.Games.Helpers
 open CWTools.Parser
+open CWTools.Localisation.Custom
+
+type CustomSettings = GameSetupSettings<JominiLookup>
 
 module CustomGameFunctions =
     type GameObject = GameObject<JominiComputedData, JominiLookup>
@@ -87,302 +90,129 @@ module CustomGameFunctions =
           cachedRuleMetadata = cachedRuleMetadata
           featureSettings = featureSettings }
 
-type CustomSettings = GameSetupSettings<JominiLookup>
+    let initGame (setupSettings: CustomSettings) (gameFolderName: string) =
+        let validationSettings =
+            { validators = CWTools.Validation.ValidationCore.toLocalStructureValidators [ validateIfWithNoEffect, "ifnoeffect" ]
+              globalValidators = []
+              dynamicValidators = []
+              experimentalValidators = []
+              heavyExperimentalValidators = []
+              experimental = false
+              fileValidators = []
+              globalFileValidators = []
+              lookupValidators = []
+              globalLookupValidators = commonValidationRules
+              lookupFileValidators = []
+              scriptedParamsValidators = []
+              useRules = true
+              debugRulesOnly = false
+              localisationValidators = [] }
 
-open CustomGameFunctions
-open CWTools.Localisation.Custom
+        let embeddedSettings =
+            match setupSettings.embedded with
+            | FromConfig(ef, crd) ->
+                createEmbeddedSettings
+                    ef
+                    crd
+                    (setupSettings.rules
+                     |> Option.map (fun r -> r.ruleFiles)
+                     |> Option.defaultValue [])
+                    None
+            | Metadata cmd ->
+                createEmbeddedSettings
+                    []
+                    []
+                    (setupSettings.rules
+                     |> Option.map (fun r -> r.ruleFiles)
+                     |> Option.defaultValue [])
+                    (Some cmd)
+            | ManualSettings e -> e
 
-type CustomGame(setupSettings: CustomSettings, gameFolderName: string) =
-    let validationSettings =
-        { validators = CWTools.Validation.ValidationCore.toLocalStructureValidators [ validateIfWithNoEffect, "ifnoeffect" ]
-          globalValidators = []
-          dynamicValidators = []
-          experimentalValidators = []
-          heavyExperimentalValidators = []
-          experimental = false
-          fileValidators = []
-          globalFileValidators = []
-          lookupValidators = []
-          globalLookupValidators = commonValidationRules
-          lookupFileValidators = []
-          scriptedParamsValidators = []
-          useRules = true
-          debugRulesOnly = false
-          localisationValidators = [] }
+        let settings =
+            { rootDirectories = setupSettings.rootDirectories
+              excludeGlobPatterns = setupSettings.excludeGlobPatterns
+              embedded = embeddedSettings
+              GameSettings.rules = setupSettings.rules
+              validation = setupSettings.validation
+              scriptFolders = setupSettings.scriptFolders
+              modFilter = setupSettings.modFilter
+              initialLookup = JominiLookup()
+              maxFileSize = setupSettings.maxFileSize
+              enableInlineScripts = false }
 
-    let embeddedSettings =
-        match setupSettings.embedded with
-        | FromConfig(ef, crd) ->
-            createEmbeddedSettings
-                ef
-                crd
-                (setupSettings.rules
-                 |> Option.map (fun r -> r.ruleFiles)
-                 |> Option.defaultValue [])
-                None
-        | Metadata cmd ->
-            createEmbeddedSettings
-                []
-                []
-                (setupSettings.rules
-                 |> Option.map (fun r -> r.ruleFiles)
-                 |> Option.defaultValue [])
-                (Some cmd)
-        | ManualSettings e -> e
-
-    let settings =
-        { rootDirectories = setupSettings.rootDirectories
-          excludeGlobPatterns = setupSettings.excludeGlobPatterns
-          embedded = embeddedSettings
-          GameSettings.rules = setupSettings.rules
-          validation = setupSettings.validation
-          scriptFolders = setupSettings.scriptFolders
-          modFilter = setupSettings.modFilter
-          initialLookup = JominiLookup()
-          maxFileSize = setupSettings.maxFileSize
-          enableInlineScripts = false }
-
-    do
         if scopeManager.Initialized |> not then
             eprintfn "%A has no scopes" (settings.rootDirectories |> Array.head)
         else
             ()
 
+        let settings =
+            { settings with
+                initialLookup = JominiLookup() }
 
-    let settings =
-        { settings with
-            initialLookup = JominiLookup() }
+        let changeScope =
+            Scopes.createJominiChangeScope
+                CWTools.Process.Scopes.IR.oneToOneScopes
+                (Scopes.complexVarPrefixFun "variable:from:" "variable:")
 
-    let changeScope =
-        Scopes.createJominiChangeScope
-            CWTools.Process.Scopes.IR.oneToOneScopes
-            (Scopes.complexVarPrefixFun "variable:from:" "variable:")
-
-    let jominiLocDataTypes =
-        settings.embedded.localisationCommands
-        |> function
-            | Jomini dts -> Some dts
-            | _ -> None
-
-    let processLocalisationFunction lookup =
-        (createJominiLocalisationFunctions jominiLocDataTypes lookup)
-
-    let rulesManagerSettings =
-        { rulesSettings = settings.rules
-          useFormulas = true
-          stellarisScopeTriggers = false
-          parseScope = scopeManager.ParseScope()
-          allScopes = scopeManager.AllScopes
-          anyScope = scopeManager.AnyScope
-          scopeGroups = scopeManager.ScopeGroups
-          changeScope = changeScope
-          scopeContextOverride = fun _ _ -> None
-          defaultContext = CWTools.Process.Scopes.Scopes.defaultContext
-          defaultLang = Custom CustomLang.English
-          oneToOneScopesNames = CWTools.Process.Scopes.IR.oneToOneScopesNames
-          loadConfigRulesHook = Hooks.loadConfigRulesHook
-          refreshConfigBeforeFirstTypesHook = Hooks.refreshConfigBeforeFirstTypesHook
-          refreshConfigAfterFirstTypesHook = Hooks.refreshConfigAfterFirstTypesHook true
-          refreshConfigAfterVarDefHook = Hooks.refreshConfigAfterVarDefHook true
-          locFunctions = processLocalisationFunction }
-
-    let scriptFolders = [||]
-
-    let game =
-        GameObject<JominiComputedData, JominiLookup>.CreateGame
-            ((settings,
-              gameFolderName,
-              scriptFolders,
-              Compute.Jomini.computeJominiData,
-              Compute.Jomini.computeJominiDataUpdate,
-              (CustomLocalisationService >> (fun f -> f :> ILocalisationAPICreator)),
-              processLocalisationFunction,
-              CWTools.Process.Scopes.Scopes.defaultContext,
-              CWTools.Process.Scopes.Scopes.noneContext,
-              Encoding.UTF8,
-              Encoding.GetEncoding(1252),
-              validationSettings,
-              Hooks.globalLocalisation,
-              (fun _ _ -> ()),
-              ".yml",
-              rulesManagerSettings,
-              setupSettings.debugSettings))
-            afterInit
-
-    let lookup = game.Lookup
-    let resources = game.Resources
-    let fileManager = game.FileManager
-
-    let references =
-        References<_>(resources, lookup, game.LocalisationManager.GetCleanLocalisationAPIs())
-
-    let parseErrors () =
-        resources.GetResources()
-        |> List.choose (function
-            | EntityResource(_, e) -> Some e
-            | _ -> None)
-        |> List.choose (fun r ->
-            r.result
+        let jominiLocDataTypes =
+            settings.embedded.localisationCommands
             |> function
-                | Fail result when r.validate -> Some(r.filepath, result.error, result.position)
-                | _ -> None)
+                | Jomini dts -> Some dts
+                | _ -> None
 
-    interface IGame<JominiComputedData> with
-        member _.ParserErrors() = parseErrors ()
+        let processLocalisationFunction lookup =
+            (createJominiLocalisationFunctions jominiLocDataTypes lookup)
 
-        member _.ValidationErrors() =
-            let s, d = game.ValidationManager.Validate(false, resources.ValidatableEntities()) in s @ d
+        let rulesManagerSettings =
+            { rulesSettings = settings.rules
+              useFormulas = true
+              stellarisScopeTriggers = false
+              parseScope = scopeManager.ParseScope()
+              allScopes = scopeManager.AllScopes
+              anyScope = scopeManager.AnyScope
+              scopeGroups = scopeManager.ScopeGroups
+              changeScope = changeScope
+              scopeContextOverride = fun _ _ -> None
+              defaultContext = CWTools.Process.Scopes.Scopes.defaultContext
+              defaultLang = Custom CustomLang.English
+              oneToOneScopesNames = CWTools.Process.Scopes.IR.oneToOneScopesNames
+              loadConfigRulesHook = Hooks.loadConfigRulesHook
+              refreshConfigBeforeFirstTypesHook = Hooks.refreshConfigBeforeFirstTypesHook
+              refreshConfigAfterFirstTypesHook = Hooks.refreshConfigAfterFirstTypesHook true
+              refreshConfigAfterVarDefHook = Hooks.refreshConfigAfterVarDefHook true
+              locFunctions = processLocalisationFunction }
 
-        member _.LocalisationErrors(force: bool, forceGlobal: bool) =
-            getLocalisationErrors game Hooks.globalLocalisation (force, forceGlobal)
+        let scriptFolders = [||]
 
-        member _.Folders() = fileManager.AllFolders()
-        member _.AllFiles() = resources.GetResources()
+        let game =
+            GameObject<JominiComputedData, JominiLookup>.CreateGame
+                ((settings,
+                  gameFolderName,
+                  scriptFolders,
+                  Compute.Jomini.computeJominiData,
+                  Compute.Jomini.computeJominiDataUpdate,
+                  (CustomLocalisationService >> (fun f -> f :> ILocalisationAPICreator)),
+                  processLocalisationFunction,
+                  CWTools.Process.Scopes.Scopes.defaultContext,
+                  CWTools.Process.Scopes.Scopes.noneContext,
+                  Encoding.UTF8,
+                  Encoding.GetEncoding(1252),
+                  validationSettings,
+                  Hooks.globalLocalisation,
+                  (fun _ _ -> ()),
+                  ".yml",
+                  rulesManagerSettings,
+                  setupSettings.debugSettings))
+                afterInit
 
-        member _.AllLoadedLocalisation() =
-            game.LocalisationManager.LocalisationFileNames()
+        let defaultLang =
+            settings.validation.langs
+            |> Array.tryHead
+            |> Option.defaultValue (Custom CustomLang.English)
 
-        member _.ScriptedTriggers() = lookup.triggers
-        member _.ScriptedEffects() = lookup.effects
-        member _.ScriptedVariables() = lookup.scriptedVariables
-        member _.StaticModifiers() = [||] //lookup.staticModifiers
-        member _.UpdateFile shallow file text = game.UpdateFile shallow file text
-        member _.UpdateFileInteractive file text = game.UpdateFileInteractive file text
-        member _.PrepareUpdateFileInteractive file text = game.PrepareUpdateFileInteractive file text
-        member _.CommitUpdateFileInteractive staged = game.CommitUpdateFileInteractive staged
-        member _.ValidateFileInteractive staged = game.ValidateFileInteractive staged
-        member _.ValidateOverlayFile(file, text) = game.ValidateOverlayFile file text
-        member _.ValidateOverlayFilesCancellable(files, shouldCancel) =
-            game.ValidateOverlayFilesCancellable files shouldCancel
-        member _.ValidateFile shallow file = game.ValidateFile shallow file
-        member _.ValidateFiles files = game.ValidateFiles files
-        member _.ValidateFilesLocalCancellable(files, shouldCancel) =
-            game.ValidateFilesLocalCancellable(files, shouldCancel)
-        member _.AllEntities() = resources.AllEntities()
+        (game, defaultLang)
 
-        member _.References() =
-            References<_>(resources, lookup, game.LocalisationManager.GetCleanLocalisationAPIs())
+open CustomGameFunctions
 
-        member _.Complete pos file text =
-            completion fileManager game.completionService game.InfoService game.ResourceManager pos file text
-
-        member _.ScopesAtPos pos file text =
-            scopesAtPos fileManager game.ResourceManager game.InfoService scopeManager.AnyScope pos file text
-
-        member _.GoToType pos file text =
-            getInfoAtPos
-                fileManager
-                game.ResourceManager
-                game.InfoService
-                game.LocalisationManager
-                lookup
-                (settings.validation.langs |> Array.tryHead |> Option.defaultValue (Custom CustomLang.English))
-                pos
-                file
-                text
-
-        member _.FindAllRefs pos file text =
-            findAllRefsFromPos fileManager game.ResourceManager game.InfoService pos file text
-
-        member _.FindAllRefsByType typeName id =
-            findAllRefsByType game.ResourceManager game.InfoService typeName id
-
-        member _.TypeReferenceIndex() =
-            getOrBuildTypeReferenceIndex game.ResourceManager game.InfoService
-
-        member _.InfoAtPos pos file text = game.InfoAtPos pos file text
-
-        member _.OverrideModeAtPath file = game.OverrideModeAtPath file
-
-        member _.OverrideModes() = game.OverrideModes()
-
-        member _.OverrideModesInfo() = game.OverrideModesInfo()
-
-        member _.ReplaceConfigRules rules =
-            game.ReplaceConfigRules
-                { ruleFiles = rules
-                  validateRules = true
-                  debugRulesOnly = false
-                  debugMode = false } //refreshRuleCaches game (Some { ruleFiles = rules; validateRules = true; debugRulesOnly = false; debugMode = false})
-
-        member _.PrepareConfigRules rules =
-            game.PrepareConfigRules
-                { ruleFiles = rules
-                  validateRules = true
-                  debugRulesOnly = false
-                  debugMode = false }
-
-        member _.CommitConfigRules staged = game.CommitConfigRules staged
-
-        member _.RefreshCaches() = game.RefreshCaches()
-        member _.PrepareRefreshCaches() = game.PrepareRefreshCaches()
-        member _.CommitRefreshCaches(staged) = game.CommitRefreshCaches(staged)
-
-        member _.RefreshScriptedTypes files =
-            let typeKeys = game.IncrementalTypeKeysForFiles files
-            if typeKeys.IsEmpty then false
-            else
-                game.RefreshScriptedTypesForFiles(files, typeKeys)
-                true
-
-        member _.RemoveScriptedTypes files = game.RemoveIncrementalScriptedTypes files
-
-        member _.PrepareFileDeletion(files, scripted) =
-            game.PrepareIncrementalFileDeletion(files, scripted)
-
-        member _.CommitFileDeletion staged =
-            game.CommitFileDeletionForFiles staged
-
-        member _.PrepareScriptedTypes(files, additionalSemanticChanged) =
-            game.PrepareIncrementalScriptedTypes(files, additionalSemanticChanged)
-
-        member _.CommitScriptedTypes staged = game.CommitScriptedTypesForFiles staged
-
-        member _.RefreshLocalisationCaches() =
-            game.LocalisationManager.UpdateProcessedLocalisation()
-
-        member _.CleanupCache(existingFiles) = game.CleanupCache existingFiles
-        member _.InvalidateFileCache(filepath) = game.InvalidateFileCache filepath
-
-        member _.ForceRecompute() = resources.ForceRecompute()
-        member _.ForceDynamicParameterData(timeoutMs, maxEntities) =
-            resources.ForceDynamicParameterData(timeoutMs, maxEntities)
-        member _.ForceDynamicParameterDataForFiles filepaths =
-            resources.ForceDynamicParameterDataForFiles filepaths
-        member _.GetInlineScriptCallers scriptName = resources.GetInlineScriptCallers scriptName
-        member _.RefreshInlineScriptCallers scriptNames = game.RefreshInlineScriptCallers scriptNames
-        member _.PrepareInlineScriptCallers scriptNames = game.PrepareInlineScriptCallers scriptNames
-        member _.CommitInlineScriptCallers staged = game.CommitInlineScriptCallers staged
-        member _.Types() = game.Lookup.typeDefInfo
-        member _.TypeDefs() = game.Lookup.typeDefs
-        member _.GetPossibleCodeEdits file text = []
-        member _.GetCodeEdits file text = None
-
-        member _.GetEventGraphData: GraphDataRequest =
-            (fun files gameType depth ->
-                graphEventDataForFiles references game.ResourceManager lookup files gameType depth)
-
-        member _.GetEmbeddedMetadata() =
-            getEmbeddedMetadata lookup game.LocalisationManager game.ResourceManager
-
-    interface IIncrementalTypeIndex with
-        member _.PrepareTypeIndex files = game.PrepareIncrementalTypeIndex files
-        member _.CommitTypeIndex staged = game.CommitTypeIndexForFiles staged
-        member _.RemoveTypeIndex files = game.RemoveIncrementalTypeIndex files
-
-    interface IIncrementalLocalisation with
-        member _.IsLocalisationFile filepath = game.IsLocalisationFile filepath
-        member _.PeekLocalisationDelta owner = game.PeekLocalisationDelta owner
-        member _.AckLocalisationDelta cursor = game.AckLocalisationDelta cursor
-        member _.DiscardLocalisationDelta cursor = game.DiscardLocalisationDelta cursor
-        member _.TakeLocalisationDelta() = game.TakeLocalisationDelta()
-        member _.ValidateLocalisationDelta delta = game.ValidateIncrementalLocalisationDelta delta
-        member _.PrepareLocalisationRefresh owner =
-            game.PrepareLocalisationRefresh(owner, game.ValidateIncrementalLocalisationDelta)
-        member _.TryCommitLocalisationRefresh staged = game.TryCommitLocalisationRefresh staged
-        member _.DiscardLocalisationRefresh staged = game.DiscardLocalisationRefresh staged
-        member _.ValidateLocalisationFiles files = game.ValidateIncrementalLocalisationFiles files
-        member _.RemoveLocalisationFile filepath = game.RemoveIncrementalLocalisationFile filepath
-
-    interface ISemanticDeltaProvider with
-        member _.SemanticSignatureForFile filepath = game.SemanticSignatureForFile filepath
+type CustomGame(setupSettings: CustomSettings, gameFolderName: string) =
+    inherit CWToolsGameBase<JominiComputedData, JominiLookup>(initGame setupSettings gameFolderName)

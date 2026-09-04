@@ -162,13 +162,6 @@ module STLProcess =
     let private parameterPattern =
         System.Text.RegularExpressions.Regex(@"\$([^$|]+)(?:\|([^$]*))?\$", System.Text.RegularExpressions.RegexOptions.Compiled)
 
-    let private parameterName (text: string) =
-        let pipeIndex = text.IndexOf('|')
-        if pipeIndex >= 0 then text.Substring(0, pipeIndex) else text
-
-    let private normalizeParameterKey (key: string) =
-        key.Trim().Trim('$') |> parameterName
-
     let substituteParams (paramList: (string * string) list) (text: string) : string =
         let values =
             paramList

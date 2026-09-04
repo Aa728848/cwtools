@@ -25,6 +25,8 @@ open CWTools.Rules
 open CWTools.Parser
 open CWTools.Process.Localisation
 
+type CK2Settings = GameSetupSettings<CK2Lookup>
+
 module CK2GameFunctions =
     type GameObject = GameObject<ComputedData, CK2Lookup>
 
@@ -62,23 +64,6 @@ module CK2GameFunctions =
 
     let updateModifiers (game: GameObject) =
         game.Lookup.coreModifiers <- game.Settings.embedded.modifiers
-
-    let addModifiersWithScopes (lookup: Lookup) =
-        let modifierOptions (modifier: ActualModifier) =
-            let requiredScopes = modifierCategoryManager.SupportedScopes modifier.category
-
-            { Options.DefaultOptions with
-                requiredScopes = requiredScopes }
-
-        let processField =
-            RulesParser.processTagAsField (scopeManager.ParseScope()) scopeManager.AnyScope scopeManager.ScopeGroups
-
-        lookup.coreModifiers
-        |> Array.map (fun c ->
-            AliasRule(
-                "modifier",
-                NewRule(LeafRule(processField c.tag, ValueField(ValueType.Float(RulesParserConstants.floatFieldDefaultMinimum, RulesParserConstants.floatFieldDefaultMaximum))), modifierOptions c)
-            ))
 
     let updateLandedTitles (game: GameObject) =
         let fNode =
@@ -219,25 +204,7 @@ module CK2GameFunctions =
         |> Map.add "title" (Array.concat [| es; ells; ks; klls; dns; dllns; dhs; dllhs; cs; clls; bs; blls |])
 
     let updateProvinces (game: GameObject) =
-        let provinceFile =
-            game.Resources.GetResources()
-            |> List.choose (function
-                | FileWithContentResource(_, e) -> Some e
-                | _ -> None)
-            |> List.tryFind (fun f ->
-                f.overwrite <> Overwrite.Overwritten
-                && Path.GetFileName(f.filepath) = "definition.csv")
-
-        match provinceFile with
-        | None -> ()
-        | Some pf ->
-            let lines = pf.filetext.Split([| "\r\n"; "\r"; "\n" |], StringSplitOptions.None)
-
-            let provinces =
-                lines
-                |> Array.choose (fun l -> l.Split(';', 2, StringSplitOptions.RemoveEmptyEntries) |> Array.tryHead)
-
-            game.Lookup.CK2provinces <- provinces
+        game.Lookup.CK2provinces <- loadDefinitionCsvProvinces game.Resources
 
     let updateScriptedEffects (lookup: Lookup) (rules: RootRule array) (embeddedSettings: EmbeddedSettings) =
         let effects =
@@ -301,7 +268,7 @@ module CK2GameFunctions =
         let es = updateScriptedEffects lookup rules embedded
         let ls = updateEventTargetLinks embedded |> List.toArray
         lookup.allCoreLinks <- Seq.concat [| ts; es; ls |] |> Seq.toList
-        Array.append rules (addModifiersWithScopes lookup)
+        Array.append rules (Hooks.addModifiersWithScopes lookup)
 
     let refreshConfigBeforeFirstTypesHook (lookup: CK2Lookup) _ _ =
         let modifierEnums =
@@ -384,307 +351,135 @@ module CK2GameFunctions =
           cachedRuleMetadata = cachedRuleMetadata
           featureSettings = featureSettings }
 
-type CK2Settings = GameSetupSettings<CK2Lookup>
-open CK2GameFunctions
+    let initGame (setupSettings: CK2Settings) =
+        let validationSettings =
+            { validators = CWTools.Validation.ValidationCore.toLocalStructureValidators [ validateIfWithNoEffect, "ifnoeffect" ]
+              globalValidators = []
+              dynamicValidators = []
+              experimentalValidators = []
+              heavyExperimentalValidators = []
+              experimental = false
+              fileValidators = []
+              globalFileValidators = []
+              lookupValidators = []
+              globalLookupValidators = commonValidationRules
+              lookupFileValidators = []
+              scriptedParamsValidators = []
+              useRules = true
+              debugRulesOnly = false
+              localisationValidators = [] }
 
-type CK2Game(setupSettings: CK2Settings) =
-    let validationSettings =
-        { validators = CWTools.Validation.ValidationCore.toLocalStructureValidators [ validateIfWithNoEffect, "ifnoeffect" ]
-          globalValidators = []
-          dynamicValidators = []
-          experimentalValidators = []
-          heavyExperimentalValidators = []
-          experimental = false
-          fileValidators = []
-          globalFileValidators = []
-          lookupValidators = []
-          globalLookupValidators = commonValidationRules
-          lookupFileValidators = []
-          scriptedParamsValidators = []
-          useRules = true
-          debugRulesOnly = false
-          localisationValidators = [] }
+        let embeddedSettings =
+            match setupSettings.embedded with
+            | FromConfig(ef, crd) ->
+                createEmbeddedSettings
+                    ef
+                    crd
+                    (setupSettings.rules
+                     |> Option.map (fun r -> r.ruleFiles)
+                     |> Option.defaultValue [])
+                    None
+            | Metadata cmd ->
+                createEmbeddedSettings
+                    []
+                    []
+                    (setupSettings.rules
+                     |> Option.map (fun r -> r.ruleFiles)
+                     |> Option.defaultValue [])
+                    (Some cmd)
+            | ManualSettings e -> e
 
-    let embeddedSettings =
-        match setupSettings.embedded with
-        | FromConfig(ef, crd) ->
-            createEmbeddedSettings
-                ef
-                crd
-                (setupSettings.rules
-                 |> Option.map (fun r -> r.ruleFiles)
-                 |> Option.defaultValue [])
-                None
-        | Metadata cmd ->
-            createEmbeddedSettings
-                []
-                []
-                (setupSettings.rules
-                 |> Option.map (fun r -> r.ruleFiles)
-                 |> Option.defaultValue [])
-                (Some cmd)
-        | ManualSettings e -> e
+        let settings =
+            { rootDirectories = setupSettings.rootDirectories
+              excludeGlobPatterns = setupSettings.excludeGlobPatterns
+              embedded = embeddedSettings
+              GameSettings.rules = setupSettings.rules
+              validation = setupSettings.validation
+              scriptFolders = setupSettings.scriptFolders
+              modFilter = setupSettings.modFilter
+              initialLookup = CK2Lookup()
+              maxFileSize = setupSettings.maxFileSize
+              enableInlineScripts = false }
 
-    let settings =
-        { rootDirectories = setupSettings.rootDirectories
-          excludeGlobPatterns = setupSettings.excludeGlobPatterns
-          embedded = embeddedSettings
-          GameSettings.rules = setupSettings.rules
-          validation = setupSettings.validation
-          scriptFolders = setupSettings.scriptFolders
-          modFilter = setupSettings.modFilter
-          initialLookup = CK2Lookup()
-          maxFileSize = setupSettings.maxFileSize
-          enableInlineScripts = false }
-
-    do
         if scopeManager.Initialized |> not then
             eprintfn "%A has no scopes" (settings.rootDirectories |> Array.head)
         else
             ()
 
-    let locSettings =
-        settings.embedded.localisationCommands
-        |> function
-            | Legacy(l, v, links) ->
-                (if l.Length = 0 then
-                     Legacy([], [], [])
-                 else
-                     Legacy(l, v, links))
-            | _ -> Legacy([], [], [])
-
-    let settings =
-        { settings with
-            embedded =
-                { settings.embedded with
-                    localisationCommands = locSettings }
-            initialLookup = CK2Lookup() }
-
-    let legacyLocDataTypes =
-        settings.embedded.localisationCommands
-        |> function
-            | Legacy(c, v, links) -> (c, v, links)
-            | _ -> ([], [], [])
-
-    let processLocalisationFunction lookup =
-        (createLocalisationFunctions CK2.locStaticSettings createLocDynamicSettings legacyLocDataTypes lookup)
-
-
-
-    let rulesManagerSettings =
-        { rulesSettings = settings.rules
-          useFormulas = false
-          stellarisScopeTriggers = false
-          parseScope = scopeManager.ParseScope()
-          allScopes = scopeManager.AllScopes
-          anyScope = scopeManager.AnyScope
-          scopeGroups = scopeManager.ScopeGroups
-          changeScope = changeScope
-          scopeContextOverride = fun _ _ -> None
-          defaultContext = defaultContext
-          defaultLang = CK2 CK2Lang.Default
-          oneToOneScopesNames = oneToOneScopesNames
-          loadConfigRulesHook = loadConfigRulesHook
-          refreshConfigBeforeFirstTypesHook = refreshConfigBeforeFirstTypesHook
-          refreshConfigAfterFirstTypesHook = refreshConfigAfterFirstTypesHook
-          refreshConfigAfterVarDefHook = refreshConfigAfterVarDefHook
-          locFunctions = processLocalisationFunction }
-
-    let game =
-        GameObject.CreateGame
-            ((settings,
-              "crusader kings ii",
-              scriptFolders,
-              Compute.computeCK2Data,
-              Compute.computeCK2DataUpdate,
-              (CK2LocalisationService >> (fun f -> f :> ILocalisationAPICreator)),
-              processLocalisationFunction,
-              defaultContext,
-              noneContext,
-              Encoding.UTF8,
-              Encoding.GetEncoding(1252),
-              validationSettings,
-              Hooks.globalLocalisation,
-              (fun _ _ -> ()),
-              ".csv",
-              rulesManagerSettings,
-              setupSettings.debugSettings))
-            afterInit
-
-    let lookup = game.Lookup
-    let resources = game.Resources
-    let fileManager = game.FileManager
-
-    let references =
-        References<_>(resources, lookup, game.LocalisationManager.GetCleanLocalisationAPIs())
-
-    let parseErrors () =
-        resources.GetResources()
-        |> List.choose (function
-            | EntityResource(_, e) -> Some e
-            | _ -> None)
-        |> List.choose (fun r ->
-            r.result
+        let locSettings =
+            settings.embedded.localisationCommands
             |> function
-                | Fail result when r.validate -> Some(r.filepath, result.error, result.position)
-                | _ -> None)
+                | Legacy(l, v, links) ->
+                    (if l.Length = 0 then
+                         Legacy([], [], [])
+                     else
+                         Legacy(l, v, links))
+                | _ -> Legacy([], [], [])
 
-    interface IGame<CK2ComputedData> with
-        member _.ParserErrors() = parseErrors ()
+        let settings =
+            { settings with
+                embedded =
+                    { settings.embedded with
+                        localisationCommands = locSettings }
+                initialLookup = CK2Lookup() }
 
-        member _.ValidationErrors() =
-            let s, d = game.ValidationManager.Validate(false, resources.ValidatableEntities()) in s @ d
+        let legacyLocDataTypes =
+            settings.embedded.localisationCommands
+            |> function
+                | Legacy(c, v, links) -> (c, v, links)
+                | _ -> ([], [], [])
 
-        member _.LocalisationErrors(force: bool, forceGlobal: bool) =
-            getLocalisationErrors game Hooks.globalLocalisation (force, forceGlobal)
+        let processLocalisationFunction lookup =
+            (createLocalisationFunctions CK2.locStaticSettings createLocDynamicSettings legacyLocDataTypes lookup)
 
-        member _.Folders() = fileManager.AllFolders()
-        member _.AllFiles() = resources.GetResources()
+        let rulesManagerSettings =
+            { rulesSettings = settings.rules
+              useFormulas = false
+              stellarisScopeTriggers = false
+              parseScope = scopeManager.ParseScope()
+              allScopes = scopeManager.AllScopes
+              anyScope = scopeManager.AnyScope
+              scopeGroups = scopeManager.ScopeGroups
+              changeScope = changeScope
+              scopeContextOverride = fun _ _ -> None
+              defaultContext = defaultContext
+              defaultLang = CK2 CK2Lang.Default
+              oneToOneScopesNames = oneToOneScopesNames
+              loadConfigRulesHook = loadConfigRulesHook
+              refreshConfigBeforeFirstTypesHook = refreshConfigBeforeFirstTypesHook
+              refreshConfigAfterFirstTypesHook = refreshConfigAfterFirstTypesHook
+              refreshConfigAfterVarDefHook = refreshConfigAfterVarDefHook
+              locFunctions = processLocalisationFunction }
 
-        member _.AllLoadedLocalisation() =
-            game.LocalisationManager.LocalisationFileNames()
+        let game =
+            GameObject.CreateGame
+                ((settings,
+                  "crusader kings ii",
+                  scriptFolders,
+                  Compute.computeCK2Data,
+                  Compute.computeCK2DataUpdate,
+                  (CK2LocalisationService >> (fun f -> f :> ILocalisationAPICreator)),
+                  processLocalisationFunction,
+                  defaultContext,
+                  noneContext,
+                  Encoding.UTF8,
+                  Encoding.GetEncoding(1252),
+                  validationSettings,
+                  Hooks.globalLocalisation,
+                  (fun _ _ -> ()),
+                  ".csv",
+                  rulesManagerSettings,
+                  setupSettings.debugSettings))
+                afterInit
 
-        member _.ScriptedTriggers() = lookup.triggers
-        member _.ScriptedEffects() = lookup.effects
-        member _.ScriptedVariables() = lookup.scriptedVariables
-        member _.StaticModifiers() = [||] //lookup.staticModifiers
-        member _.UpdateFile shallow file text = game.UpdateFile shallow file text
-        member _.UpdateFileInteractive file text = game.UpdateFileInteractive file text
-        member _.PrepareUpdateFileInteractive file text = game.PrepareUpdateFileInteractive file text
-        member _.CommitUpdateFileInteractive staged = game.CommitUpdateFileInteractive staged
-        member _.ValidateFileInteractive staged = game.ValidateFileInteractive staged
-        member _.ValidateOverlayFile(file, text) = game.ValidateOverlayFile file text
-        member _.ValidateOverlayFilesCancellable(files, shouldCancel) =
-            game.ValidateOverlayFilesCancellable files shouldCancel
-        member _.ValidateFile shallow file = game.ValidateFile shallow file
-        member _.ValidateFiles files = game.ValidateFiles files
-        member _.ValidateFilesLocalCancellable(files, shouldCancel) =
-            game.ValidateFilesLocalCancellable(files, shouldCancel)
-        member _.AllEntities() = resources.AllEntities()
+        let defaultLang =
+            settings.validation.langs
+            |> Array.tryHead
+            |> Option.defaultValue (CK2 CK2Lang.English)
 
-        member _.References() =
-            References<_>(resources, lookup, game.LocalisationManager.GetCleanLocalisationAPIs())
+        (game, defaultLang)
 
-        member _.Complete pos file text =
-            completion fileManager game.completionService game.InfoService game.ResourceManager pos file text
+open CK2GameFunctions
 
-        member _.ScopesAtPos pos file text =
-            scopesAtPos fileManager game.ResourceManager game.InfoService scopeManager.AnyScope pos file text
-
-        member _.GoToType pos file text =
-            getInfoAtPos
-                fileManager
-                game.ResourceManager
-                game.InfoService
-                game.LocalisationManager
-                lookup
-                (settings.validation.langs |> Array.tryHead |> Option.defaultValue (CK2 CK2Lang.English))
-                pos
-                file
-                text
-
-        member _.FindAllRefs pos file text =
-            findAllRefsFromPos fileManager game.ResourceManager game.InfoService pos file text
-
-        member _.FindAllRefsByType typeName id =
-            findAllRefsByType game.ResourceManager game.InfoService typeName id
-
-        member _.TypeReferenceIndex() =
-            getOrBuildTypeReferenceIndex game.ResourceManager game.InfoService
-
-        member _.InfoAtPos pos file text = game.InfoAtPos pos file text
-
-        member _.OverrideModeAtPath file = game.OverrideModeAtPath file
-
-        member _.OverrideModes() = game.OverrideModes()
-
-        member _.OverrideModesInfo() = game.OverrideModesInfo()
-
-        member _.ReplaceConfigRules rules =
-            game.ReplaceConfigRules
-                { ruleFiles = rules
-                  validateRules = true
-                  debugRulesOnly = false
-                  debugMode = false } //refreshRuleCaches game (Some { ruleFiles = rules; validateRules = true; debugRulesOnly = false; debugMode = false})
-
-        member _.PrepareConfigRules rules =
-            game.PrepareConfigRules
-                { ruleFiles = rules
-                  validateRules = true
-                  debugRulesOnly = false
-                  debugMode = false }
-
-        member _.CommitConfigRules staged = game.CommitConfigRules staged
-
-        member _.RefreshCaches() = game.RefreshCaches()
-        member _.PrepareRefreshCaches() = game.PrepareRefreshCaches()
-        member _.CommitRefreshCaches(staged) = game.CommitRefreshCaches(staged)
-
-        member _.RefreshScriptedTypes files =
-            let typeKeys = game.IncrementalTypeKeysForFiles files
-            if typeKeys.IsEmpty then false
-            else
-                game.RefreshScriptedTypesForFiles(files, typeKeys)
-                true
-
-        member _.RemoveScriptedTypes files = game.RemoveIncrementalScriptedTypes files
-
-        member _.PrepareFileDeletion(files, scripted) =
-            game.PrepareIncrementalFileDeletion(files, scripted)
-
-        member _.CommitFileDeletion staged =
-            game.CommitFileDeletionForFiles staged
-
-        member _.PrepareScriptedTypes(files, additionalSemanticChanged) =
-            game.PrepareIncrementalScriptedTypes(files, additionalSemanticChanged)
-
-        member _.CommitScriptedTypes staged = game.CommitScriptedTypesForFiles staged
-
-        member _.RefreshLocalisationCaches() =
-            game.LocalisationManager.UpdateProcessedLocalisation()
-
-        member _.CleanupCache(existingFiles) = game.CleanupCache existingFiles
-        member _.InvalidateFileCache(filepath) = game.InvalidateFileCache filepath
-
-        member _.ForceRecompute() = resources.ForceRecompute()
-        member _.ForceDynamicParameterData(timeoutMs, maxEntities) =
-            resources.ForceDynamicParameterData(timeoutMs, maxEntities)
-        member _.ForceDynamicParameterDataForFiles filepaths =
-            resources.ForceDynamicParameterDataForFiles filepaths
-        member _.GetInlineScriptCallers scriptName = resources.GetInlineScriptCallers scriptName
-        member _.RefreshInlineScriptCallers scriptNames = game.RefreshInlineScriptCallers scriptNames
-        member _.PrepareInlineScriptCallers scriptNames = game.PrepareInlineScriptCallers scriptNames
-        member _.CommitInlineScriptCallers staged = game.CommitInlineScriptCallers staged
-        member _.Types() = game.Lookup.typeDefInfo
-        member _.TypeDefs() = game.Lookup.typeDefs
-        member _.GetPossibleCodeEdits file text = []
-        member _.GetCodeEdits file text = None
-
-        member _.GetEventGraphData: GraphDataRequest =
-            (fun files gameType depth ->
-                graphEventDataForFiles references game.ResourceManager lookup files gameType depth)
-
-        member _.GetEmbeddedMetadata() =
-            getEmbeddedMetadata lookup game.LocalisationManager game.ResourceManager
-
-    interface IIncrementalTypeIndex with
-        member _.PrepareTypeIndex files = game.PrepareIncrementalTypeIndex files
-        member _.CommitTypeIndex staged = game.CommitTypeIndexForFiles staged
-        member _.RemoveTypeIndex files = game.RemoveIncrementalTypeIndex files
-
-    interface IIncrementalLocalisation with
-        member _.IsLocalisationFile filepath = game.IsLocalisationFile filepath
-        member _.PeekLocalisationDelta owner = game.PeekLocalisationDelta owner
-        member _.AckLocalisationDelta cursor = game.AckLocalisationDelta cursor
-        member _.DiscardLocalisationDelta cursor = game.DiscardLocalisationDelta cursor
-        member _.TakeLocalisationDelta() = game.TakeLocalisationDelta()
-        member _.ValidateLocalisationDelta delta = game.ValidateIncrementalLocalisationDelta delta
-        member _.PrepareLocalisationRefresh owner =
-            game.PrepareLocalisationRefresh(owner, game.ValidateIncrementalLocalisationDelta)
-        member _.TryCommitLocalisationRefresh staged = game.TryCommitLocalisationRefresh staged
-        member _.DiscardLocalisationRefresh staged = game.DiscardLocalisationRefresh staged
-        member _.ValidateLocalisationFiles files = game.ValidateIncrementalLocalisationFiles files
-        member _.RemoveLocalisationFile filepath = game.RemoveIncrementalLocalisationFile filepath
-
-    interface ISemanticDeltaProvider with
-        member _.SemanticSignatureForFile filepath = game.SemanticSignatureForFile filepath
+type CK2Game(setupSettings: CK2Settings) =
+    inherit CWToolsGameBase<CK2ComputedData, CK2Lookup>(initGame setupSettings)

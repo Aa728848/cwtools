@@ -386,25 +386,6 @@ module STLGameFunctions =
     let updateTechnologies (game: GameObject) =
         game.Lookup.technologies <- getTechnologies (EntitySet(game.Resources.AllEntities()))
 
-    let addModifiersWithScopes (lookup: Lookup) : RootRule array =
-        let modifierOptions (modifier: ActualModifier) =
-            let requiredScopes = modifierCategoryManager.SupportedScopes modifier.category
-
-            { Options.DefaultOptions with
-                requiredScopes = requiredScopes }
-
-        let processField =
-            RulesParser.processTagAsField (scopeManager.ParseScope()) scopeManager.AnyScope scopeManager.ScopeGroups
-
-        (lookup.coreModifiers
-         |> Seq.map (fun c ->
-             AliasRule(
-                 "modifier",
-                  NewRule(LeafRule(processField c.tag, ValueField(ValueType.Float(RulesParserConstants.floatFieldDefaultMinimum, RulesParserConstants.floatFieldDefaultMaximum))), modifierOptions c)
-             )))
-            .Concat(RulesHelpers.generateModifierRulesFromTypes lookup.typeDefs)
-            .ToArray()
-
     /// Carrier is a planet-or-ship union. A contract supported by either
     /// possible host is valid for the synthetic Carrier scope.
     let internal normalizeCarrierScopeSet planetScope shipScope carrierScope (scopes: Scope list) =
@@ -607,7 +588,7 @@ module STLGameFunctions =
             lookup
             (triggersWithValueTriggers @ lookup.effects @ updateEventTargetLinks embedded) //@ addDataEventTargetLinks lookup embedded
         lookup.coreModifiers <- embedded.modifiers
-        let rulesWithMod = rules.Concat(addModifiersWithScopes (lookup)).ToArray()
+        let rulesWithMod = rules.Concat(Hooks.addModifiersWithScopes lookup).ToArray()
         let rulesWithEmbeddedScopes = addTriggerDocsScopes lookup rulesWithMod
         rulesWithEmbeddedScopes
 

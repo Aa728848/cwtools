@@ -52,6 +52,26 @@ type CachedRuleMetadata =
       files: Set<string>
       scriptedLoc: string array }
 
+    static member MergeEmbeddedLoc (metadata: CachedRuleMetadata option) (langs: Lang array) : (Lang * Set<string>) array -> (Lang * Set<string>) array =
+        match metadata with
+        | None -> id
+        | Some md ->
+            fun (newList: (Lang * Set<string>) array) ->
+                let newMap = newList |> Map.ofArray
+                let oldList = md.loc |> Array.filter (fun (l, _) -> Array.contains l langs)
+                let embeddedMap = oldList |> Map.ofArray
+
+                let res =
+                    Map.fold
+                        (fun s k v ->
+                            match Map.tryFind k s with
+                            | Some v' -> Map.add k (Set.union v v') s
+                            | None -> Map.add k v s)
+                        newMap
+                        embeddedMap
+
+                res |> Map.toArray
+
 type CompletionCategory =
     | Link = 1uy
     | Global = 2uy

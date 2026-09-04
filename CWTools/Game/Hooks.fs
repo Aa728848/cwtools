@@ -112,7 +112,7 @@ let refreshConfigAfterHook
 
     lookup.allCoreLinks <- Array.concat [| ts; es; ls |] |> List.ofArray
 
-let private addModifiersWithScopes (lookup: Lookup) =
+let addModifiersWithScopes (lookup: Lookup) =
     let modifierOptions (modifier: ActualModifier) =
         let requiredScopes = modifierCategoryManager.SupportedScopes modifier.category
 

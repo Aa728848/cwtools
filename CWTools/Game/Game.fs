@@ -146,24 +146,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         settings.rules |> Option.map (fun r -> r.debugMode) |> Option.defaultValue false
 
     let addEmbeddedLoc langs =
-        match settings.embedded.cachedRuleMetadata with
-        | None -> id
-        | Some md ->
-            fun (newList: (Lang * Set<string>) array) ->
-                let newMap = newList |> Map.ofArray
-                let oldList = md.loc |> Array.filter (fun (l, _) -> Array.contains l langs)
-                let embeddedMap = oldList |> Map.ofArray
-
-                let res =
-                    Map.fold
-                        (fun s k v ->
-                            match Map.tryFind k s with
-                            | Some v' -> Map.add k (Set.union v v') s
-                            | None -> Map.add k v s)
-                        newMap
-                        embeddedMap
-
-                res |> Map.toArray
+        CachedRuleMetadata.MergeEmbeddedLoc settings.embedded.cachedRuleMetadata langs
 
     let validationServices () =
         { resources = resourceManager.Api

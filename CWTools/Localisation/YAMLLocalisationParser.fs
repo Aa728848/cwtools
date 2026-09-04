@@ -159,6 +159,17 @@ module YAMLLocalisationParser =
             member this.Api l = this.Api l
 
 
+    let createLocalisationService (keyToLanguage: string -> 'Lang option) (gameToLang: 'Lang -> Lang) (files: (string * string) list) =
+        YAMLLocalisationService(files, keyToLanguage, gameToLang)
+
+    let createLocalisationServiceFromFolder (gameName: string) (keyToLanguage: string -> 'Lang option) (gameToLang: 'Lang -> Lang) (folder: string) =
+        YAMLLocalisationService
+            { folder = folder
+              gameName = gameName
+              keyToLanguage = keyToLanguage
+              gameToLang = gameToLang }
+
+
 module EU4 =
     open YAMLLocalisationParser
 
@@ -170,15 +181,8 @@ module EU4 =
         | "l_german" -> Some EU4Lang.German
         | _ -> None
 
-    let EU4LocalisationService (files: (string * string) list) =
-        YAMLLocalisationService(files, keyToLanguage, EU4)
-
-    let EU4LocalisationServiceFromFolder (folder: string) =
-        YAMLLocalisationService
-            { folder = folder
-              gameName = "Europa Universalis IV"
-              keyToLanguage = keyToLanguage
-              gameToLang = EU4 }
+    let EU4LocalisationService files = createLocalisationService keyToLanguage EU4 files
+    let EU4LocalisationServiceFromFolder folder = createLocalisationServiceFromFolder "Europa Universalis IV" keyToLanguage EU4 folder
 
 module HOI4 =
     open YAMLLocalisationParser
@@ -196,15 +200,8 @@ module HOI4 =
         | "l_japanese" -> Some HOI4Lang.Japanese
         | _ -> None
 
-    let HOI4LocalisationService (files: (string * string) list) =
-        YAMLLocalisationService(files, keyToLanguage, HOI4)
-
-    let HOI4LocalisationServiceFromFolder (folder: string) =
-        YAMLLocalisationService
-            { folder = folder
-              gameName = "Hearts of Iron IV"
-              keyToLanguage = keyToLanguage
-              gameToLang = HOI4 }
+    let HOI4LocalisationService files = createLocalisationService keyToLanguage HOI4 files
+    let HOI4LocalisationServiceFromFolder folder = createLocalisationServiceFromFolder "Hearts of Iron IV" keyToLanguage HOI4 folder
 
 module STL =
     open YAMLLocalisationParser
@@ -223,15 +220,8 @@ module STL =
         | "l_korean" -> Some STLLang.Korean
         | _ -> None
 
-    let STLLocalisationService (files: (string * string) list) =
-        YAMLLocalisationService(files, keyToLanguage, STL)
-
-    let STLLocalisationServiceFromFolder (folder: string) =
-        YAMLLocalisationService
-            { folder = folder
-              gameName = "Stellaris"
-              keyToLanguage = keyToLanguage
-              gameToLang = STL }
+    let STLLocalisationService files = createLocalisationService keyToLanguage STL files
+    let STLLocalisationServiceFromFolder folder = createLocalisationServiceFromFolder "Stellaris" keyToLanguage STL folder
 
 module IR =
     open YAMLLocalisationParser
@@ -246,15 +236,8 @@ module IR =
         | "l_russian" -> Some IRLang.Russian
         | _ -> None
 
-    let IRLocalisationService (files: (string * string) list) =
-        YAMLLocalisationService(files, keyToLanguage, IR)
-
-    let IRLocalisationServiceFromFolder (folder: string) =
-        YAMLLocalisationService
-            { folder = folder
-              gameName = "Imperator"
-              keyToLanguage = keyToLanguage
-              gameToLang = IR }
+    let IRLocalisationService files = createLocalisationService keyToLanguage IR files
+    let IRLocalisationServiceFromFolder folder = createLocalisationServiceFromFolder "Imperator" keyToLanguage IR folder
 
 module Custom =
     open YAMLLocalisationParser
@@ -272,15 +255,8 @@ module Custom =
         | "l_default" -> Some CustomLang.Default
         | _ -> None
 
-    let CustomLocalisationService (files: (string * string) list) =
-        YAMLLocalisationService(files, keyToLanguage, Custom)
-
-    let CustomLocalisationServiceFromFolder (folder: string) =
-        YAMLLocalisationService
-            { folder = folder
-              gameName = "Custom"
-              keyToLanguage = keyToLanguage
-              gameToLang = Custom }
+    let CustomLocalisationService files = createLocalisationService keyToLanguage Custom files
+    let CustomLocalisationServiceFromFolder folder = createLocalisationServiceFromFolder "Custom" keyToLanguage Custom folder
 
 module CK3 =
     open YAMLLocalisationParser
@@ -296,15 +272,8 @@ module CK3 =
         | "l_korean" -> Some CK3Lang.Korean
         | _ -> None
 
-    let CK3LocalisationService (files: (string * string) list) =
-        YAMLLocalisationService(files, keyToLanguage, CK3)
-
-    let CK3LocalisationServiceFromFolder (folder: string) =
-        YAMLLocalisationService
-            { folder = folder
-              gameName = "CK3"
-              keyToLanguage = keyToLanguage
-              gameToLang = CK3 }
+    let CK3LocalisationService files = createLocalisationService keyToLanguage CK3 files
+    let CK3LocalisationServiceFromFolder folder = createLocalisationServiceFromFolder "CK3" keyToLanguage CK3 folder
 
 module VIC3 =
     open YAMLLocalisationParser
@@ -324,15 +293,8 @@ module VIC3 =
         | "l_turkish" -> Some VIC3Lang.Turkish
         | _ -> None
 
-    let VIC3LocalisationService (files: (string * string) list) =
-        YAMLLocalisationService(files, keyToLanguage, VIC3)
-
-    let VIC3LocalisationServiceFromFolder (folder: string) =
-        YAMLLocalisationService
-            { folder = folder
-              gameName = "VIC3"
-              keyToLanguage = keyToLanguage
-              gameToLang = VIC3 }
+    let VIC3LocalisationService files = createLocalisationService keyToLanguage VIC3 files
+    let VIC3LocalisationServiceFromFolder folder = createLocalisationServiceFromFolder "VIC3" keyToLanguage VIC3 folder
 
 module EU5 =
     open YAMLLocalisationParser
@@ -352,12 +314,5 @@ module EU5 =
         | "l_turkish" -> Some EU5Lang.Turkish
         | _ -> None
 
-    let EU5LocalisationService (files: (string * string) list) =
-        YAMLLocalisationService(files, keyToLanguage, EU5)
-
-    let EU5LocalisationServiceFromFolder (folder: string) =
-        YAMLLocalisationService
-            { folder = folder
-              gameName = "EU5"
-              keyToLanguage = keyToLanguage
-              gameToLang = EU5 }
+    let EU5LocalisationService files = createLocalisationService keyToLanguage EU5 files
+    let EU5LocalisationServiceFromFolder folder = createLocalisationServiceFromFolder "EU5" keyToLanguage EU5 folder
