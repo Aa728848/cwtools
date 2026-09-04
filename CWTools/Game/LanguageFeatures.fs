@@ -39,9 +39,7 @@ module LanguageFeatures =
     let private scriptedEffectParamMapCacheOrder = Collections.Generic.LinkedList<string>()
 
     let internal normaliseScriptedEffectParamMapCacheKey (filepath: string) =
-        let fullPath =
-            try Path.GetFullPath filepath
-            with _ -> filepath
+        let fullPath = safeGetFullPath filepath
         let normalised = fullPath.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar)
         if OperatingSystem.IsWindows() then normalised.ToUpperInvariant() else normalised
 
@@ -110,6 +108,27 @@ module LanguageFeatures =
 
     let private entityScriptedParamMap (e: Entity) (lazyObj: obj) : Map<string, string list> =
         getOrBuildScriptedEffectParamMapCacheValue e.filepath lazyObj (fun () -> buildScriptedEffectParamMap e)
+
+    let internal getGlobalScriptVariables (resourceManager: IResourceAPI<_>) =
+        try
+            resourceManager.AllEntities()
+            |> Seq.choose (fun struct (e, _) ->
+                if e.filepath.Contains("scripted_variables", StringComparison.OrdinalIgnoreCase) ||
+                   e.logicalpath.Contains("scripted_variables", StringComparison.OrdinalIgnoreCase) then
+                    Some e.entity
+                else None)
+            |> Seq.collect (fun entity ->
+                try
+                    CWTools.Validation.Stellaris.STLValidation.getDefinedVariables entity
+                with ex ->
+                    logDiag $"getDefinedVariables failed: %s{ex.Message}"
+                    [])
+            |> Seq.filter (fun v -> not (v.StartsWith("@[")) && not (v.StartsWith(@"@\[")))
+            |> Seq.distinct
+            |> Seq.toList
+        with ex ->
+            logDiag $"getGlobalScriptVariables failed: %s{ex.Message}"
+            []
 
     let private isSameText (left: string) (right: string) =
         String.Equals(left, right, StringComparison.Ordinal)
@@ -509,21 +528,9 @@ module LanguageFeatures =
                         log (sprintf "tryExpressionCompletion: completing scripted_variable (match: %b, content: '%s')" varMatch.Success exprContent)
 
                         // 获取所有 scripted_variables
-                        let allEntities = resourceManager.Api.AllEntities()
                         let scriptedVars =
-                            allEntities
-                            |> Seq.filter (fun struct (e, _) ->
-                                e.filepath.Contains("common/scripted_variables") ||
-                                e.filepath.Contains("common\\scripted_variables") ||
-                                e.logicalpath.Contains("common/scripted_variables") ||
-                                e.logicalpath.Contains("common\\scripted_variables"))
-                            |> Seq.collect (fun struct (e, _) ->
-                                try
-                                    CWTools.Validation.Stellaris.STLValidation.getDefinedVariables e.entity
-                                with _ -> [])
-                            |> Seq.filter (fun varName -> not (varName.StartsWith("@[")) && not (varName.StartsWith(@"@\["))) // 过滤掉表达式
-                            |> Seq.distinct
-                            |> Seq.toArray
+                            getGlobalScriptVariables resourceManager.Api
+                            |> List.toArray
 
                         if scriptedVars.Length > 0 then
                             let completionItems =
@@ -652,12 +659,17 @@ module LanguageFeatures =
                         // ALL paths MUST return Some to block wrong regular completion.
 
                         let extractParamsFromFile (filepath: string) =
-                            try
-                                let fileContent = System.IO.File.ReadAllText(filepath)
-                                let regex = System.Text.RegularExpressions.Regex(@"\$([A-Za-z_][A-Za-z0-9_]*)\$")
-                                let matches = regex.Matches(fileContent)
-                                [ for m in matches -> m.Groups.[1].Value ] |> List.distinct
-                            with _ -> []
+                            match resourceManager.Api.GetEntityByFilePath filepath with
+                            | Some struct (e, _) -> Compute.Jomini.getScriptedEffectParamsEntity e
+                            | None ->
+                                try
+                                    let fileContent = System.IO.File.ReadAllText(filepath)
+                                    let regex = System.Text.RegularExpressions.Regex(@"\$([A-Za-z_][A-Za-z0-9_]*)\$")
+                                    let matches = regex.Matches(fileContent)
+                                    [ for m in matches -> m.Groups.[1].Value ] |> List.distinct
+                                with ex ->
+                                    logDiag $"extractParamsFromFile failed for {filepath}: %s{ex.Message}"
+                                    []
 
                         let extractScriptRelPath (logicalpath: string) =
                             let pathLower = logicalpath.ToLowerInvariant()
@@ -1172,7 +1184,8 @@ module LanguageFeatures =
                                             System.Text.RegularExpressions.RegexOptions.IgnoreCase)
 
                                     regex.IsMatch(normTarget)
-                                with _ ->
+                                with ex ->
+                                    logDiag $"regex matching failed for normTarget '%s{normTarget}': %s{ex.Message}"
                                     false
                             else
                                 false
@@ -1205,11 +1218,22 @@ module LanguageFeatures =
                         let findCallerIn (entities: struct (Entity * 'a) seq) (targetName: string) =
                             entities
                             |> Seq.tryPick (fun struct (e, _) ->
-                                try
-                                    let fileContent = System.IO.File.ReadAllText(e.filepath)
-                                    let allowPathDefaults = not (isInlineScriptEntity e)
-                                    if fileContainsInlineRef allowPathDefaults targetName fileContent then Some e else None
-                                with _ -> None)
+                                let allowPathDefaults = not (isInlineScriptEntity e)
+                                let rec entityHasInlineRef (node: Node) =
+                                    node.Leaves
+                                    |> Seq.exists (fun l ->
+                                        (l.Key == "inline_script" || l.Key == "script")
+                                        && inlineReferenceMatches allowPathDefaults targetName (l.Value.ToString()))
+                                    || node.Nodes |> Seq.exists entityHasInlineRef
+                                if entityHasInlineRef e.rawEntity then
+                                    Some e
+                                else
+                                    try
+                                        let fileContent = System.IO.File.ReadAllText(e.filepath)
+                                        if fileContainsInlineRef allowPathDefaults targetName fileContent then Some e else None
+                                    with ex ->
+                                        logDiag $"findCallerIn failed for {e.filepath}: %s{ex.Message}"
+                                        None)
 
                         // 递归查找根调用者（非 inline_script 的调用者）
                         // 当直接调用者是另一个 inline_script 文件时，继续向上追溯
@@ -1290,22 +1314,7 @@ module LanguageFeatures =
                         | Some callerEntity ->
                             log (sprintf "completion: found caller '%s'" callerEntity.filepath)
                             // 收集全局变量
-                            let globalVars =
-                                try
-                                    resourceManager.Api.AllEntities()
-                                    |> Seq.choose (fun struct (e, _) ->
-                                        if e.filepath.Contains("common/scripted_variables") ||
-                                           e.filepath.Contains("common\\scripted_variables") ||
-                                           e.logicalpath.Contains("common/scripted_variables") ||
-                                           e.logicalpath.Contains("common\\scripted_variables") then
-                                            Some e.entity
-                                        else
-                                            None)
-                                    |> Seq.collect CWTools.Validation.Stellaris.STLValidation.getDefinedVariables
-                                    |> Seq.filter (fun varName -> not (varName.StartsWith("@[")) && not (varName.StartsWith(@"@\["))) // 过滤掉表达式
-                                    |> Seq.distinct
-                                    |> Seq.toList
-                                with _ -> []
+                            let globalVars = getGlobalScriptVariables resourceManager.Api
 
                             let findScriptLine allowPathDefaults (fileContent: string) (_targetScriptFileName: string) (targetScriptName: string) =
                                 inlineReferences fileContent
@@ -1320,15 +1329,24 @@ module LanguageFeatures =
                                 allEntities
                                 |> Seq.tryPick (fun struct (e, _) ->
                                     if isInlineScriptEntity e then
-                                        try
-                                            let content = System.IO.File.ReadAllText(e.filepath)
-
-                                            if fileContainsInlineRef false scriptName content then
-                                                Some e
-                                            else
+                                        let rec entityHasInlineRef (node: Node) =
+                                            node.Leaves
+                                            |> Seq.exists (fun l ->
+                                                (l.Key == "inline_script" || l.Key == "script")
+                                                && inlineReferenceMatches false scriptName (l.Value.ToString()))
+                                            || node.Nodes |> Seq.exists entityHasInlineRef
+                                        if entityHasInlineRef e.rawEntity then
+                                            Some e
+                                        else
+                                            try
+                                                let content = System.IO.File.ReadAllText(e.filepath)
+                                                if fileContainsInlineRef false scriptName content then
+                                                    Some e
+                                                else
+                                                    None
+                                            with ex ->
+                                                logDiag $"findDirectInlineCallerReferencingTarget failed for {e.filepath}: %s{ex.Message}"
                                                 None
-                                        with _ ->
-                                            None
                                     else
                                         None)
 
@@ -1371,7 +1389,9 @@ module LanguageFeatures =
                                             info.GetInfo(callerPos, rawCallerEntity) |> Option.map fst
                                         else
                                             None
-                                    with _ -> None
+                                    with ex ->
+                                        logDiag $"callerScopeCtxOpt failed: %s{ex.Message}"
+                                        None
                                 match completionService with
                                 | Some completion ->
                                     // Compute caller's structural rule path.
@@ -1436,7 +1456,9 @@ module LanguageFeatures =
                                                             not (key = "inline_script" || key = "script"))
                                                     rootPrefix @ intermediateToTargetPath
                                                 | None -> []
-                                        with _ -> []
+                                        with ex ->
+                                            logDiag $"compute callerRulePath failed: %s{ex.Message}"
+                                            []
                                     completion.CompleteInlineScript(pos, inlineEntity, callerEntity, callerScopeCtxOpt, Some globalVars, callerRulePath)
                                 | None -> []
                             | None ->
@@ -1457,28 +1479,14 @@ module LanguageFeatures =
                                 |> Array.map (fun param ->
                                     CompletionResponse.Detailed(param, Some($"Parameter: {param}"), None, CompletionCategory.Variable))
                                 |> Array.toList
-                            with ex -> []
+                            with ex ->
+                                logDiag $"extract basic params failed for %s{filepath}: %s{ex.Message}"
+                                []
                     | _ ->
                         log "completion: missing required info for inline_script"
                         []
                 else
-                    // 辅助函数:从 ResourceManager 已缓存的实体中收集全局 scripted variables
-                    // 避免文件 I/O 和重复解析，直接使用已加载的实体数据
-                    let getGlobalScriptVars () =
-                        try
-                            resourceManager.Api.AllEntities()
-                            |> Seq.choose (fun struct (e, _) ->
-                                if e.filepath.Contains("scripted_variables", StringComparison.OrdinalIgnoreCase) ||
-                                   e.logicalpath.Contains("scripted_variables", StringComparison.OrdinalIgnoreCase) then
-                                    Some e.entity
-                                else None)
-                            |> Seq.collect CWTools.Validation.Stellaris.STLValidation.getDefinedVariables
-                            |> Seq.filter (fun v -> not (v.StartsWith("@[")) && not (v.StartsWith(@"@\[")))
-                            |> Seq.distinct
-                            |> Seq.toList
-                        with _ -> []
-                    
-                    let globalVars = getGlobalScriptVars ()
+                    let globalVars = getGlobalScriptVariables resourceManager.Api
                     
                     let completeWithEntity (completion: CompletionService) (infoOpt: InfoService option) (e: Entity) =
                         match infoOpt with
@@ -1577,7 +1585,8 @@ module LanguageFeatures =
                         |> Seq.cast<System.Text.RegularExpressions.Match>
                         |> Seq.tryPick (fun m ->
                             if col >= m.Index && col <= m.Index + m.Length then Some m.Value else None)
-                with _ ->
+                with ex ->
+                    logDiag $"scriptedVariableAtCursor failed: %s{ex.Message}"
                     None
 
             let scriptedVariableFallback variableName =
@@ -1677,7 +1686,9 @@ module LanguageFeatures =
                                     |> Option.map (fun e -> mkRange e.filepath pos0 pos0)
                             else None
                         else None
-                with _ -> None
+                with ex ->
+                    logDiag $"inlineScriptFallback failed: %s{ex.Message}"
+                    None
 
             // Fallback 2: For inline_script files, extract word at cursor and search type registry
             let wordLookupFallback () =
@@ -1707,7 +1718,9 @@ module LanguageFeatures =
                                 |> Seq.tryPick (fun (_, infos) ->
                                     infos |> Array.tryPick (fun tdi ->
                                         if tdi.id = word then Some tdi.range else None))
-                    with _ -> None
+                    with ex ->
+                        logDiag $"wordLookupFallback failed: %s{ex.Message}"
+                        None
 
             let scriptValueFallback () =
                 try
@@ -1759,7 +1772,9 @@ module LanguageFeatures =
                                         |> Option.map (fun tdi -> tdi.range)
                                     else
                                         None)
-                with _ -> None
+                with ex ->
+                    logDiag $"scriptValueFallback failed: %s{ex.Message}"
+                    None
 
             match scriptedVariableAtCursor with
             | Some variableName -> scriptedVariableFallback variableName
@@ -1969,7 +1984,9 @@ module LanguageFeatures =
                             | _ -> None
                         else None))
                 |> Map.ofSeq
-            with _ -> Map.empty
+            with ex ->
+                logDiag $"getVarValues failed: %s{ex.Message}"
+                Map.empty
 
         // Format decimal: remove trailing zeros
         let fmtDecimal (d: decimal) =
@@ -2168,7 +2185,9 @@ module LanguageFeatures =
                                             let allResults = String.concat "\n\n---\n\n" resultStrs
                                             foundScript <- Some (path, allResults)
                                 | None -> ()
-                            with _ -> ()
+                            with ex ->
+                                logDiag $"evaluate inline script expressions failed: %s{ex.Message}"
+                                ()
                         | None -> ()
                     i <- i - 1
 
@@ -2429,7 +2448,9 @@ module LanguageFeatures =
                                 let preview = lines |> Array.take maxLines |> String.concat "\n"
                                 if lines.Length > maxLines then preview + "\n..."
                                 else preview
-                            with _ -> ""
+                            with ex ->
+                                logDiag $"previewText read failed for %s{entity.filepath}: %s{ex.Message}"
+                                ""
                         | None -> ""
                     let displayPath = fNorm.Replace("/", " / ")
                     f, "inline_script_file", [{ key = "path"; value = displayPath }; { key = "preview"; value = previewText }]

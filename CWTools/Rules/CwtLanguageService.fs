@@ -842,7 +842,9 @@ module CwtLanguageService =
                             |> List.sortBy (fun item -> item.label)
                         | _ -> []
                     else []
-        with _ -> []
+        with ex ->
+            logWarning $"CwtLanguageService.completeAt failed for {filePath}: {ex.Message}"
+            []
 
     /// Compatibility entry point for callers that only have declarations.
     let completeAtWithProject

@@ -602,8 +602,10 @@ module CommonValidation =
                 | [] -> OK
                 | errors -> Invalid(System.Guid.NewGuid(), errors))
         with ex ->
-            // If validation fails, return OK to not break the entire validation pipeline
-            OK
+            Invalid(
+                System.Guid.NewGuid(),
+                [ invManual (ErrorCodes.CustomError $"Internal error in scripted variable validation: {ex.Message}" Severity.Warning) n.Position currentFilePath None ]
+            )
 
     let private isInsideLogicalOrBranch (root: Node) (target: range) =
         let rec loop insideOr (node: Node) =

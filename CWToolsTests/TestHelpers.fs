@@ -3,7 +3,7 @@ module TestHelpers
 
 open System.Collections.Frozen
 open Expecto
-open LoggingTestHelper
+open LogCaptureTest
 open FParsec
 open CWTools.Common
 open CWTools.Process
@@ -759,10 +759,11 @@ let testFolder folder testsname config configValidate configfile configOnly conf
 
                 (hoi4 :> IGame), errors, testVals, completionTests, hoi4.ParserErrors()
 
-        let inner (file: string, expected: range list) =
-            if (Path.GetExtension file) = ".gui" || (Path.GetExtension file) = ".gfx" then
+        let inner (file: string, nodekeys: range list) =
+            if file.Contains "noerr" then
                 ()
             else
+                let expected = nodekeys |> List.map (fun nk -> "", nk)
                 let fileErrors = errors |> List.filter (fun (_, f) -> f.FileName = file)
                 let fileErrorPositions = fileErrors
                 let missing = remove_all_by expected fileErrorPositions snd

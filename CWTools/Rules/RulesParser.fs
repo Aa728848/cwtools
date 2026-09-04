@@ -343,7 +343,8 @@ module private RulesParserImpl =
                     match minText, nums.[1] with
                     | min, "inf" -> (int min), RulesParserConstants.CardinalityDefaultMaximum, strictMin
                     | min, max -> (int min), (int max), strictMin
-                with _ ->
+                with ex ->
+                    logWarning $"Failed to parse cardinality '%s{c}': %s{ex.Message}"
                     1, 1, true
             | None -> 1, 1, true
 

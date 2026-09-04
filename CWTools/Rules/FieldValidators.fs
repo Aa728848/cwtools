@@ -945,7 +945,8 @@ module internal FieldValidators =
                     $"^(?:%s{wildcardRegex kind pattern})$",
                     options
                 )
-            with _ ->
+            with ex ->
+                logDiag $"Wildcard regex matching failed for pattern '%s{pattern}': %s{ex.Message}"
                 false
 
     let private checkLooseExpressionNE (ids: StringTokens) =
@@ -1849,7 +1850,8 @@ module internal FieldValidators =
                        pattern,
                        RegexOptions.IgnoreCase ||| RegexOptions.CultureInvariant
                    )
-               with _ ->
+               with ex ->
+                   logDiag $"Regex match failed for pattern '%s{pattern}': %s{ex.Message}"
                    false
            | None -> true
         && match td.keyPrefix, keyPrefix with

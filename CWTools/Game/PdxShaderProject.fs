@@ -8,6 +8,7 @@ open System.Security.Cryptography
 open System.Text
 open PdxShaderSyntax
 open PdxShaderPreprocessor
+open CWTools.Utilities.Position
 
 /// Document snapshots, origin precedence and per-root compile units for the FX shader DSL.
 ///
@@ -93,12 +94,7 @@ module PdxShaderProject =
     /// Full path with normalized separators, case-folded on Windows. Used only as a key;
     /// the original casing is kept in ShaderSnapshot.displayPath.
     let canonicalizePath (path: string) =
-        let full =
-            try
-                Path.GetFullPath path
-            with _ ->
-                path
-
+        let full = safeGetFullPath path
         full.Replace('\\', '/').TrimEnd('/') |> caseFold
 
     /// Logical-path key: forward slashes, no leading slash, case-folded on Windows.
@@ -218,11 +214,7 @@ module PdxShaderProject =
         (originRank snapshot.origin, dependencyOrder snapshot.origin, snapshot.canonicalPath)
 
     let createSnapshot origin filepath logicalpath text =
-        let full =
-            try
-                Path.GetFullPath filepath
-            with _ ->
-                filepath
+        let full = safeGetFullPath filepath
 
         let safeText = if isNull text then "" else text
 

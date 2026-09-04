@@ -20,6 +20,21 @@ module Utils =
     let inline (==) (x: string) (y: string) =
         x.Equals(y, StringComparison.OrdinalIgnoreCase)
 
+    let isWindows = OperatingSystem.IsWindows()
+
+    /// Normalises file path: converts separators to '/', resolves relative paths safely,
+    /// and case-folds to lowercase on Windows.
+    let normaliseFilePath (path: string) =
+        let p =
+            if Path.IsPathRooted(path) then
+                path.Replace('\\', '/')
+            else
+                try
+                    FileInfo(path).FullName.Replace('\\', '/')
+                with _ ->
+                    path.Replace('\\', '/')
+        if isWindows then p.ToLowerInvariant() else p
+
     type LocKeySet = HashSet<string>
 
     type LogLevel =

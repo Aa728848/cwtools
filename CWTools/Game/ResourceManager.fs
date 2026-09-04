@@ -1722,19 +1722,6 @@ type ResourceManager<'T when 'T :> ComputedData>
     let updateFile file =
         file |> prepareFile |> commitPreparedFile
 
-    let isWindows = OperatingSystem.IsWindows()
-
-    let normaliseFilePath (path: string) =
-        let p =
-            if Path.IsPathRooted(path) then
-                path.Replace('\\', '/')
-            else
-                try
-                    FileInfo(path).FullName.Replace('\\', '/')
-                with _ ->
-                    path.Replace('\\', '/')
-        if isWindows then p.ToLowerInvariant() else p
-
     let tryFindStoredFileKey (filepath: string) =
         let target = normaliseFilePath filepath
         fileMap.Keys

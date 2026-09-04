@@ -1447,21 +1447,6 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         rulesDataGenerated <- refreshedRulesDataGenerated
         ruleValidationService, infoService, completionService
 
-    let isWindows = System.OperatingSystem.IsWindows()
-
-    let normaliseFilePath (path: string) =
-        // Resource paths are absolute: skip the FileInfo allocation on the hot path;
-        // FileInfo is only needed to resolve genuinely relative paths.
-        let p =
-            if Path.IsPathRooted(path) then
-                path.Replace('\\', '/')
-            else
-                try
-                    FileInfo(path).FullName.Replace('\\', '/')
-                with _ ->
-                    path.Replace('\\', '/')
-        if isWindows then p.ToLowerInvariant() else p
-
     let resourcesExcluding (files: string list) =
         let fileSet = files |> List.map normaliseFilePath |> Set.ofList
         let readOnly () = invalidOp "Detached deletion resources are read-only"

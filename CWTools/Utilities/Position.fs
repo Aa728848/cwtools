@@ -302,12 +302,18 @@ let memoize (keyFunction: 'a -> 'b) (memFunction: 'a -> 'c) =
             temp
 
 
-let mkRangePath (f: string) =
-    if Path.IsPathRooted f then
+let safeGetFullPath (f: string) =
+    if String.IsNullOrEmpty f then
+        f
+    else
         try
             Path.GetFullPath f
         with _ ->
             f
+
+let mkRangePath (f: string) =
+    if Path.IsPathRooted f then
+        safeGetFullPath f
     else
         f
 

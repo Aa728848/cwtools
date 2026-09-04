@@ -8,6 +8,7 @@ open CWTools.Common
 open Files
 open System.Text
 open CWTools.Utilities.Utils
+open CWTools.Utilities.Position
 open System.IO
 open System.Collections.Generic
 open CWTools.Rules
@@ -252,9 +253,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             File.ReadAllText(filepath, fallbackencoding)
 
     let normaliseIncrementalPath path =
-        let resolved =
-            try Path.GetFullPath path
-            with _ -> path
+        let resolved = safeGetFullPath path
         if OperatingSystem.IsWindows() then resolved.ToLowerInvariant() else resolved
 
     let incrementalTypeKeysForFiles (files: string list) =
@@ -637,11 +636,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         log $"Interactive update file time: %i{timer.ElapsedMilliseconds}"
         res
 
-    let normaliseComparableFilePath filepath =
-        let fullPath =
-            try FileInfo(filepath).FullName.Replace('\\', '/')
-            with _ -> filepath.Replace('\\', '/')
-        if System.OperatingSystem.IsWindows() then fullPath.ToLowerInvariant() else fullPath
+    let normaliseComparableFilePath = normaliseFilePath
 
     let entityByFilePathWithFallback filepath =
         match resourceManager.Api.GetEntityByFilePath filepath with
