@@ -383,9 +383,6 @@ module STLGameFunctions =
             addGeneratedModifiers current (EntitySet(resources.AllEntities()))
             |> List.toArray
 
-    // let updateModifiers(game : GameObject) =
-    // game.Lookup.coreModifiers <- addGeneratedModifiers game.Settings.embedded.modifiers (EntitySet (game.Resources.AllEntities()))
-
     let updateTechnologies (game: GameObject) =
         game.Lookup.technologies <- getTechnologies (EntitySet(game.Resources.AllEntities()))
 

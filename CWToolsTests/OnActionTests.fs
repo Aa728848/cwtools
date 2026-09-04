@@ -311,20 +311,6 @@ on_destroy_planet_with_GE_PLANET_KILLER_DELUGE_unqueued = {
 
 
 
-// [<Tests>]
-// let logTests =
-//     testList "logs" [
-//         testWithCapturedLogs "logFile" <| fun () ->
-//             let logs = parseLogsFile "./testfiles/parsertests/setup.log"
-//             match logs with
-//             |Success((s, m), _, _) ->
-//                 s |> List.iter (printfn "%A")
-//                 m |> List.iter (printfn "%A")
-//                 m |> List.map (fun x -> x.categories) |> List.distinct |> List.sort |> printfn "%A"
-//             |Failure(e ,_, _) -> Expect.isFalse true e
-//     ]
-
-
 [<Tests>]
 let stagedRefreshTests =
     testList

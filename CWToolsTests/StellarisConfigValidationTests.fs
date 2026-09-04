@@ -1677,22 +1677,6 @@ let testsConfig =
                   |> Seq.sort
 
               Expect.sequenceEqual suggestions expected "Completion should match" ]
-//
-// [<Tests>]
-// let miscTests =
-//     testList "miscTests" [
-//         ftestWithCapturedLogs "concurrentParse" <| fun () ->
-//             let filepath = "./testfiles/configtests/config/test.cwt"
-//             let filetext = File.ReadAllText filepath
-//             let inner i =
-//                 printfn "%A" i
-//                 match CKParser.parseString filetext filepath with
-//                 | Success (statements, _, _) ->
-//                     simpleProcess.ProcessNode() filepath (mkZeroFile filepath) statements |> ignore
-//                 | _ -> ()
-//             Array.create 10000 0 |> Array.Parallel.iteri (fun i _ -> inner i)
-//
-//     ]
 
 [<Tests>]
 let dynamicParameterScanTests =

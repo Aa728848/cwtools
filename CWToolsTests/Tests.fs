@@ -113,27 +113,6 @@ let getNodeComments (clause: IClause) =
     let fCombine = (@)
     clause |> (foldClause2 fNode fCombine [])
 
-// [<Tests>]
-// let testsConfig =
-//     testList "testFindComments" [
-//         ftestWithCapturedLogs "basic" <| fun () ->
-//             let testString = """
-// #error
-// test = test
-// #error
-// test2 = test
-// test3 = test
-// test
-// """
-//             let parsed = CWTools.Parser.CKParser.parseString testString "test"
-//             match parsed with
-//             |Success(res,_,_) ->
-//                 let node = (STLProcess.shipProcess.ProcessNode() "root" (range.Zero) res)
-//                 let comments = getNodeComments (node)
-//                 eprintfn "%A" comments
-//             |_ -> ()
-//     ]
-
 let getCompletionTests (clause: IClause) =
     let findComments t s (a: Child) =
         match (s, a) with

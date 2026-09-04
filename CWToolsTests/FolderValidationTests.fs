@@ -41,9 +41,6 @@ let folderTests =
     testList
         "validation"
         [ testFolder "./testfiles/validationtests/gfxtests" "gfx" false false "" false false 1 "en-GB"
-          // testFolder "./testfiles/validationtests/scopetests" "scopes" false "" false false "en-GB"
-          // testFolder "./testfiles/validationtests/variabletests" "variables" true false "./testfiles/stellarisconfig" false false "en-GB"
-          // testFolder "./testfiles/validationtests/modifiertests" "modifiers" false "" false false "en-GB"
           testFolder
               "./testfiles/validationtests/eventtests"
               "events"
@@ -54,7 +51,6 @@ let folderTests =
               false
               1
               "en-GB"
-          // testFolder "./testfiles/validationtests/weighttests" "weights" false "" false false "en-GB"
           testFolder
               "./testfiles/multiplemodtests"
               "multiple"
@@ -84,14 +80,8 @@ let folderTests =
               false
               false
               1
-              "ru-RU"
-          // yield! testSubdirectories "./testfiles/configtests/rulestests"
-          // testFolder "./testfiles/configtests/rulestests" "detailedconfigrules" true "./testfiles/configtests/rulestests/rules.cwt" true "en-GB"
-          ]
-//[<Tests>]
-//let stlAllSubfolderTests = testList "validation all stl" (testSubdirectories true "./testfiles/configtests/rulestests/All" |> List.ofSeq)
-//[<Tests>]
-//let irAllSubfolderTests = testList "validation all ir" (testSubdirectories false "./testfiles/configtests/rulestests/All" |> List.ofSeq)
+              "ru-RU" ]
+
 [<Tests>]
 let stlSubfolderTests =
     testList "validation stl" (testSubdirectories 1 true "./testfiles/configtests/rulestests/STL" |> List.ofSeq)

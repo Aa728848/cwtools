@@ -1,7 +1,0 @@
-
-
-on_monthly_pulse = {
-	events = {
-		ccrebel_perf.1
-	}
-}

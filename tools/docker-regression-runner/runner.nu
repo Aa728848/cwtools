@@ -54,8 +54,8 @@ def main [
         }
     }
 
-    let r_hash = "0"
-    let g_hash = "0"
+    let r_hash = (safe_hash $rules_path)
+    let g_hash = (safe_hash $game_path)
     let result_path = ($out_dir_base | path join $"($full_hash)_($r_hash)_($g_hash)")
 
     # --- CHECK IF RESULTS ALREADY EXIST ---
