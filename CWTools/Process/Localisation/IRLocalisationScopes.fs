@@ -55,23 +55,4 @@ module IR =
           "FromFromFromFrom", from >> from >> from >> from ]
 
     let locStaticSettings commands variableCommands (localisationLinks: (string * Scope list * Scope) list) =
-        let scopedLocEffects =
-            localisationLinks
-            |> List.map (fun (key, inputs, outputs) ->
-                ScopedEffect(key, inputs, outputs, EffectType.Link, defaultDesc, "", true))
-
-        let scopedLocEffectsMap =
-            if localisationLinks |> List.isEmpty then
-                scopedLocEffectsMap ()
-            else
-                EffectMap.FromList(scopedLocEffects)
-
-        { questionMarkVariable = true
-          usesVariableCommands = false
-          parameterVariables = true
-          locPrimaryScopes = locPrimaryScopes ()
-          scopedLocEffectsMap = scopedLocEffectsMap
-          commands = commands
-          variableCommands = variableCommands }
-
-// let localisationCommandValidator commands variableCommands = createLegacyLocalisationCommandValidator (locStaticSettings commands variableCommands)
+        ChangeLocScope.createDefaultLegacyLocStaticSettings (locPrimaryScopes ()) (scopedLocEffectsMap ()) commands variableCommands localisationLinks

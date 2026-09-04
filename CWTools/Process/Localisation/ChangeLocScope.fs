@@ -312,8 +312,31 @@ module ChangeLocScope =
                 | res -> res
             // TODO: Better scopecontext to starting datatype
             keys |> List.fold locKeyFolder (Start source)
-// match res with
-// | Start _ -> LocContextResult.Start source
-// | NewDataType newDataType -> LocContextResult.LocNotFound newDataType
-// | Found endDataType -> LocContextResult.Found
-// keys |> List.fold (fun r k -> match r with | (Found (r, s) , f) -> inner ((f, r, s)) k |LocNotFound s, _ -> LocNotFound s, false) (Found ("this", []), true) |> fst
+
+    let [<Literal>] private defaultDesc = "Scope (/context) switch"
+
+    let createDefaultLegacyLocStaticSettings
+        (locPrimaryScopes: (string * (ScopeContext * bool -> ScopeContext * bool)) list)
+        (scopedLocEffectsMap: EffectMap)
+        commands
+        variableCommands
+        (localisationLinks: (string * Scope list * Scope) list)
+        : LegacyLocStaticSettings =
+        let scopedLocEffects =
+            localisationLinks
+            |> List.map (fun (key, inputs, outputs) ->
+                ScopedEffect(key, inputs, outputs, EffectType.Link, defaultDesc, "", true))
+
+        let effectsMap =
+            if localisationLinks |> List.isEmpty then
+                scopedLocEffectsMap
+            else
+                EffectMap.FromList(scopedLocEffects)
+
+        { questionMarkVariable = true
+          usesVariableCommands = false
+          parameterVariables = true
+          locPrimaryScopes = locPrimaryScopes
+          scopedLocEffectsMap = effectsMap
+          commands = commands
+          variableCommands = variableCommands }

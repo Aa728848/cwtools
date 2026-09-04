@@ -108,6 +108,20 @@ The test suite uses `CWToolsTests/testfiles/stellarisconfig` as a frozen offline
 
 测试套件以 `CWToolsTests/testfiles/stellarisconfig` 作为离线冻结测试基线。如需针对活规则仓库（例如 `submodules/cwtools-stellaris-config`）运行测试，可设置环境变量 `CWTEST_STELLARIS_CONFIG` 指向最新规则目录。
 
+### Standalone Tooling & Diagnostic Harnesses / 独立工具与诊断装置
+
+The repository contains several standalone tools and benchmark harnesses preserved for manual diagnostics and profiling:
+- `CWToolsCLI`: Core command-line interface for rule validation and config synchronization (relied on by downstream `tools/rules-sync`).
+- `CWToolsPerformanceCLI`: Standalone profiling harness for benchmarking parse and validation performance on real game folders.
+- `CWToolsScripts`: Legacy helper scripts for rule and localization data extraction.
+- `tools/docker-regression-runner`: Containerized regression test environment for validating changes against clean vanilla environments.
+
+本仓库包含若干用于手动诊断和性能分析的独立工具与测试装置：
+- `CWToolsCLI`：规则校验与配置同步的核心命令行工具（下游 `tools/rules-sync` 依赖）。
+- `CWToolsPerformanceCLI`：用于对真实游戏目录进行解析与校验基准性能评测的独立测试装置。
+- `CWToolsScripts`：用于规则和本地化数据提取的辅助脚本工程。
+- `tools/docker-regression-runner`：基于容器的回归测试环境，用于在干净的原版游戏环境中验证校验变动。
+
 Commit changes inside this submodule first. Then return to the parent repository
 and commit the updated submodule pointer separately. Do not combine library
 semantics and rules-data updates in one undifferentiated commit.

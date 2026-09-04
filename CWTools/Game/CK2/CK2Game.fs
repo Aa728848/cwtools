@@ -314,42 +314,15 @@ module CK2GameFunctions =
         updateLandedTitles (game)
         updateProvinces (game)
 
-    let createEmbeddedSettings embeddedFiles cachedResourceData (configs: (string * string) list) cachedRuleMetadata =
-        initializeScopesAndModifierCategories configs defaultScopeInputs defaultModifiersInputs
-
-        let ck2Mods = getActualModifiers configs
-
-        let ck2LocCommands =
+    let createEmbeddedSettings embeddedFiles cachedResourceData configs cachedRuleMetadata =
+        createClausewitzEmbeddedSettings
+            defaultScopeInputs
+            defaultModifiersInputs
+            (CWTools.Process.Scopes.CK2.scopedEffects () |> List.map SimpleLink)
+            embeddedFiles
+            cachedResourceData
             configs
-            |> List.tryFind (fun (fn, _) -> Path.GetFileName fn = "localisation.cwt")
-            |> Option.map (fun (fn, ft) -> UtilityParser.loadLocCommands fn ft)
-            |> Option.defaultValue ([], [], [])
-
-        let ck2EventTargetLinks =
-            configs
-            |> List.tryFind (fun (fn, _) -> Path.GetFileName fn = "links.cwt")
-            |> Option.map (fun (fn, ft) ->
-                UtilityParser.loadEventTargetLinks
-                    scopeManager.AnyScope
-                    (scopeManager.ParseScope())
-                    scopeManager.AllScopes
-                    fn
-                    ft)
-            |> Option.defaultValue (CWTools.Process.Scopes.CK2.scopedEffects () |> List.map SimpleLink)
-
-        let featureSettings = getFeatureSettings configs
-
-        let triggers, effects = ([], [])
-
-        { triggers = triggers
-          effects = effects
-          modifiers = ck2Mods
-          embeddedFiles = embeddedFiles
-          cachedResourceData = cachedResourceData
-          localisationCommands = Legacy ck2LocCommands
-          eventTargetLinks = ck2EventTargetLinks
-          cachedRuleMetadata = cachedRuleMetadata
-          featureSettings = featureSettings }
+            cachedRuleMetadata
 
     let initGame (setupSettings: CK2Settings) =
         let validationSettings =

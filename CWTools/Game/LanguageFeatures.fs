@@ -426,6 +426,18 @@ module LanguageFeatures =
         (filepath: string)
         (filetext: string)
         =
+        let rawFileText = filetext
+        let fileContentCache = Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        fileContentCache.[filepath] <- rawFileText
+
+        let getFileText (path: string) =
+            match fileContentCache.TryGetValue path with
+            | true, content -> content
+            | false, _ ->
+                let content = File.ReadAllText path
+                fileContentCache.[path] <- content
+                content
+
         let split = filetext.Split('\n')
 
         // 获取当前行（注意 pos.Line 是 1-based）
@@ -663,7 +675,7 @@ module LanguageFeatures =
                             | Some struct (e, _) -> Compute.Jomini.getScriptedEffectParamsEntity e
                             | None ->
                                 try
-                                    let fileContent = System.IO.File.ReadAllText(filepath)
+                                    let fileContent = getFileText filepath
                                     let regex = System.Text.RegularExpressions.Regex(@"\$([A-Za-z_][A-Za-z0-9_]*)\$")
                                     let matches = regex.Matches(fileContent)
                                     [ for m in matches -> m.Groups.[1].Value ] |> List.distinct
@@ -1229,7 +1241,7 @@ module LanguageFeatures =
                                     Some e
                                 else
                                     try
-                                        let fileContent = System.IO.File.ReadAllText(e.filepath)
+                                        let fileContent = getFileText e.filepath
                                         if fileContainsInlineRef allowPathDefaults targetName fileContent then Some e else None
                                     with ex ->
                                         logDiag $"findCallerIn failed for {e.filepath}: %s{ex.Message}"
@@ -1339,7 +1351,7 @@ module LanguageFeatures =
                                             Some e
                                         else
                                             try
-                                                let content = System.IO.File.ReadAllText(e.filepath)
+                                                let content = getFileText e.filepath
                                                 if fileContainsInlineRef false scriptName content then
                                                     Some e
                                                 else
@@ -1361,7 +1373,7 @@ module LanguageFeatures =
                                 // original inline_script leaf, unlike entity which has it expanded).
                                 let callerScopeCtxOpt =
                                     try
-                                        let callerFileContent = System.IO.File.ReadAllText(callerEntity.filepath)
+                                        let callerFileContent = getFileText callerEntity.filepath
                                         let callerLines = callerFileContent.Split('\n')
                                         let inlineScriptLine =
                                             let directLine = findScriptLine true callerFileContent scriptFileName scriptName
@@ -1403,7 +1415,7 @@ module LanguageFeatures =
                                     //   rootPath(to intermediate) + intermediatePath(to target)
                                     let callerRulePath =
                                         try
-                                            let callerFileContent = System.IO.File.ReadAllText(callerEntity.filepath)
+                                            let callerFileContent = getFileText callerEntity.filepath
                                             let directLine = findScriptLine true callerFileContent scriptFileName scriptName
                                             if directLine >= 0 then
                                                 // Direct reference found in root caller
@@ -1435,7 +1447,7 @@ module LanguageFeatures =
                                                             completion.GetRulePath(callerPos, callerEntity.rawEntity)
                                                         else []
                                                     // 2. Find intermediate's path to target inline_script
-                                                    let intermediateContent = System.IO.File.ReadAllText(directCaller.filepath)
+                                                    let intermediateContent = getFileText directCaller.filepath
                                                     let targetLine = findScriptLine false intermediateContent scriptFileName scriptName
                                                     let intermediateToTargetPath =
                                                         if targetLine >= 0 then
@@ -1470,7 +1482,7 @@ module LanguageFeatures =
                             log "completion: no caller found, providing basic parameter completion"
                             // 如果找不到调用者,提供参数名补全
                             try
-                                let fileContent = System.IO.File.ReadAllText(filepath)
+                                let fileContent = rawFileText
                                 let regex = System.Text.RegularExpressions.Regex(@"\$([A-Za-z_][A-Za-z0-9_]*)\$")
                                 let matches = regex.Matches(fileContent)
                                 let allParams = [ for m in matches -> m.Groups.[1].Value ] |> List.distinct |> List.toArray
@@ -2091,7 +2103,9 @@ module LanguageFeatures =
 
                                 match scriptFilePath with
                                 | Some scriptFile ->
-                                    let scriptContent = System.IO.File.ReadAllText(scriptFile)
+                                    let scriptContent =
+                                        if String.Equals(scriptFile, filepath, StringComparison.OrdinalIgnoreCase) then filetext
+                                        else System.IO.File.ReadAllText(scriptFile)
                                     let scriptLines = scriptContent.Split('\n')
                                     // Extract all @[...] expressions from the script
                                     let exprPattern = System.Text.RegularExpressions.Regex(@"@\[([^\]]+)\]")
@@ -2442,7 +2456,9 @@ module LanguageFeatures =
                         match fileEntity with
                         | Some entity ->
                             try
-                                let content = System.IO.File.ReadAllText(entity.filepath)
+                                let content =
+                                    if String.Equals(entity.filepath, filepath, StringComparison.OrdinalIgnoreCase) then filetext
+                                    else System.IO.File.ReadAllText(entity.filepath)
                                 let lines = content.Split('\n')
                                 let maxLines = min lines.Length 20
                                 let preview = lines |> Array.take maxLines |> String.concat "\n"

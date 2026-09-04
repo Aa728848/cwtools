@@ -546,13 +546,6 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     let scriptedParameterPattern =
         Regex(@"\$([^$|]+)(?:\|([^$]*))?\$", RegexOptions.Compiled)
 
-    let parameterName (text: string) =
-        let pipeIndex = text.IndexOf('|')
-        if pipeIndex >= 0 then text.Substring(0, pipeIndex) else text
-
-    let normalizeParameterKey (key: string) =
-        key.Trim().Trim('$') |> parameterName
-
     /// Resolve inline [[PARAM]content] conditional blocks within a string.
     /// Handles cases where [[PARAM]content] is embedded within a larger
     /// identifier token (e.g., "prefix[[PARAM]_suffix]").

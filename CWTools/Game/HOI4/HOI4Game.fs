@@ -241,42 +241,14 @@ module HOI4GameFunctions =
         (configs: (string * string) list)
         (cachedRuleMetadata: CachedRuleMetadata option)
         =
-
-        initializeScopesAndModifierCategories configs defaultScopeInputs defaultModifiersInputs
-
-        let hoi4Mods = getActualModifiers configs
-
-        let hoi4LocCommands =
+        createClausewitzEmbeddedSettings
+            defaultScopeInputs
+            defaultModifiersInputs
+            []
+            embeddedFiles
+            cachedResourceData
             configs
-            |> List.tryFind (fun (fn, _) -> Path.GetFileName fn = "localisation.cwt")
-            |> Option.map (fun (fn, ft) -> UtilityParser.loadLocCommands fn ft)
-            |> Option.defaultValue ([], [], [])
-
-        let triggers, effects = ([], [])
-
-        let eventTargetLinks =
-            configs
-            |> List.tryFind (fun (fn, _) -> Path.GetFileName fn = "links.cwt")
-            |> Option.map (fun (fn, ft) ->
-                UtilityParser.loadEventTargetLinks
-                    scopeManager.AnyScope
-                    (scopeManager.ParseScope())
-                    scopeManager.AllScopes
-                    fn
-                    ft)
-            |> Option.defaultValue []
-
-        let featureSettings = getFeatureSettings configs
-
-        { triggers = triggers
-          effects = effects
-          modifiers = hoi4Mods
-          embeddedFiles = embeddedFiles
-          cachedResourceData = cachedResourceData
-          localisationCommands = Legacy hoi4LocCommands
-          eventTargetLinks = eventTargetLinks
-          cachedRuleMetadata = cachedRuleMetadata
-          featureSettings = featureSettings }
+            cachedRuleMetadata
 
     let initGame (setupSettings: HOI4Settings) =
         let embeddedSettings =

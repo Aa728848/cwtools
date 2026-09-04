@@ -277,40 +277,14 @@ module EU4GameFunctions =
         updateLegacyGovernments (game)
 
     let createEmbeddedSettings embeddedFiles cachedResourceData (configs: (string * string) list) cachedRuleMetadata =
-        initializeScopesAndModifierCategories configs defaultScopeInputs defaultModifiersInputs
-
-        let triggers, effects = ([], [])
-        let modifiers = getActualModifiers configs
-
-        let eu4LocCommands =
+        createClausewitzEmbeddedSettings
+            defaultScopeInputs
+            defaultModifiersInputs
+            (CWTools.Process.Scopes.EU4.scopedEffects () |> List.map SimpleLink)
+            embeddedFiles
+            cachedResourceData
             configs
-            |> List.tryFind (fun (fn, _) -> Path.GetFileName fn = "localisation.cwt")
-            |> Option.map (fun (fn, ft) -> UtilityParser.loadLocCommands fn ft)
-            |> Option.defaultValue ([], [], [])
-
-        let eu4EventTargetLinks =
-            configs
-            |> List.tryFind (fun (fn, _) -> Path.GetFileName fn = "links.cwt")
-            |> Option.map (fun (fn, ft) ->
-                UtilityParser.loadEventTargetLinks
-                    scopeManager.AnyScope
-                    (scopeManager.ParseScope())
-                    scopeManager.AllScopes
-                    fn
-                    ft)
-            |> Option.defaultValue (CWTools.Process.Scopes.EU4.scopedEffects () |> List.map SimpleLink)
-
-        let featureSettings = getFeatureSettings configs
-
-        { triggers = triggers
-          effects = effects
-          modifiers = modifiers
-          embeddedFiles = embeddedFiles
-          cachedResourceData = cachedResourceData
-          localisationCommands = Legacy eu4LocCommands
-          eventTargetLinks = eu4EventTargetLinks
-          cachedRuleMetadata = cachedRuleMetadata
-          featureSettings = featureSettings }
+            cachedRuleMetadata
 
     let initGame (setupSettings: EU4Settings) =
         let validationSettings =

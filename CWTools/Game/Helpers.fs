@@ -614,3 +614,121 @@ module Helpers =
         |> List.tryFind (fun (fileName: string, _) -> Path.GetFileName fileName = "settings.cwt")
         |> Option.bind (fun (fileName, fileText) -> UtilityParser.loadSettingsFile fileName fileText)
         |> Option.defaultValue UtilityParser.FeatureSettings.Default
+
+    let createClausewitzEmbeddedSettings
+        defaultScopeInputs
+        defaultModifiersInputs
+        (fallbackLinks: EventTargetLink list)
+        embeddedFiles
+        cachedResourceData
+        (configs: (string * string) list)
+        cachedRuleMetadata
+        =
+        initializeScopesAndModifierCategories configs defaultScopeInputs defaultModifiersInputs
+
+        let modifiers = getActualModifiers configs
+
+        let locCommands =
+            configs
+            |> List.tryFind (fun (fn, _) -> Path.GetFileName fn = "localisation.cwt")
+            |> Option.map (fun (fn, ft) -> UtilityParser.loadLocCommands fn ft)
+            |> Option.defaultValue ([], [], [])
+
+        let eventTargetLinks =
+            configs
+            |> List.tryFind (fun (fn, _) -> Path.GetFileName fn = "links.cwt")
+            |> Option.map (fun (fn, ft) ->
+                UtilityParser.loadEventTargetLinks
+                    scopeManager.AnyScope
+                    (scopeManager.ParseScope())
+                    scopeManager.AllScopes
+                    fn
+                    ft)
+            |> Option.defaultValue fallbackLinks
+
+        let featureSettings = getFeatureSettings configs
+
+        { triggers = []
+          effects = []
+          modifiers = modifiers
+          embeddedFiles = embeddedFiles
+          cachedResourceData = cachedResourceData
+          localisationCommands = Legacy locCommands
+          eventTargetLinks = eventTargetLinks
+          cachedRuleMetadata = cachedRuleMetadata
+          featureSettings = featureSettings }
+
+    let createJominiEmbeddedSettings
+        defaultScopeInputs
+        defaultModifiersInputs
+        (gameName: string)
+        embeddedFiles
+        cachedResourceData
+        (configs: (string * string) list)
+        cachedRuleMetadata
+        =
+        initializeScopesAndModifierCategories configs defaultScopeInputs defaultModifiersInputs
+
+        let modifiers = getActualModifiers configs
+
+        let jominiLocDataTypes =
+            configs
+            |> List.tryFind (fun (fn, _) -> Path.GetFileName fn = "data_types.log")
+            |> Option.map (fun (fn, ft) ->
+                DataTypeParser.parseDataTypesStreamRes (
+                    new MemoryStream(System.Text.Encoding.GetEncoding(1252).GetBytes(ft))
+                ))
+            |> Option.defaultValue
+                { DataTypeParser.JominiLocDataTypes.promotes = Map.empty
+                  confidentFunctions = Map.empty
+                  DataTypeParser.JominiLocDataTypes.functions = Map.empty
+                  DataTypeParser.JominiLocDataTypes.dataTypes = Map.empty
+                  DataTypeParser.JominiLocDataTypes.dataTypeNames = Set.empty }
+
+        let eventTargetLinks =
+            configs
+            |> List.tryFind (fun (fn, _) -> Path.GetFileName fn = "links.cwt")
+            |> Option.map (fun (fn, ft) ->
+                UtilityParser.loadEventTargetLinks
+                    scopeManager.AnyScope
+                    (scopeManager.ParseScope())
+                    scopeManager.AllScopes
+                    fn
+                    ft)
+            |> Option.defaultValue (CWTools.Process.Scopes.IR.scopedEffects |> List.map SimpleLink)
+
+        let effects =
+            configs
+            |> List.tryFind (fun (fn, _) -> Path.GetFileName fn = "effects.log")
+            |> Option.bind (fun (fn, ft) ->
+                JominiParser.parseEffectStreamRes (
+                    new MemoryStream(System.Text.Encoding.GetEncoding(1252).GetBytes(ft))
+                ))
+            |> Option.map (JominiParser.processEffects scopeManager.ParseScopes)
+            |> Option.defaultWith (fun () ->
+                eprintfn $"effects.log was not found in %s{gameName} config"
+                [])
+
+        let triggers =
+            configs
+            |> List.tryFind (fun (fn, _) -> Path.GetFileName fn = "triggers.log")
+            |> Option.bind (fun (fn, ft) ->
+                JominiParser.parseTriggerStreamRes (
+                    new MemoryStream(System.Text.Encoding.GetEncoding(1252).GetBytes(ft))
+                ))
+            |> Option.map (JominiParser.processTriggers scopeManager.ParseScopes)
+            |> Option.defaultWith (fun () ->
+                eprintfn $"triggers.log was not found in %s{gameName} config"
+                [])
+
+        let featureSettings = getFeatureSettings configs
+
+        { triggers = triggers
+          effects = effects
+          modifiers = modifiers
+          embeddedFiles = embeddedFiles
+          cachedResourceData = cachedResourceData
+          localisationCommands = Jomini jominiLocDataTypes
+          eventTargetLinks = eventTargetLinks
+          cachedRuleMetadata = cachedRuleMetadata
+          featureSettings = featureSettings }
