@@ -102,6 +102,12 @@ Incremental scripted-type refresh has limited upstream test coverage. Changes
 to that path should compare incremental results with a full refresh, including
 definition additions, edits, and removals.
 
+### Rules Data Baseline / 规则数据基线
+
+The test suite uses `CWToolsTests/testfiles/stellarisconfig` as a frozen offline test baseline. To run tests against the live rules repository (e.g. `submodules/cwtools-stellaris-config`), set the `CWTEST_STELLARIS_CONFIG` environment variable to the live config path.
+
+测试套件以 `CWToolsTests/testfiles/stellarisconfig` 作为离线冻结测试基线。如需针对活规则仓库（例如 `submodules/cwtools-stellaris-config`）运行测试，可设置环境变量 `CWTEST_STELLARIS_CONFIG` 指向最新规则目录。
+
 Commit changes inside this submodule first. Then return to the parent repository
 and commit the updated submodule pointer separately. Do not combine library
 semantics and rules-data updates in one undifferentiated commit.
