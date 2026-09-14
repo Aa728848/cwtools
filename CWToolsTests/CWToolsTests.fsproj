@@ -20,6 +20,7 @@
         <Compile Include="LoggingTestHelper.fs"/>
         <Compile Include="TestHelpers.fs"/>
         <Compile Include="LocalisationValidationTests.fs"/>
+        <Compile Include="LocalisationEventTargetTests.fs"/>
         <Compile Include="StellarisConfigValidationTests.fs"/>
         <Compile Include="ScopeRegressionTests.fs"/>
         <Compile Include="ContractTests.fs"/>

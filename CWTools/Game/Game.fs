@@ -796,6 +796,16 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     let createdLazyCount () =
         this.Resources.AllEntities() |> Seq.sumBy (fun struct (_, data) -> if data.IsValueCreated then 1 else 0)
 
+    /// Localisation command chains are resolved against the event-target,
+    /// scripted-loc, and variable indexes that a rules refresh (re)builds. The
+    /// processed entries captured when localisation was first parsed therefore
+    /// keep stale "command does not exist" results (CW226) for saved event
+    /// targets such as `[my_target.GetName]`. Reprocess after every index
+    /// refresh so the published diagnostics use the current index. The pending
+    /// incremental-localisation delta journal is preserved: the parsed sources
+    /// did not change, only the index used to resolve their commands.
+    let refreshProcessedLocalisation () = localisationManager.ReprocessLocalisationCommands()
+
     let updateRulesCache () =
         LanguageFeatures.clearScriptedEffectParamMapCache ()
         let total = this.Resources.AllEntities() |> Seq.length
@@ -821,6 +831,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                   newlyCreated = newlyCreated
                   total = total }
         log $"[LazyRefresh] before=%d{beforeCreated} afterRefresh=%d{afterRefreshCreated} afterRecompute=%d{afterRecomputeCreated} newlyCreated=%d{newlyCreated} total=%d{total}"
+        refreshProcessedLocalisation ()
         this.RefreshValidationManager()
         LanguageFeatures.clearCompletionEntityCache ()
         LanguageFeatures.clearTypeReferenceIndexCache ()
@@ -1230,6 +1241,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             this.RuleValidationService <- Some rules
             this.InfoService <- Some info
             this.completionService <- Some completion
+            refreshProcessedLocalisation ()
             this.ResetValidationManager()
             LanguageFeatures.clearCompletionEntityCache ()
             LanguageFeatures.clearTypeReferenceIndexCache ()
@@ -1261,6 +1273,7 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                       afterRecomputeCreated = afterRecomputeCreated
                       newlyCreated = max 0 (afterRefreshCreated - beforeCreated)
                       total = total }
+            refreshProcessedLocalisation ()
             this.ResetValidationManager()
             LanguageFeatures.clearCompletionEntityCache ()
             LanguageFeatures.clearTypeReferenceIndexCache ()

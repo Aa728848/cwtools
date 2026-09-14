@@ -401,7 +401,11 @@ type LocalisationManager<'T when 'T :> ComputedData>
     let removeLocalisationSource filepath =
         updateLocalisationSourceForPath filepath [||]
 
-    let updateProcessedLocalisation () =
+    /// Re-resolve every processed entry with the current lookup indexes
+    /// (event targets, scripted loc, variables) without touching the pending
+    /// delta journal. Used after a rules refresh, where the parsed sources are
+    /// unchanged but the command-resolution context is not.
+    let reprocessLocalisationCommands () =
         let validatableEntries =
             validatableLocalisation ()
             |> List.groupBy _.GetLang
@@ -414,6 +418,9 @@ type LocalisationManager<'T when 'T :> ComputedData>
         let processLoc = processLocalisation lookup
         lookup.proccessedLoc <- validatableEntries |> List.map processLoc
         rebuildProcessedReferenceIndex ()
+
+    let updateProcessedLocalisation () =
+        reprocessLocalisationCommands ()
         lock deltaGate (fun () ->
             deltaJournal.Clear()
             activeDeltaCursor <- None
@@ -439,6 +446,8 @@ type LocalisationManager<'T when 'T :> ComputedData>
 
     member _.UpdateProcessedLocalisation() =
         lock deltaGate updateProcessedLocalisation
+    member _.ReprocessLocalisationCommands() =
+        lock deltaGate reprocessLocalisationCommands
     member _.UpdateLocalisationFile(locFile: FileWithContentResource) =
         lock deltaGate (fun () -> updateLocalisationSource locFile)
     member _.RemoveLocalisationFile(filepath: string) =

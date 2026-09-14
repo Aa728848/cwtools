@@ -74,6 +74,14 @@ module ChangeLocScope =
         | None -> context
         | Some ps -> ps :: context
 
+    /// Identifier-shaped loc segment: letters and digits joined by underscores,
+    /// starting with a letter. Distinguishes an unresolved database/script name
+    /// (for example a saved event target) from malformed command text.
+    let private isIdentifierShaped (key: string) =
+        key.Length > 0
+        && System.Char.IsLetter key.[0]
+        && key |> Seq.forall (fun c -> System.Char.IsLetterOrDigit c || c = '_')
+
     let createLegacyLocalisationCommandValidator (staticSettings: LegacyLocStaticSettings) =
         fun (dynamicSettings: LegacyLocDynamicsSettings) (source: ScopeContext) (command: string) ->
             let command, res =
@@ -177,6 +185,16 @@ module ChangeLocScope =
                             nextKey.Length > 0
                             && (nextKey.Contains "_" || System.Char.IsLower(nextKey.[0]))
                             -> LocContextResult.Found "variable_fallback"
+                        // The leading segment of a chain names a scope, an event
+                        // target, or a database entry rather than a command, and no
+                        // index is guaranteed to know it (targets saved by another
+                        // mod or by vanilla data are outside the workspace index).
+                        // Keep it as an unresolved scope so the remaining commands
+                        // are still validated. A single unknown segment
+                        // (`[some_name]`) or an unknown trailing command
+                        // (`[some_name.NotReal]`) is still reported.
+                        | LocNotFound _ when first && keys.Length > 1 && isIdentifierShaped nextKey ->
+                            LocContextResult.Found "variable_fallback"
                         | res -> res
 
             let locKeyFolder (result: LocContextResult) (nextKey: string) =
