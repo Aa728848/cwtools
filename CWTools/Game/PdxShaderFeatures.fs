@@ -529,7 +529,10 @@ module PdxShaderFeatures =
               localisation = []
               ruleDescription =
                 Some(sprintf "**%A** `%s`\n\nDefined in `%s` (%s), condition `%s`.%s" declaration.kind declaration.name declaration.logicalPath origin declaration.presenceCondition risk)
-              ruleRequiredScopes = [] })
+              ruleRequiredScopes = []
+              engineCost = None
+              engineNote = None
+              engineEvidence = None })
 
 
     let private completionItem label detail category =

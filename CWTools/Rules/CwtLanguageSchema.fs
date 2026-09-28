@@ -95,6 +95,9 @@ module CwtMetaSchema =
           { name = "root_completion"; valueKind = "text"; description = "Choose the source for root completion, e.g. subtypes."; support = Shared }
           { name = "graph_related_types"; valueKind = "list"; description = "Types related in dependency graph views."; support = Shared }
           { name = "supported_scopes"; valueKind = "text"; description = "Scopes supported by an alias or modifier rule."; support = Shared }
+          { name = "cost"; valueKind = "text"; description = "Engine cost class of the command, e.g. o(1), o(n), o(log n), combat, semantics. Surfaced in hover."; support = Shared }
+          { name = "engine"; valueKind = "text"; description = "Reverse-engineered hardcoded behaviour of the command. Surfaced in hover."; support = Shared }
+          { name = "engine_evidence"; valueKind = "text"; description = "Where the engine claim was confirmed (function and dump line). Present exactly when verified."; support = Shared }
           { name = "event_type"; valueKind = "text"; description = "Event type hint for on_action metadata."; support = Jomini }
           { name = "hint"; valueKind = "text"; description = "Short hint text for metadata blocks."; support = Jomini } ]
 

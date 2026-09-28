@@ -348,8 +348,23 @@ module private RulesParserImpl =
                     1, 1, true
             | None -> 1, 1, true
 
+        // Engine-fact keys are settings, not prose: they must not leak into the
+        // rule description that hover renders.
+        let isEngineFactKey (s: string) =
+            let trimmed = s.Trim().TrimStart('#').Trim()
+            let equalsIndex = trimmed.IndexOf '='
+
+            if equalsIndex < 0 then
+                false
+            else
+                match trimmed.Substring(0, equalsIndex).Trim().ToLowerInvariant() with
+                | "cost"
+                | "engine"
+                | "engine_evidence" -> true
+                | _ -> false
+
         let description =
-            match comments |> List.filter (fun s -> s.StartsWith "##") with
+            match comments |> List.filter (fun s -> s.StartsWith "##" && not (isEngineFactKey s)) with
             | [] -> None
             | [ x ] -> Some(x.Trim('#'))
             | xs -> Some(xs |> List.map (fun x -> x.Trim('#')) |> String.concat Environment.NewLine)
@@ -464,6 +479,23 @@ module private RulesParserImpl =
             |> Option.map (fun v -> v.Trim().Trim('"'))
             |> Option.filter (String.IsNullOrWhiteSpace >> not)
 
+        // Engine cost facts are authored in the rule files, not in the backend.
+        // Both are plain \`##\` comments so they double as hover documentation.
+        let cost =
+            commentSetting "cost"
+            |> Option.map (fun v -> v.Trim().Trim('"'))
+            |> Option.filter (String.IsNullOrWhiteSpace >> not)
+
+        let engine =
+            commentSetting "engine"
+            |> Option.map (fun v -> v.Trim().Trim('"'))
+            |> Option.filter (String.IsNullOrWhiteSpace >> not)
+
+        let engineEvidence =
+            commentSetting "engine_evidence"
+            |> Option.map (fun v -> v.Trim().Trim('"'))
+            |> Option.filter (String.IsNullOrWhiteSpace >> not)
+
         { min = min
           max = max
           strictMin = strictmin
@@ -485,7 +517,10 @@ module private RulesParserImpl =
           typeSuffixPatterns = typeSuffixPatterns
           fileExtensions = fileExtensions
           colorType = colorType
-          inject = inject }
+          inject = inject
+          cost = cost
+          engine = engine
+          engineEvidence = engineEvidence }
 
     let fastStartsWith (x: string) y =
         x.StartsWith(y, StringComparison.OrdinalIgnoreCase)
@@ -843,7 +878,10 @@ module private RulesParserImpl =
           typeSuffixPatterns = []
           fileExtensions = []
           colorType = None
-          inject = None }
+          inject = None
+          cost = None
+          engine = None
+          engineEvidence = None }
 
     let private hsvRule =
         LeafValueRule(ValueField(ValueType.Float(0.0M, 2.0M))),
@@ -868,7 +906,10 @@ module private RulesParserImpl =
           typeSuffixPatterns = []
           fileExtensions = []
           colorType = None
-          inject = None }
+          inject = None
+          cost = None
+          engine = None
+          engineEvidence = None }
 
     let private configLeaf parseScope allScopes anyScope scopeGroup (leaf: Leaf) (comments: string list) (key: string) =
         let leftfield = processKey parseScope anyScope scopeGroup (key.Trim('"'))

@@ -11,7 +11,13 @@ type SymbolInformation =
       name: string
       localisation: SymbolLocalisationInfo list
       ruleDescription: string option
-      ruleRequiredScopes: string list }
+      ruleRequiredScopes: string list
+      /// Engine cost class declared on the matched rule via `## cost = ...`.
+      engineCost: string option
+      /// Engine mechanism note declared via `## engine = ...`.
+      engineNote: string option
+      /// Confirmation citation declared via `## engine_evidence = ...`.
+      engineEvidence: string option }
 
 type GraphDataItem =
     {

@@ -36,7 +36,14 @@ type Options =
       typeSuffixPatterns: string list
       fileExtensions: string list
       colorType: string option
-      inject: string option }
+      inject: string option
+      /// Engine cost class declared on the rule via `## cost = ...`, e.g. `o(n)`.
+      cost: string option
+      /// Free-form engine mechanism note declared via `## engine = ...`.
+      engine: string option
+      /// Where the engine claim was confirmed, declared via `## engine_evidence = ...`.
+      /// Present exactly when the claim is verified rather than a hint.
+      engineEvidence: string option }
 
     static member DefaultOptions =
         { min = 0
@@ -60,7 +67,10 @@ type Options =
           typeSuffixPatterns = []
           fileExtensions = []
           colorType = None
-          inject = None }
+          inject = None
+          cost = None
+          engine = None
+          engineEvidence = None }
 
 type ValueType =
     | Enum of enumc: string

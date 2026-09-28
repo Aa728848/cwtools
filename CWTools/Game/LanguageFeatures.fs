@@ -2216,7 +2216,10 @@ module LanguageFeatures =
                   typename = "inline_script"
                   localisation = []
                   ruleDescription = Some (sprintf "Evaluated expressions:\n\n%s" results)
-                  ruleRequiredScopes = [] }
+                  ruleRequiredScopes = []
+                  engineCost = None
+                  engineNote = None
+                  engineEvidence = None }
         | None ->
 
         // Check if cursor is on a @[ expression ] - provide expression info with evaluation
@@ -2377,7 +2380,10 @@ module LanguageFeatures =
                           typename = "expression"
                           localisation = []
                           ruleDescription = Some detailedText
-                          ruleRequiredScopes = [] }
+                          ruleRequiredScopes = []
+                          engineCost = None
+                          engineNote = None
+                          engineEvidence = None }
                 else None
             else None
         else None
@@ -2481,7 +2487,10 @@ module LanguageFeatures =
                   ruleRequiredScopes =
                     ruleOptions
                     |> Option.map (fun ro -> ro.requiredScopes |> List.map (fun s -> s.ToString()))
-                    |> Option.defaultValue [] }
+                    |> Option.defaultValue []
+                  engineCost = ruleOptions |> Option.bind (fun ro -> ro.cost)
+                  engineNote = ruleOptions |> Option.bind (fun ro -> ro.engine)
+                  engineEvidence = ruleOptions |> Option.bind (fun ro -> ro.engineEvidence) }
         | _, _ -> None
 
 
