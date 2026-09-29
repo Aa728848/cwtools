@@ -3080,10 +3080,11 @@ let extendedHotContextAndAntiPatternTests =
               | Invalid(_, errors) ->
                   Expect.equal errors.Length 1 "Expected single CW282 error"
                   Expect.equal errors.Head.code "CW282" "Diagnostic should be CW282"
+                  Expect.equal errors.Head.severity Severity.Information "CW282 severity should be Information"
                   Expect.stringContains errors.Head.message "EnsurePopJobsAreUpToDate" "Message should explain sync jobs"
               | OK -> failtest "Expected CW282"
 
-          testCase "CW283 flags create_country inside loop"
+          testCase "CW283 flags create_country inside loop as Information"
           <| fun _ ->
               let script =
                   makeEntity
@@ -3100,6 +3101,28 @@ let extendedHotContextAndAntiPatternTests =
               | Invalid(_, errors) ->
                   Expect.equal errors.Length 1 "Expected single CW283 error"
                   Expect.equal errors.Head.code "CW283" "Diagnostic should be CW283"
+                  Expect.equal errors.Head.severity Severity.Information "Single loop CW283 should be Information"
+              | OK -> failtest "Expected CW283"
+
+          testCase "CW283 flags create_country inside nested loop as Warning"
+          <| fun _ ->
+              let script =
+                  makeEntity
+                      "game/common/scripted_effects/test_heavy_nested.txt"
+                      "test_effect = {\n\
+                       \tevery_country = {\n\
+                       \t\tevery_owned_planet = {\n\
+                       \t\t\theavy_create_country = {}\n\
+                       \t\t}\n\
+                       \t}\n\
+                       }"
+
+              let res = CWTools.Validation.Stellaris.STLValidation.validateSyncEffectsInLoop (costedCommandLookup ()) (makeSet []) (makeSet [ script ])
+              match res with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 1 "Expected single CW283 error in nested loop"
+                  Expect.equal errors.Head.code "CW283" "Diagnostic should be CW283"
+                  Expect.equal errors.Head.severity Severity.Warning "Nested loop CW283 should be Warning"
               | OK -> failtest "Expected CW283"
 
           testCase "CW284 flags nested owned iterator inside owned iterator"

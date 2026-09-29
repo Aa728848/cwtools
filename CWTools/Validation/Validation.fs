@@ -646,7 +646,7 @@ type ErrorCodes =
 
     static member PopJobSyncEffectInLoop (effect: string) (loopType: string) =
         { ID = "CW282"
-          Severity = Severity.Warning
+          Severity = Severity.Information
           Message =
             sprintf
                 "Effect '%s' synchronously re-runs planet pop job assignments (EnsurePopJobsAreUpToDate); calling it inside a loop (%s) causes severe lag"
@@ -655,7 +655,7 @@ type ErrorCodes =
 
     static member CreateCountryInLoop (loopType: string) (isSevere: bool) =
         { ID = "CW283"
-          Severity = if isSevere then Severity.Error else Severity.Warning
+          Severity = if isSevere then Severity.Warning else Severity.Information
           Message =
             sprintf
                 "create_country is the heaviest engine effect (synchronously contacts all countries and updates database arrays); calling it inside a loop (%s) causes severe freezing"
