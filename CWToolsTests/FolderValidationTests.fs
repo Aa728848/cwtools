@@ -1476,6 +1476,138 @@ sr_parts_adf = {
                       "The right-hand token should resolve to the scripted-variable definition, not the left-hand component"
               finally
                   if Directory.Exists folder then
+                      Directory.Delete(folder, true)
+
+          testWithCapturedLogs "nested inline_script block resolves from inline script files" <| fun () ->
+              let folder =
+                  Path.Combine(Path.GetTempPath(), "cwtools-inline-goto-nested-" + Guid.NewGuid().ToString("N"))
+
+              try
+                  let callerPath = Path.Combine(folder, "common", "inline_scripts", "zones", "outer_zone.txt")
+                  let targetPath = Path.Combine(folder, "common", "inline_scripts", "buildings", "nomadic_cost_switcher.txt")
+
+                  let filetext, pos =
+                      cursorAtTildeMarker
+                          """
+resources = {
+    category = planet_zones
+    inline_script = {
+        script = buildings/nomadic_cost_~switcher
+        REGULAR_RESOURCE = minerals
+    }
+}
+"""
+
+                  writeFile callerPath filetext
+                  writeFile targetPath "add_modifier = { }\n"
+
+                  let configtext = configFilesFromDir stellarisConfigRoot.Value
+
+                  let settings =
+                      { emptyStellarisSettings folder with
+                          rules =
+                              Some
+                                  { ruleFiles = configtext
+                                    validateRules = true
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+
+                  let stl = STLGame(settings) :> IGame<STLComputedData>
+                  let target = stl.GoToType pos callerPath filetext
+
+                  Expect.isSome target "A nested inline_script reference should resolve to the target inline script file"
+                  Expect.equal
+                      (Path.GetFullPath(target.Value.FileName))
+                      (Path.GetFullPath(targetPath))
+                      "Go to definition should target the nested inline script file"
+              finally
+                  if Directory.Exists folder then
+                      Directory.Delete(folder, true)
+
+          testWithCapturedLogs "brace-less inline_script reference resolves from inline script files" <| fun () ->
+              let folder =
+                  Path.Combine(Path.GetTempPath(), "cwtools-inline-goto-direct-" + Guid.NewGuid().ToString("N"))
+
+              try
+                  let callerPath = Path.Combine(folder, "common", "inline_scripts", "zones", "outer_zone.txt")
+                  let targetPath = Path.Combine(folder, "common", "inline_scripts", "buildings", "nomadic_cost_switcher.txt")
+
+                  let filetext, pos =
+                      cursorAtTildeMarker
+                          """
+resources = {
+    category = planet_zones
+    inline_script = buildings/nomadic_cost_~switcher
+}
+"""
+
+                  writeFile callerPath filetext
+                  writeFile targetPath "add_modifier = { }\n"
+
+                  let configtext = configFilesFromDir stellarisConfigRoot.Value
+
+                  let settings =
+                      { emptyStellarisSettings folder with
+                          rules =
+                              Some
+                                  { ruleFiles = configtext
+                                    validateRules = true
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+
+                  let stl = STLGame(settings) :> IGame<STLComputedData>
+                  let target = stl.GoToType pos callerPath filetext
+
+                  Expect.isSome target "A brace-less inline_script reference should resolve to the target inline script file"
+                  Expect.equal
+                      (Path.GetFullPath(target.Value.FileName))
+                      (Path.GetFullPath(targetPath))
+                      "Go to definition should target the inline script file"
+              finally
+                  if Directory.Exists folder then
+                      Directory.Delete(folder, true)
+
+          testWithCapturedLogs "script key in a sibling block does not resolve as an inline_script" <| fun () ->
+              let folder =
+                  Path.Combine(Path.GetTempPath(), "cwtools-inline-goto-sibling-" + Guid.NewGuid().ToString("N"))
+
+              try
+                  let callerPath = Path.Combine(folder, "common", "inline_scripts", "zones", "outer_zone.txt")
+                  let targetPath = Path.Combine(folder, "common", "inline_scripts", "buildings", "nomadic_cost_switcher.txt")
+
+                  let filetext, pos =
+                      cursorAtTildeMarker
+                          """
+resources = {
+    inline_script = {
+        script = jobs/other
+    }
+    nested = {
+        script = buildings/nomadic_cost_~switcher
+    }
+}
+"""
+
+                  writeFile callerPath filetext
+                  writeFile targetPath "add_modifier = { }\n"
+
+                  let configtext = configFilesFromDir stellarisConfigRoot.Value
+
+                  let settings =
+                      { emptyStellarisSettings folder with
+                          rules =
+                              Some
+                                  { ruleFiles = configtext
+                                    validateRules = true
+                                    debugRulesOnly = false
+                                    debugMode = false } }
+
+                  let stl = STLGame(settings) :> IGame<STLComputedData>
+                  let target = stl.GoToType pos callerPath filetext
+
+                  Expect.isNone target "A script key inside a sibling block must not resolve to an inline script file"
+              finally
+                  if Directory.Exists folder then
                       Directory.Delete(folder, true) ]
 
 [<Tests>]

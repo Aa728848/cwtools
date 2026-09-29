@@ -1666,7 +1666,9 @@ module LanguageFeatures =
 
             // Fallback 1: inline_script navigation
             // When the entity has inline_script nodes expanded, GetInfo can't resolve them.
-            // Check if the current line contains an inline_script reference and navigate to the target file.
+            // Inline script files land here too: no typedef owns the common/inline_scripts
+            // path, so GetInfo returns None for a nested inline_script reference written
+            // inside another inline script.
             let inlineScriptFallback () =
                 try
                     let split = filetext.Split('\n')
@@ -1678,26 +1680,80 @@ module LanguageFeatures =
                         // Use \bscript (word boundary) to avoid matching the "script" inside "inline_script"
                         let scriptPattern = System.Text.RegularExpressions.Regex(@"\bscript\s*=\s*([^\s}|]+)")
                         let inlinePattern = System.Text.RegularExpressions.Regex(@"inline_script\s*=")
-                        if inlinePattern.IsMatch(line) then
-                            let m = scriptPattern.Match(line)
-                            if m.Success then
-                                let scriptPath = m.Groups.[1].Value.Trim()
-                                // Skip parameterized paths (contain $) - they can't be resolved statically
-                                if scriptPath.Contains("$") then None
+                        // Brace-less form: inline_script = path/to/script
+                        let inlineDirectPattern =
+                            System.Text.RegularExpressions.Regex(@"inline_script\s*=\s*([^\s{}|]+)")
+
+                        let resolveScriptPath (scriptPath: string) =
+                            let scriptPath = scriptPath.Trim().Trim('"')
+                            // Skip parameterized paths (contain $) - they can't be resolved statically
+                            if scriptPath.Contains("$") then None
+                            else
+                                // Normalize path separators
+                                let normalizedPath = scriptPath.Replace('\\', '/')
+                                // Search all entities for the inline_script file
+                                resourceManager.Api.AllEntities()
+                                |> Seq.map structFst
+                                |> Seq.tryFind (fun e ->
+                                    let lp = e.logicalpath.Replace('\\', '/')
+                                    (lp.Contains("common/inline_scripts", StringComparison.OrdinalIgnoreCase)) &&
+                                    (lp.EndsWith(normalizedPath + ".txt", StringComparison.OrdinalIgnoreCase) ||
+                                     lp.EndsWith(normalizedPath, StringComparison.OrdinalIgnoreCase)))
+                                |> Option.map (fun e -> mkRange e.filepath pos0 pos0)
+
+                        // Multi-line form: the cursor is on the `script = ...` line and the
+                        // enclosing block is inline_script = { ... }. Same upward brace-depth
+                        // scan as tryInlineScriptCompletion: the maxDepth guard rejects the
+                        // match when the cursor actually sits in a sibling block.
+                        let isInsideInlineScriptBlock () =
+                            let rec scan lineIdx braceDepth maxDepth =
+                                if lineIdx < 0 then
+                                    false
                                 else
-                                    // Normalize path separators
-                                    let normalizedPath = scriptPath.Replace('\\', '/')
-                                    // Search all entities for the inline_script file
-                                    resourceManager.Api.AllEntities()
-                                    |> Seq.map structFst
-                                    |> Seq.tryFind (fun e ->
-                                        let lp = e.logicalpath.Replace('\\', '/')
-                                        (lp.Contains("common/inline_scripts", StringComparison.OrdinalIgnoreCase)) &&
-                                        (lp.EndsWith(normalizedPath + ".txt", StringComparison.OrdinalIgnoreCase) ||
-                                         lp.EndsWith(normalizedPath, StringComparison.OrdinalIgnoreCase)))
-                                    |> Option.map (fun e -> mkRange e.filepath pos0 pos0)
-                            else None
-                        else None
+                                    let l = split.[lineIdx].Trim()
+
+                                    if l.StartsWith("#") then
+                                        scan (lineIdx - 1) braceDepth maxDepth
+                                    else
+                                        let openBraces = l.ToCharArray() |> Array.filter (fun c -> c = '{') |> Array.length
+                                        let closeBraces = l.ToCharArray() |> Array.filter (fun c -> c = '}') |> Array.length
+                                        let braceDelta = openBraces - closeBraces
+
+                                        if
+                                            (l.StartsWith("inline_script") || l.Contains("inline_script ="))
+                                            && braceDelta > 0
+                                            && braceDepth = 0
+                                            && maxDepth = 0
+                                        then
+                                            true
+                                        else
+                                            let newDepth = braceDepth + braceDelta
+                                            let newMaxDepth = max maxDepth newDepth
+                                            if newDepth < -50 then false else scan (lineIdx - 1) newDepth newMaxDepth
+
+                            scan (lineIdx - 1) 0 0
+
+                        let scriptPathOpt =
+                            if line.TrimStart().StartsWith("#") then
+                                None
+                            elif inlinePattern.IsMatch(line) then
+                                // Single-line block form, or the brace-less direct form
+                                let m = scriptPattern.Match(line)
+                                if m.Success then
+                                    Some m.Groups.[1].Value
+                                else
+                                    let dm = inlineDirectPattern.Match(line)
+                                    if dm.Success then Some dm.Groups.[1].Value else None
+                            else
+                                let m = scriptPattern.Match(line)
+                                if m.Success && isInsideInlineScriptBlock () then
+                                    Some m.Groups.[1].Value
+                                else
+                                    None
+
+                        match scriptPathOpt with
+                        | Some scriptPath -> resolveScriptPath scriptPath
+                        | None -> None
                 with ex ->
                     logDiag $"inlineScriptFallback failed: %s{ex.Message}"
                     None
