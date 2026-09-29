@@ -620,6 +620,30 @@ type ErrorCodes =
               Severity = severity
               Message = message }
 
+    static member HotContextCost (command: string) (cost: string) (context: string) =
+        { ID = "CW279"
+          Severity = Severity.Information
+          Message =
+            sprintf
+                "'%s' has %s engine cost and this block (%s) is evaluated frequently; consider a cheaper alternative or moving the check to a lower-frequency context"
+                command
+                cost
+                context }
+
+    static member MtthWithModifier =
+        { ID = "CW280"
+          Severity = Severity.Information
+          Message =
+            "Events whose mean_time_to_happen has modifier blocks evaluate the whole trigger before the dice roll; consider is_triggered_only plus a periodic on_action pulse instead" }
+
+    static member DynamicNameDigitSuffix (name: string) =
+        { ID = "CW281"
+          Severity = Severity.Warning
+          Message =
+            sprintf
+                "Dynamic name '%s' ends with a digit; dynamic flag/event-target names are 'base + decimal ID' with no separator, so trailing digits can collide (a1@23 vs a12@3)"
+                name }
+
     static member RulesError =
         fun error severity ->
             { ID = "CW998"

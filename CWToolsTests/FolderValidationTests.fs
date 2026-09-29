@@ -2615,3 +2615,344 @@ let specialtests =
                  categories = [ modifierCategoryManager.ParseModifier () "pop" ] } |]
 
         Expect.equal (stl.StaticModifiers()) exp ""
+
+
+[<Tests>]
+let hotContextCostValidationRegressionTests =
+    let makeEntity entityType logicalpath text =
+        match CKParser.parseString text logicalpath with
+        | Success(statements, _, _) ->
+            let node = STLProcess.shipProcess.ProcessNode () "root" (mkZeroFile logicalpath) statements
+
+            { filepath = logicalpath
+              logicalpath = logicalpath
+              rawEntity = node
+              entity = node
+              validate = true
+              entityType = entityType
+              overwrite = Overwrite.No }
+        | Failure(error, _, _) -> failwith error
+
+    let makeSet entities =
+        entities
+        |> List.map (fun entity ->
+            struct (
+                entity,
+                lazy (STLComputedData(None, None, None, false, None, None, None))
+            ))
+        |> EntitySet
+
+    let costedCommandLookup () =
+        let lookup = Lookup()
+
+        lookup.configRules <-
+            [| CWTools.Rules.AliasRule(
+                   "trigger",
+                   (CWTools.Rules.LeafRule(
+                        specificField "expensive_trigger",
+                        CWTools.Rules.ValueField CWTools.Rules.ValueType.Bool
+                    ),
+                    { CWTools.Rules.Options.DefaultOptions with
+                        cost = Some "o(n^2)" })
+               )
+               CWTools.Rules.AliasRule(
+                   "trigger",
+                   (CWTools.Rules.LeafRule(
+                        specificField "cheap_trigger",
+                        CWTools.Rules.ValueField CWTools.Rules.ValueType.Bool
+                    ),
+                    { CWTools.Rules.Options.DefaultOptions with
+                        cost = Some "o(1)" })
+               ) |]
+
+        lookup
+
+    let validate lookup entity =
+        CWTools.Validation.Stellaris.STLValidation.validateHotContextCost
+            lookup
+            (makeSet [])
+            (makeSet [ entity ])
+
+    let expectSingleCode (code: string) (context: string) result =
+        match result with
+        | Invalid(_, errors) ->
+            Expect.equal errors.Length 1 $"Only one %s{code} diagnostic was expected, got %A{errors}"
+            Expect.equal errors.Head.code code "Diagnostic code should match"
+            Expect.stringContains errors.Head.message context "Diagnostic message should name the hot block"
+        | OK -> failtest $"Expected %s{code} diagnostic"
+
+    testList
+        "hot context cost validation regression"
+        [ testCase "flags expensive trigger in job weight block"
+          <| fun _ ->
+              let job =
+                  makeEntity
+                      EntityType.Other
+                      "game/common/jobs/00_test_jobs.txt"
+                      "test_job = {\n\
+                       \tweight = {\n\
+                       \t\texpensive_trigger = yes\n\
+                       \t}\n\
+                       \tpossible = {\n\
+                       \t\tcheap_trigger = yes\n\
+                       \t}\n\
+                       }"
+
+              expectSingleCode "CW279" "job weight" (validate (costedCommandLookup ()) job)
+
+          testCase "flags expensive trigger in decision allow block"
+          <| fun _ ->
+              let decision =
+                  makeEntity
+                      EntityType.Other
+                      "game/common/decisions/00_test_decisions.txt"
+                      "decision_test = {\n\
+                       \tpotential = { cheap_trigger = yes }\n\
+                       \tallow = { expensive_trigger = yes }\n\
+                       }"
+
+              expectSingleCode "CW279" "decision allow" (validate (costedCommandLookup ()) decision)
+
+          testCase "flags expensive trigger in casus belli potential block"
+          <| fun _ ->
+              let casusBelli =
+                  makeEntity
+                      EntityType.Other
+                      "game/common/casus_belli/00_test_cb.txt"
+                      "cb_test = {\n\
+                       \tpotential = { expensive_trigger = yes }\n\
+                       }"
+
+              expectSingleCode "CW279" "casus belli potential" (validate (costedCommandLookup ()) casusBelli)
+
+          testCase "flags expensive trigger inside building triggered modifier"
+          <| fun _ ->
+              let building =
+                  makeEntity
+                      EntityType.Other
+                      "game/common/buildings/00_test_buildings.txt"
+                      "building_test = {\n\
+                       \ttriggered_planet_modifier = {\n\
+                       \t\ttrigger = { expensive_trigger = yes }\n\
+                       \t\tmodifier = { planet_housing_add = 1 }\n\
+                       \t}\n\
+                       }"
+
+              expectSingleCode "CW279" "triggered modifier" (validate (costedCommandLookup ()) building)
+
+          testCase "flags expensive trigger inside event mtth modifier"
+          <| fun _ ->
+              let event =
+                  makeEntity
+                      EntityType.Events
+                      "game/events/test_events.txt"
+                      "country_event = {\n\
+                       \tid = test.1\n\
+                       \tmean_time_to_happen = {\n\
+                       \t\tmonths = 12\n\
+                       \t\tmodifier = {\n\
+                       \t\t\tfactor = 2\n\
+                       \t\t\texpensive_trigger = yes\n\
+                       \t\t}\n\
+                       \t}\n\
+                       }"
+
+              expectSingleCode
+                  "CW279"
+                  "mean_time_to_happen modifier"
+                  (validate (costedCommandLookup ()) event)
+
+          testCase "ignores expensive trigger outside hot blocks"
+          <| fun _ ->
+              let event =
+                  makeEntity
+                      EntityType.Events
+                      "game/events/test_events.txt"
+                      "country_event = {\n\
+                       \tid = test.1\n\
+                       \tis_triggered_only = yes\n\
+                       \ttrigger = { expensive_trigger = yes }\n\
+                       }"
+
+              Expect.equal
+                  (validate (costedCommandLookup ()) event)
+                  OK
+                  "A trigger block evaluated on event fire is not a hot context"
+
+          testCase "ignores hot blocks when no rule declares engine costs"
+          <| fun _ ->
+              let job =
+                  makeEntity
+                      EntityType.Other
+                      "game/common/jobs/00_test_jobs.txt"
+                      "test_job = {\n\
+                       \tweight = { expensive_trigger = yes }\n\
+                       }"
+
+              let emptyLookup = Lookup()
+
+              Expect.equal
+                  (validate emptyLookup job)
+                  OK
+                  "Without `## cost` metadata the hot context scan must stay silent" ]
+
+[<Tests>]
+let mtthWithModifierValidationRegressionTests =
+    let makeEntity logicalpath text =
+        match CKParser.parseString text logicalpath with
+        | Success(statements, _, _) ->
+            let node = STLProcess.shipProcess.ProcessNode () "root" (mkZeroFile logicalpath) statements
+
+            { filepath = logicalpath
+              logicalpath = logicalpath
+              rawEntity = node
+              entity = node
+              validate = true
+              entityType = EntityType.Events
+              overwrite = Overwrite.No }
+        | Failure(error, _, _) -> failwith error
+
+    let makeSet entities =
+        entities
+        |> List.map (fun entity ->
+            struct (
+                entity,
+                lazy (STLComputedData(None, None, None, false, None, None, None))
+            ))
+        |> EntitySet
+
+    let validate entity =
+        CWTools.Validation.Stellaris.STLValidation.validateMtthWithModifier
+            (makeSet [])
+            (makeSet [ entity ])
+
+    testList
+        "mtth with modifier validation regression"
+        [ testCase "flags mean_time_to_happen with a modifier block"
+          <| fun _ ->
+              let event =
+                  makeEntity
+                      "game/events/test_events.txt"
+                      "country_event = {\n\
+                       \tid = test.1\n\
+                       \tmean_time_to_happen = {\n\
+                       \t\tmonths = 12\n\
+                       \t\tmodifier = { factor = 2 }\n\
+                       \t}\n\
+                       }"
+
+              match validate event with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 1 "Only the MTTH diagnostic should be reported"
+                  Expect.equal errors.Head.code "CW280" "Diagnostic code should match"
+                  Expect.equal errors.Head.range.StartLine 3 "Diagnostic should be placed on the mean_time_to_happen block"
+              | OK -> failtest "Expected MTTH modifier diagnostic"
+
+          testCase "allows mean_time_to_happen without modifiers"
+          <| fun _ ->
+              let event =
+                  makeEntity
+                      "game/events/test_events.txt"
+                      "country_event = {\n\
+                       \tid = test.1\n\
+                       \tmean_time_to_happen = { months = 12 }\n\
+                       }"
+
+              Expect.equal (validate event) OK "Plain MTTH should not be flagged"
+
+          testCase "allows events without mean_time_to_happen"
+          <| fun _ ->
+              let event =
+                  makeEntity
+                      "game/events/test_events.txt"
+                      "country_event = {\n\
+                       \tid = test.1\n\
+                       \tis_triggered_only = yes\n\
+                       }"
+
+              Expect.equal (validate event) OK "Triggered-only events should not be flagged" ]
+
+[<Tests>]
+let dynamicNameDigitSuffixValidationRegressionTests =
+    let makeEntity logicalpath text =
+        match CKParser.parseString text logicalpath with
+        | Success(statements, _, _) ->
+            let node = STLProcess.shipProcess.ProcessNode () "root" (mkZeroFile logicalpath) statements
+
+            { filepath = logicalpath
+              logicalpath = logicalpath
+              rawEntity = node
+              entity = node
+              validate = true
+              entityType = EntityType.Other
+              overwrite = Overwrite.No }
+        | Failure(error, _, _) -> failwith error
+
+    let makeSet entities =
+        entities
+        |> List.map (fun entity ->
+            struct (
+                entity,
+                lazy (STLComputedData(None, None, None, false, None, None, None))
+            ))
+        |> EntitySet
+
+    let validate entity =
+        CWTools.Validation.Stellaris.STLValidation.validateDynamicNameDigitSuffix
+            (makeSet [])
+            (makeSet [ entity ])
+
+    testList
+        "dynamic name digit suffix validation regression"
+        [ testCase "flags flag and event target names ending in a digit"
+          <| fun _ ->
+              let script =
+                  makeEntity
+                      "game/common/scripted_effects/test.txt"
+                      "test_effect = {\n\
+                       \tset_country_flag = a1@root\n\
+                       \tsave_event_target_as = \"b2@root\"\n\
+                       \tsave_scope_as = c3@root\n\
+                       \tset_country_flag = flag@root\n\
+                       \tset_country_flag = plain\n\
+                       \tset_variable = x4@root\n\
+                       }"
+
+              match validate script with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 3 "Only digit-suffixed dynamic names should be reported"
+                  Expect.equal
+                      (errors |> List.map _.code |> Set.ofList)
+                      (Set.ofList [ "CW281" ])
+                      "All diagnostics should be CW281"
+
+                  let messages = errors |> List.map _.message
+
+                  Expect.exists messages (fun m -> m.Contains("a1@root")) "Unquoted dynamic flag should be flagged"
+                  Expect.exists messages (fun m -> m.Contains("b2@root")) "Quoted event target should be flagged"
+                  Expect.exists messages (fun m -> m.Contains("c3@root")) "save_scope_as should be flagged"
+              | OK -> failtest "Expected dynamic name digit suffix diagnostics"
+
+          testCase "allows dynamic names without a digit suffix"
+          <| fun _ ->
+              let script =
+                  makeEntity
+                      "game/common/scripted_effects/test.txt"
+                      "test_effect = {\n\
+                       \tset_country_flag = flag@root\n\
+                       \tsave_event_target_as = target@from\n\
+                       }"
+
+              Expect.equal (validate script) OK "Non-digit bases cannot collide by ID concatenation"
+
+          testCase "ignores values without an event target separator"
+          <| fun _ ->
+              let script =
+                  makeEntity
+                      "game/common/scripted_effects/test.txt"
+                      "test_effect = {\n\
+                       \tset_country_flag = a1\n\
+                       \tset_country_flag = @root\n\
+                       }"
+
+              Expect.equal (validate script) OK "Static names and bare scopes are not dynamic names" ]

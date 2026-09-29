@@ -2354,7 +2354,9 @@ type STLGame(setupSettings: StellarisSettings) =
                   validateScriptedActionScopeOrder, "scriptedactionscopeorder"
                   validateEvents, "eventsSimple"
                   validatePreTriggers, "pre"
-                  validateIfWithNoEffect, "ifnoeffect" ]
+                  validateIfWithNoEffect, "ifnoeffect"
+                  validateMtthWithModifier, "mtthmodifier"
+                  validateDynamicNameDigitSuffix, "dynamicnamedigit" ]
           globalValidators =
             [ validateVariables, "var"
               validateShipDesigns, "designs"
@@ -2368,7 +2370,10 @@ type STLGame(setupSettings: StellarisSettings) =
           fileValidators = []
           globalFileValidators = [ validateTechnologies, "tech2" ]
           lookupValidators = []
-          globalLookupValidators = (validateEconomicCatAIBudget, "aibudget") :: commonValidationRules
+          globalLookupValidators =
+              (validateHotContextCost, "hotcontextcost")
+              :: (validateEconomicCatAIBudget, "aibudget")
+              :: commonValidationRules
           lookupFileValidators = []
           scriptedParamsValidators =
             [ valScriptedEffectParams, "scripted_effects"

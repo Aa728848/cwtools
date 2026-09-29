@@ -1241,3 +1241,170 @@ module STLValidation =
                     )
 
             econs <&!&> checkEcon
+
+    /// Cost classes considered expensive enough to flag inside blocks the engine
+    /// evaluates frequently. The per-command fact table lives in the rule files as
+    /// `## cost` metadata (consumed via engineCostMap); this set is only the
+    /// classification of those facts.
+    let hotContextExpensiveCosts =
+        Set.ofList [ "o(n)_galaxy"; "o(n^2)"; "combat" ]
+
+    let private aliasCommandName (rule: CWTools.Rules.NewRule) =
+        match fst rule with
+        | CWTools.Rules.NodeRule(CWTools.Rules.SpecificField(CWTools.Rules.SpecificValue tokens), _)
+        | CWTools.Rules.LeafRule(CWTools.Rules.SpecificField(CWTools.Rules.SpecificValue tokens), _) ->
+            Some(CWTools.Utilities.StringResource.stringManager.GetStringForIDs tokens)
+        | _ -> None
+
+    /// Map of trigger/effect command name to normalised (lowercase) cost class,
+    /// built from `## cost` metadata on alias rules. Empty when no loaded rule
+    /// declares a cost.
+    let engineCostMap (configRules: CWTools.Rules.RootRule array) =
+        configRules
+        |> Array.choose (function
+            | CWTools.Rules.AliasRule(("trigger" | "effect"), rule) ->
+                match (snd rule).cost with
+                | Some cost ->
+                    aliasCommandName rule
+                    |> Option.map (fun name -> name.ToLowerInvariant(), cost.Trim().ToLowerInvariant())
+                | None -> None
+            | _ -> None)
+        |> Map.ofArray
+
+    let private expensiveCommandErrors (costMap: Map<string, string>) (context: string) (block: Node) =
+        let check (key: string) pos =
+            match costMap |> Map.tryFind (key.ToLowerInvariant()) with
+            | Some cost when hotContextExpensiveCosts.Contains cost ->
+                Some(invManual (ErrorCodes.HotContextCost key cost context) pos key None)
+            | _ -> None
+
+        let rec walk (node: Node) acc =
+            let acc =
+                match check node.Key node.Position with
+                | Some e -> e :: acc
+                | None -> acc
+
+            let acc =
+                node.Leaves
+                |> Seq.fold
+                    (fun acc (leaf: Leaf) ->
+                        match check leaf.Key leaf.Position with
+                        | Some e -> e :: acc
+                        | None -> acc)
+                    acc
+
+            node.Children |> List.fold (fun acc child -> walk child acc) acc
+
+        walk block []
+
+    let validateHotContextCost: LookupValidator<_> =
+        fun lu _ es ->
+            let costMap = engineCostMap lu.configRules
+
+            if costMap.IsEmpty then
+                OK
+            else
+                let notInline (node: Node) = not (isInlineScriptFile node.Position.FileName)
+
+                let hotBlocksByName (names: string list) (label: string) (entity: Node) =
+                    entity.Children
+                    |> List.choose (fun c ->
+                        if names |> List.exists (fun n -> c.Key == n) then
+                            Some(label + " " + c.Key, c)
+                        else
+                            None)
+
+                let fileHotBlocks (pattern: string) (collect: Node -> (string * Node) list) : (string * Node) list =
+                    es.GlobMatchChildren(pattern) |> List.filter notInline |> List.collect collect
+
+                let triggeredBlocks (entity: Node) : (string * Node) list =
+                    entity
+                    |> foldNode7 (fun (node: Node) (acc: (string * Node) list) ->
+                        if node.Key.StartsWith("triggered_", StringComparison.OrdinalIgnoreCase)
+                           && node.Has "trigger" then
+                            ("triggered modifier", node) :: acc
+                        else
+                            acc)
+
+                let eventHotBlocks (event: Node) =
+                    match event.Child "mean_time_to_happen" with
+                    | Some mtth ->
+                        mtth.Childs "modifier"
+                        |> Seq.map (fun m -> "mean_time_to_happen modifier", m)
+                        |> List.ofSeq
+                    | None -> []
+
+                let hotBlocks: (string * Node) list =
+                    List.concat
+                        [ fileHotBlocks "**/common/jobs/*.txt" (hotBlocksByName [ "weight"; "possible" ] "job")
+                          fileHotBlocks "**/common/decisions/*.txt" (hotBlocksByName [ "potential"; "allow" ] "decision")
+                          fileHotBlocks "**/common/casus_belli/*.txt" (hotBlocksByName [ "potential" ] "casus belli")
+                          fileHotBlocks "**/common/buildings/*.txt" triggeredBlocks
+                          fileHotBlocks "**/common/districts/*.txt" triggeredBlocks
+                          es.AllOfTypeChildren EntityType.Events
+                          |> List.filter notInline
+                          |> List.collect eventHotBlocks ]
+
+                let errors =
+                    hotBlocks
+                    |> Seq.collect (fun (label, block) -> expensiveCommandErrors costMap label block)
+                    |> List.ofSeq
+
+                match errors with
+                | [] -> OK
+                | errors -> Invalid(Guid.NewGuid(), errors)
+
+    let validateMtthWithModifier: STLStructureValidator =
+        fun _ es ->
+            let eventToErrors (event: Node) =
+                match event.Child "mean_time_to_happen" with
+                | Some mtth when mtth.Childs "modifier" |> Seq.isEmpty |> not ->
+                    Invalid(Guid.NewGuid(), [ inv ErrorCodes.MtthWithModifier mtth ])
+                | _ -> OK
+
+            es.AllOfTypeChildren EntityType.Events
+            |> List.filter (fun e -> not (isInlineScriptFile e.Position.FileName))
+            <&!&> eventToErrors
+
+    let private dynamicNameFlagKey (key: string) =
+        key.EndsWith("_flag", StringComparison.OrdinalIgnoreCase)
+        || key.IndexOf("event_target", StringComparison.OrdinalIgnoreCase) >= 0
+        || key == "save_scope_as"
+
+    let private dynamicNameDigitSuffixError (leaf: Leaf) =
+        let value = leaf.Value.ToRawString()
+
+        match value.IndexOf('@') with
+        | at when at > 0 ->
+            let baseName = value.Substring(0, at)
+            let last = baseName.[baseName.Length - 1]
+
+            if last >= '0' && last <= '9' then
+                Some(inv (ErrorCodes.DynamicNameDigitSuffix value) leaf)
+            else
+                None
+        | _ -> None
+
+    let validateDynamicNameDigitSuffix: STLStructureValidator =
+        fun _ es ->
+            let entityToErrors =
+                foldNode7 (fun (node: Node) acc ->
+                    node.Leaves
+                    |> Seq.fold
+                        (fun acc (leaf: Leaf) ->
+                            if dynamicNameFlagKey leaf.Key then
+                                match dynamicNameDigitSuffixError leaf with
+                                | Some e -> e :: acc
+                                | None -> acc
+                            else
+                                acc)
+                        acc)
+
+            let errors =
+                es.All
+                |> List.filter (fun e -> not (isInlineScriptFile e.Position.FileName))
+                |> List.collect entityToErrors
+
+            match errors with
+            | [] -> OK
+            | errors -> Invalid(Guid.NewGuid(), errors)
