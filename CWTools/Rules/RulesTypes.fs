@@ -43,7 +43,9 @@ type Options =
       engine: string option
       /// Where the engine claim was confirmed, declared via `## engine_evidence = ...`.
       /// Present exactly when the claim is verified rather than a hint.
-      engineEvidence: string option }
+      engineEvidence: string option
+      /// Synchronous engine side-effect classification declared via `## sync_effect = ...`.
+      syncEffect: string option }
 
     static member DefaultOptions =
         { min = 0
@@ -70,7 +72,8 @@ type Options =
           inject = None
           cost = None
           engine = None
-          engineEvidence = None }
+          engineEvidence = None
+          syncEffect = None }
 
 type ValueType =
     | Enum of enumc: string

@@ -1247,7 +1247,7 @@ module STLValidation =
     /// `## cost` metadata (consumed via engineCostMap); this set is only the
     /// classification of those facts.
     let hotContextExpensiveCosts =
-        Set.ofList [ "o(n)_galaxy"; "o(n^2)"; "combat" ]
+        Set.ofList [ "o(n)_galaxy"; "o(n^2)"; "combat"; "script_eval" ]
 
     let private aliasCommandName (rule: CWTools.Rules.NewRule) =
         match fst rule with
@@ -1297,6 +1297,56 @@ module STLValidation =
 
         walk block []
 
+    let collectHotBlocks (es: EntitySet<_>) : (string * Node) list =
+        let notInline (node: Node) = not (isInlineScriptFile node.Position.FileName)
+
+        let hotBlocksByName (names: string list) (label: string) (entity: Node) =
+            entity.Children
+            |> List.choose (fun c ->
+                if names |> List.exists (fun n -> c.Key == n) then
+                    Some(label + " " + c.Key, c)
+                else
+                    None)
+
+        let fileHotBlocks (pattern: string) (collect: Node -> (string * Node) list) : (string * Node) list =
+            es.GlobMatchChildren(pattern) |> List.filter notInline |> List.collect collect
+
+        let triggeredBlocks (entity: Node) : (string * Node) list =
+            entity
+            |> foldNode7 (fun (node: Node) (acc: (string * Node) list) ->
+                if node.Key.StartsWith("triggered_", StringComparison.OrdinalIgnoreCase)
+                   && node.Has "trigger" then
+                    ("triggered modifier", node) :: acc
+                else
+                    acc)
+
+        let eventHotBlocks (event: Node) =
+            match event.Child "mean_time_to_happen" with
+            | Some mtth ->
+                mtth.Childs "modifier"
+                |> Seq.map (fun m -> "mean_time_to_happen modifier", m)
+                |> List.ofSeq
+            | None -> []
+
+        List.concat
+            [ fileHotBlocks "**/common/jobs/*.txt" (hotBlocksByName [ "weight"; "possible" ] "job")
+              fileHotBlocks "**/common/decisions/*.txt" (hotBlocksByName [ "potential"; "allow" ] "decision")
+              fileHotBlocks "**/common/casus_belli/*.txt" (hotBlocksByName [ "potential" ] "casus belli")
+              fileHotBlocks "**/common/buildings/*.txt" triggeredBlocks
+              fileHotBlocks "**/common/districts/*.txt" triggeredBlocks
+              fileHotBlocks "**/common/factions/*.txt" (hotBlocksByName [ "can_join_faction"; "is_potential"; "can_pop_group_join_factions" ] "faction")
+              fileHotBlocks "**/common/pop_faction_types/*.txt" (hotBlocksByName [ "can_join_faction"; "is_potential"; "can_pop_group_join_factions" ] "faction")
+              fileHotBlocks "**/common/edicts/*.txt" (hotBlocksByName [ "potential"; "allow" ] "edict")
+              fileHotBlocks "**/common/special_projects/*.txt" (hotBlocksByName [ "abort_trigger"; "fail_trigger" ] "special project")
+              fileHotBlocks "**/common/situations/*.txt" (hotBlocksByName [ "abort_trigger"; "fail_trigger"; "can_progress" ] "situation")
+              fileHotBlocks "**/common/archaeological_site_types/*.txt" (hotBlocksByName [ "visible" ] "archaeological site")
+              fileHotBlocks "**/common/technology/*.txt" (hotBlocksByName [ "weight_modifier"; "potential" ] "technology")
+              fileHotBlocks "**/common/colony_automation/*.txt" (hotBlocksByName [ "available"; "potential" ] "colony automation")
+              fileHotBlocks "**/common/game_rules/*.txt" (fun entity -> entity.Children |> List.map (fun c -> "game_rule", c))
+              es.AllOfTypeChildren EntityType.Events
+              |> List.filter notInline
+              |> List.collect eventHotBlocks ]
+
     let validateHotContextCost: LookupValidator<_> =
         fun lu _ es ->
             let costMap = engineCostMap lu.configRules
@@ -1304,46 +1354,7 @@ module STLValidation =
             if costMap.IsEmpty then
                 OK
             else
-                let notInline (node: Node) = not (isInlineScriptFile node.Position.FileName)
-
-                let hotBlocksByName (names: string list) (label: string) (entity: Node) =
-                    entity.Children
-                    |> List.choose (fun c ->
-                        if names |> List.exists (fun n -> c.Key == n) then
-                            Some(label + " " + c.Key, c)
-                        else
-                            None)
-
-                let fileHotBlocks (pattern: string) (collect: Node -> (string * Node) list) : (string * Node) list =
-                    es.GlobMatchChildren(pattern) |> List.filter notInline |> List.collect collect
-
-                let triggeredBlocks (entity: Node) : (string * Node) list =
-                    entity
-                    |> foldNode7 (fun (node: Node) (acc: (string * Node) list) ->
-                        if node.Key.StartsWith("triggered_", StringComparison.OrdinalIgnoreCase)
-                           && node.Has "trigger" then
-                            ("triggered modifier", node) :: acc
-                        else
-                            acc)
-
-                let eventHotBlocks (event: Node) =
-                    match event.Child "mean_time_to_happen" with
-                    | Some mtth ->
-                        mtth.Childs "modifier"
-                        |> Seq.map (fun m -> "mean_time_to_happen modifier", m)
-                        |> List.ofSeq
-                    | None -> []
-
-                let hotBlocks: (string * Node) list =
-                    List.concat
-                        [ fileHotBlocks "**/common/jobs/*.txt" (hotBlocksByName [ "weight"; "possible" ] "job")
-                          fileHotBlocks "**/common/decisions/*.txt" (hotBlocksByName [ "potential"; "allow" ] "decision")
-                          fileHotBlocks "**/common/casus_belli/*.txt" (hotBlocksByName [ "potential" ] "casus belli")
-                          fileHotBlocks "**/common/buildings/*.txt" triggeredBlocks
-                          fileHotBlocks "**/common/districts/*.txt" triggeredBlocks
-                          es.AllOfTypeChildren EntityType.Events
-                          |> List.filter notInline
-                          |> List.collect eventHotBlocks ]
+                let hotBlocks = collectHotBlocks es
 
                 let errors =
                     hotBlocks
@@ -1353,6 +1364,336 @@ module STLValidation =
                 match errors with
                 | [] -> OK
                 | errors -> Invalid(Guid.NewGuid(), errors)
+
+    let syncEffectMap (configRules: CWTools.Rules.RootRule array) =
+        configRules
+        |> Array.choose (function
+            | CWTools.Rules.AliasRule("effect", rule) ->
+                match (snd rule).syncEffect with
+                | Some sync ->
+                    aliasCommandName rule
+                    |> Option.map (fun name -> name.ToLowerInvariant(), sync.Trim().ToLowerInvariant())
+                | None -> None
+            | _ -> None)
+        |> Map.ofArray
+
+    let private isLoopBlock (key: string) =
+        key.StartsWith("every_", StringComparison.OrdinalIgnoreCase)
+        || key.StartsWith("for_each_", StringComparison.OrdinalIgnoreCase)
+        || key == "while"
+
+    let validateSyncEffectsInLoop: LookupValidator<_> =
+        fun lu _ es ->
+            let syncMap = syncEffectMap lu.configRules
+
+            if syncMap.IsEmpty then
+                OK
+            else
+                let rec checkNode (currentLoop: string option) (loopDepth: int) (node: Node) : CWError list =
+                    let isLoop = isLoopBlock node.Key
+                    let activeLoop = if isLoop then Some node.Key else currentLoop
+                    let activeDepth = if isLoop then loopDepth + 1 else loopDepth
+
+                    let errorsFromNodeKey =
+                        match currentLoop with
+                        | Some loopKey ->
+                            match syncMap |> Map.tryFind (node.Key.ToLowerInvariant()) with
+                            | Some "pop_jobs" ->
+                                [ invManual (ErrorCodes.PopJobSyncEffectInLoop node.Key loopKey) node.Position node.Key None ]
+                            | Some "heavy" ->
+                                [ invManual (ErrorCodes.CreateCountryInLoop loopKey (loopDepth >= 2)) node.Position node.Key None ]
+                            | _ -> []
+                        | None -> []
+
+                    let errorsFromLeaves =
+                        match activeLoop with
+                        | Some loopKey ->
+                            node.Leaves
+                            |> Seq.choose (fun leaf ->
+                                match syncMap |> Map.tryFind (leaf.Key.ToLowerInvariant()) with
+                                | Some "pop_jobs" ->
+                                    Some(invManual (ErrorCodes.PopJobSyncEffectInLoop leaf.Key loopKey) leaf.Position leaf.Key None)
+                                | Some "heavy" ->
+                                    Some(invManual (ErrorCodes.CreateCountryInLoop loopKey (activeDepth >= 2)) leaf.Position leaf.Key None)
+                                | _ -> None)
+                            |> List.ofSeq
+                        | None -> []
+
+                    let childErrors =
+                        node.Children |> List.collect (checkNode activeLoop activeDepth)
+
+                    errorsFromNodeKey @ errorsFromLeaves @ childErrors
+
+                let notInline (node: Node) = not (isInlineScriptFile node.Position.FileName)
+                let errors =
+                    es.All
+                    |> List.filter notInline
+                    |> List.collect (checkNode None 0)
+
+                match errors with
+                | [] -> OK
+                | errors -> Invalid(Guid.NewGuid(), errors)
+
+    let private isContainerIterator (key: string) =
+        let k = key.ToLowerInvariant()
+        (k.StartsWith("every_") || k.StartsWith("any_") || k.StartsWith("count_"))
+        && (k.Contains("pop_group") || k.Contains("planet") || k.Contains("ship"))
+
+    let private isUpwardScopeHop (key: string) =
+        match key.ToLowerInvariant().TrimEnd('?') with
+        | "owner"
+        | "space_owner"
+        | "overlord"
+        | "from"
+        | "prev"
+        | "root" -> true
+        | _ -> false
+
+    let validateNestedScopeIteration: STLStructureValidator =
+        fun _ es ->
+            let notInline (node: Node) = not (isInlineScriptFile node.Position.FileName)
+
+            let rec walk (outerIter: string option) (hop: string option) (node: Node) : CWError list =
+                let k = node.Key
+                let isIter = isContainerIterator k
+                let isHop = isUpwardScopeHop k
+
+                let selfError =
+                    match outerIter, hop with
+                    | Some outer, Some h when isIter ->
+                        [ invManual (ErrorCodes.NestedScopeIteration k outer h) node.Position k None ]
+                    | _ -> []
+
+                let nextOuter =
+                    if isIter && outerIter.IsNone then Some k else outerIter
+
+                let nextHop =
+                    if nextOuter.IsSome && isHop then Some k else hop
+
+                let childErrors =
+                    node.Children |> List.collect (walk nextOuter nextHop)
+
+                selfError @ childErrors
+
+            let errors =
+                es.All
+                |> List.filter notInline
+                |> List.collect (walk None None)
+
+            match errors with
+            | [] -> OK
+            | errors -> Invalid(Guid.NewGuid(), errors)
+
+    let private isWeightBlock (key: string) =
+        match key.ToLowerInvariant() with
+        | "weight"
+        | "weight_modifier"
+        | "ai_weight"
+        | "drop_weight"
+        | "random_weight" -> true
+        | _ -> false
+
+    let validateZeroFactorInWeightModifier: STLStructureValidator =
+        fun _ es ->
+            let notInline (node: Node) = not (isInlineScriptFile node.Position.FileName)
+
+            let isZeroLeaf (leaf: Leaf) =
+                let k = leaf.Key.ToLowerInvariant()
+                if k == "factor" || k == "mult" then
+                    let v = leaf.Value.ToRawString().Trim()
+                    v == "0" || v == "0.0" || v == "0.00"
+                else
+                    false
+
+            let rec checkWeightNode (inWeight: bool) (node: Node) : CWError list =
+                let nowInWeight = inWeight || isWeightBlock node.Key
+
+                let errors =
+                    if nowInWeight && node.Key == "modifier" then
+                        node.Leaves
+                        |> Seq.filter isZeroLeaf
+                        |> Seq.map (fun leaf -> inv ErrorCodes.ZeroFactorInWeightModifier leaf)
+                        |> List.ofSeq
+                    else
+                        []
+
+                let childErrors = node.Children |> List.collect (checkWeightNode nowInWeight)
+                errors @ childErrors
+
+            let errors =
+                es.All
+                |> List.filter notInline
+                |> List.collect (checkWeightNode false)
+
+            match errors with
+            | [] -> OK
+            | errors -> Invalid(Guid.NewGuid(), errors)
+
+    let validateCrossScopeVariableInLoop: STLStructureValidator =
+        fun _ es ->
+            let notInline (node: Node) = not (isInlineScriptFile node.Position.FileName)
+
+            let isCrossScopeVar (s: string) =
+                let trimmed = s.Trim()
+                match trimmed.IndexOf('.') with
+                | dot when dot > 0 ->
+                    let prefix = trimmed.Substring(0, dot).ToLowerInvariant()
+                    match prefix with
+                    | "owner" | "root" | "from" | "prev" | "space_owner" | "solar_system" | "capital_scope" -> true
+                    | _ -> false
+                | _ -> false
+
+            let rec walkLoop (currentLoop: string option) (node: Node) : CWError list =
+                let isLoop = isLoopBlock node.Key
+                let nextLoop = if isLoop then Some node.Key else currentLoop
+
+                let leafErrors =
+                    match nextLoop with
+                    | Some loopKey ->
+                        node.Leaves
+                        |> Seq.choose (fun leaf ->
+                            let k = leaf.Key
+                            let v = leaf.Value.ToRawString()
+                            if isCrossScopeVar k then
+                                Some(invManual (ErrorCodes.CrossScopeVariableInLoop k loopKey) leaf.Position k None)
+                            elif (k == "which" || k == "value" || k == "variable") && isCrossScopeVar v then
+                                Some(invManual (ErrorCodes.CrossScopeVariableInLoop v loopKey) leaf.Position v None)
+                            else
+                                None)
+                        |> List.ofSeq
+                    | None -> []
+
+                let childErrors = node.Children |> List.collect (walkLoop nextLoop)
+                leafErrors @ childErrors
+
+            let errors =
+                es.All
+                |> List.filter notInline
+                |> List.collect (walkLoop None)
+
+            match errors with
+            | [] -> OK
+            | errors -> Invalid(Guid.NewGuid(), errors)
+
+    let validateDuplicateScopeChaining: STLStructureValidator =
+        fun _ es ->
+            let notInline (node: Node) = not (isInlineScriptFile node.Position.FileName)
+
+            let isScopeChain (key: string) =
+                if key.Contains "." then
+                    let parts = key.Split('.')
+                    parts.Length >= 2 && parts |> Array.forall (fun p ->
+                        match p.ToLowerInvariant().TrimEnd('?') with
+                        | "prev" | "from" | "root" | "this" | "owner" | "space_owner" | "capital_scope" | "solar_system" -> true
+                        | _ -> false)
+                else
+                    false
+
+            let rec walkNode (node: Node) : CWError list =
+                let duplicates =
+                    node.Children
+                    |> List.filter (fun c -> isScopeChain c.Key)
+                    |> List.groupBy (fun c -> c.Key.ToLowerInvariant())
+                    |> List.filter (fun (_, group) -> group.Length >= 2)
+                    |> List.collect (fun (_, group) ->
+                        group
+                        |> List.skip 1
+                        |> List.map (fun child ->
+                            invManual (ErrorCodes.DuplicateScopeChaining child.Key group.Length) child.Position child.Key None))
+
+                let childErrors = node.Children |> List.collect walkNode
+                duplicates @ childErrors
+
+            let errors =
+                es.All
+                |> List.filter notInline
+                |> List.collect walkNode
+
+            match errors with
+            | [] -> OK
+            | errors -> Invalid(Guid.NewGuid(), errors)
+
+    let private unsafeScopeTargets =
+        Set.ofList [ "owner"; "space_owner"; "overlord"; "capital_scope"; "controller"; "starbase"; "sector"; "federation"; "from"; "prev" ]
+
+    let validateUnsafeScopeSwitchInHotContext: LookupValidator<_> =
+        fun _ _ es ->
+            let hotBlocks = collectHotBlocks es
+
+            let checkBlock (context: string) (root: Node) : CWError list =
+                let rec walk (node: Node) =
+                    let selfError =
+                        let k = node.Key.ToLowerInvariant()
+                        if unsafeScopeTargets.Contains k && not (node.Key.EndsWith("?")) then
+                            [ invManual (ErrorCodes.UnsafeScopeSwitchInHotContext node.Key context) node.Position node.Key None ]
+                        else
+                            []
+
+                    let childErrors = node.Children |> List.collect walk
+                    selfError @ childErrors
+
+                root.Children |> List.collect walk
+
+            let errors =
+                hotBlocks
+                |> List.collect (fun (label, block) -> checkBlock label block)
+
+            match errors with
+            | [] -> OK
+            | errors -> Invalid(Guid.NewGuid(), errors)
+
+    let validateInlineScriptHighUsage: STLStructureValidator =
+        fun _ es ->
+            let notInline (node: Node) = not (isInlineScriptFile node.Position.FileName)
+
+            let collectUsage (node: Node) : (string * CWTools.Utilities.Position.range) list =
+                let fromLeaves =
+                    node.Leaves
+                    |> Seq.choose (fun l ->
+                        if l.Key.StartsWith("inline_script", StringComparison.OrdinalIgnoreCase) then
+                            Some(l.Value.ToRawString().Trim().Trim('"'), l.Position)
+                        else
+                            None)
+                    |> List.ofSeq
+
+                let fromNodes =
+                    node.Children
+                    |> List.choose (fun c ->
+                        if c.Key.StartsWith("inline_script", StringComparison.OrdinalIgnoreCase) then
+                            match c.Leafs "script" |> Seq.tryHead with
+                            | Some s -> Some(s.Value.ToRawString().Trim().Trim('"'), c.Position)
+                            | None -> None
+                        else
+                            None)
+
+                fromLeaves @ fromNodes
+
+            let allUsages =
+                es.All
+                |> List.filter notInline
+                |> List.collect (fun entity ->
+                    let acc = ResizeArray<string * CWTools.Utilities.Position.range>()
+                    let rec walk (n: Node) =
+                        for item in collectUsage n do acc.Add item
+                        for child in n.Children do walk child
+                    walk entity
+                    acc |> List.ofSeq)
+
+            let grouped =
+                allUsages
+                |> List.groupBy fst
+                |> List.filter (fun (_, occurrences) -> occurrences.Length > 20)
+
+            let errors =
+                grouped
+                |> List.collect (fun (path, occurrences) ->
+                    occurrences
+                    |> List.map (fun (_, pos) ->
+                        invManual (ErrorCodes.InlineScriptHighUsage path occurrences.Length) pos path None))
+
+            match errors with
+            | [] -> OK
+            | errors -> Invalid(Guid.NewGuid(), errors)
 
     let validateMtthWithModifier: STLStructureValidator =
         fun _ es ->

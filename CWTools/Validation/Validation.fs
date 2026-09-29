@@ -644,6 +644,75 @@ type ErrorCodes =
                 "Dynamic name '%s' ends with a digit; dynamic flag/event-target names are 'base + decimal ID' with no separator, so trailing digits can collide (a1@23 vs a12@3)"
                 name }
 
+    static member PopJobSyncEffectInLoop (effect: string) (loopType: string) =
+        { ID = "CW282"
+          Severity = Severity.Warning
+          Message =
+            sprintf
+                "Effect '%s' synchronously re-runs planet pop job assignments (EnsurePopJobsAreUpToDate); calling it inside a loop (%s) causes severe lag"
+                effect
+                loopType }
+
+    static member CreateCountryInLoop (loopType: string) (isSevere: bool) =
+        { ID = "CW283"
+          Severity = if isSevere then Severity.Error else Severity.Warning
+          Message =
+            sprintf
+                "create_country is the heaviest engine effect (synchronously contacts all countries and updates database arrays); calling it inside a loop (%s) causes severe freezing"
+                loopType }
+
+    static member NestedScopeIteration (innerIter: string) (outerIter: string) (scopeHop: string) =
+        { ID = "CW284"
+          Severity = Severity.Information
+          Message =
+            sprintf
+                "Nested iteration over owned container '%s' inside '%s' via '%s' creates O(N^2) scaling; consider filtering or caching to an event target first"
+                innerIter
+                outerIter
+                scopeHop }
+
+    static member ZeroFactorInWeightModifier =
+        { ID = "CW285"
+          Severity = Severity.Information
+          Message =
+            "Setting factor = 0 inside a weight modifier does not early-exit; subsequent modifiers are still fully evaluated. Move hard exclusions to potential/allow/limit blocks instead" }
+
+    static member CrossScopeVariableInLoop (varExpr: string) (loopType: string) =
+        { ID = "CW286"
+          Severity = Severity.Information
+          Message =
+            sprintf
+                "Cross-scope variable read '%s' inside a loop (%s) triggers a deep copy of the event scope on each iteration. Cache the variable outside the loop first"
+                varExpr
+                loopType }
+
+    static member DuplicateScopeChaining (chain: string) (count: int) =
+        { ID = "CW287"
+          Severity = Severity.Information
+          Message =
+            sprintf
+                "Duplicate chained scope transition '%s' (appears %d times in the same block); consolidate into a single nested block to avoid repeated scope frame construction"
+                chain
+                count }
+
+    static member UnsafeScopeSwitchInHotContext (scopeSwitch: string) (context: string) =
+        { ID = "CW288"
+          Severity = Severity.Information
+          Message =
+            sprintf
+                "Scope switch '%s' in hot context (%s) does not use the '?' safe-navigation operator; if the target is invalid, the engine serializes the entire scope into error logs on every tick"
+                scopeSwitch
+                context }
+
+    static member InlineScriptHighUsage (path: string) (count: int) =
+        { ID = "CW289"
+          Severity = Severity.Information
+          Message =
+            sprintf
+                "Inline script '%s' is invoked %d times; each call point duplicates and re-parses the AST. Consider parameterized scripted_trigger/effect or reducing unique argument expansions"
+                path
+                count }
+
     static member RulesError =
         fun error severity ->
             { ID = "CW998"

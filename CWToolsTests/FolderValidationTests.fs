@@ -2956,3 +2956,277 @@ let dynamicNameDigitSuffixValidationRegressionTests =
                        }"
 
               Expect.equal (validate script) OK "Static names and bare scopes are not dynamic names" ]
+
+[<Tests>]
+let extendedHotContextAndAntiPatternTests =
+    let costedCommandLookup () =
+        let lookup = Lookup()
+
+        lookup.configRules <-
+            [| CWTools.Rules.AliasRule(
+                   "trigger",
+                   (CWTools.Rules.LeafRule(
+                        specificField "expensive_galaxy_trigger",
+                        CWTools.Rules.ValueField CWTools.Rules.ValueType.Bool
+                    ),
+                    { CWTools.Rules.Options.DefaultOptions with
+                        cost = Some "o(n)_galaxy" })
+               )
+               CWTools.Rules.AliasRule(
+                   "trigger",
+                   (CWTools.Rules.LeafRule(
+                        specificField "expensive_eval_trigger",
+                        CWTools.Rules.ValueField CWTools.Rules.ValueType.Bool
+                    ),
+                    { CWTools.Rules.Options.DefaultOptions with
+                        cost = Some "script_eval" })
+               )
+               CWTools.Rules.AliasRule(
+                   "effect",
+                   (CWTools.Rules.LeafRule(
+                        specificField "sync_pop_effect",
+                        CWTools.Rules.ValueField CWTools.Rules.ValueType.Bool
+                    ),
+                    { CWTools.Rules.Options.DefaultOptions with
+                        syncEffect = Some "pop_jobs" })
+               )
+               CWTools.Rules.AliasRule(
+                   "effect",
+                   (CWTools.Rules.NodeRule(
+                        specificField "heavy_create_country",
+                        [||]
+                    ),
+                    { CWTools.Rules.Options.DefaultOptions with
+                        syncEffect = Some "heavy" })
+               ) |]
+
+        lookup
+
+    let makeEntity logicalpath text =
+        match CKParser.parseString text logicalpath with
+        | Success(statements, _, _) ->
+            let node = STLProcess.shipProcess.ProcessNode () "root" (mkZeroFile logicalpath) statements
+
+            { filepath = logicalpath
+              logicalpath = logicalpath
+              rawEntity = node
+              entity = node
+              validate = true
+              entityType = EntityType.Other
+              overwrite = Overwrite.No }
+        | Failure(error, _, _) -> failwith error
+
+    let makeSet entities =
+        entities
+        |> List.map (fun entity ->
+            struct (
+                entity,
+                lazy (STLComputedData(None, None, None, false, None, None, None))
+            ))
+        |> EntitySet
+
+    testList
+        "extended hot context and anti-pattern regression"
+        [ testCase "CW279 flags script_eval trigger in faction potential block"
+          <| fun _ ->
+              let faction =
+                  makeEntity
+                      "game/common/pop_faction_types/00_test_faction.txt"
+                      "test_faction = {\n\
+                       \tis_potential = {\n\
+                       \t\texpensive_eval_trigger = yes\n\
+                       \t}\n\
+                       }"
+
+              let res = CWTools.Validation.Stellaris.STLValidation.validateHotContextCost (costedCommandLookup ()) (makeSet []) (makeSet [ faction ])
+              match res with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 1 "Expected single CW279 error"
+                  Expect.equal errors.Head.code "CW279" "Diagnostic should be CW279"
+                  Expect.stringContains errors.Head.message "faction is_potential" "Context should name faction"
+              | OK -> failtest "Expected CW279"
+
+          testCase "CW279 flags o(n)_galaxy in edict allow block"
+          <| fun _ ->
+              let edict =
+                  makeEntity
+                      "game/common/edicts/00_test_edicts.txt"
+                      "test_edict = {\n\
+                       \tallow = {\n\
+                       \t\texpensive_galaxy_trigger = yes\n\
+                       \t}\n\
+                       }"
+
+              let res = CWTools.Validation.Stellaris.STLValidation.validateHotContextCost (costedCommandLookup ()) (makeSet []) (makeSet [ edict ])
+              match res with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 1 "Expected single CW279 error"
+                  Expect.equal errors.Head.code "CW279" "Diagnostic should be CW279"
+              | OK -> failtest "Expected CW279"
+
+          testCase "CW282 flags sync pop jobs effect inside every_owned_planet"
+          <| fun _ ->
+              let script =
+                  makeEntity
+                      "game/common/scripted_effects/test_sync.txt"
+                      "test_effect = {\n\
+                       \tevery_owned_planet = {\n\
+                       \t\tsync_pop_effect = yes\n\
+                       \t}\n\
+                       }"
+
+              let res = CWTools.Validation.Stellaris.STLValidation.validateSyncEffectsInLoop (costedCommandLookup ()) (makeSet []) (makeSet [ script ])
+              match res with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 1 "Expected single CW282 error"
+                  Expect.equal errors.Head.code "CW282" "Diagnostic should be CW282"
+                  Expect.stringContains errors.Head.message "EnsurePopJobsAreUpToDate" "Message should explain sync jobs"
+              | OK -> failtest "Expected CW282"
+
+          testCase "CW283 flags create_country inside loop"
+          <| fun _ ->
+              let script =
+                  makeEntity
+                      "game/common/scripted_effects/test_heavy.txt"
+                      "test_effect = {\n\
+                       \twhile = {\n\
+                       \t\tcount = 5\n\
+                       \t\theavy_create_country = {}\n\
+                       \t}\n\
+                       }"
+
+              let res = CWTools.Validation.Stellaris.STLValidation.validateSyncEffectsInLoop (costedCommandLookup ()) (makeSet []) (makeSet [ script ])
+              match res with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 1 "Expected single CW283 error"
+                  Expect.equal errors.Head.code "CW283" "Diagnostic should be CW283"
+              | OK -> failtest "Expected CW283"
+
+          testCase "CW284 flags nested owned iterator inside owned iterator"
+          <| fun _ ->
+              let script =
+                  makeEntity
+                      "game/common/scripted_effects/test_nest.txt"
+                      "test_effect = {\n\
+                       \tevery_owned_pop_group = {\n\
+                       \t\towner = {\n\
+                       \t\t\tany_owned_pop_group = {}\n\
+                       \t\t}\n\
+                       \t}\n\
+                       }"
+
+              let res = CWTools.Validation.Stellaris.STLValidation.validateNestedScopeIteration (makeSet []) (makeSet [ script ])
+              match res with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 1 "Expected single CW284 error"
+                  Expect.equal errors.Head.code "CW284" "Diagnostic should be CW284"
+              | OK -> failtest "Expected CW284"
+
+          testCase "CW285 flags factor = 0 inside weight modifier"
+          <| fun _ ->
+              let job =
+                  makeEntity
+                      "game/common/jobs/test_job.txt"
+                      "job_test = {\n\
+                       \tweight = {\n\
+                       \t\tweight = 10\n\
+                       \t\tmodifier = {\n\
+                       \t\t\tfactor = 0\n\
+                       \t\t\tis_enslaved = yes\n\
+                       \t\t}\n\
+                       \t}\n\
+                       }"
+
+              let res = CWTools.Validation.Stellaris.STLValidation.validateZeroFactorInWeightModifier (makeSet []) (makeSet [ job ])
+              match res with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 1 "Expected single CW285 error"
+                  Expect.equal errors.Head.code "CW285" "Diagnostic should be CW285"
+              | OK -> failtest "Expected CW285"
+
+          testCase "CW286 flags cross scope variable in loop"
+          <| fun _ ->
+              let script =
+                  makeEntity
+                      "game/common/scripted_effects/test_var.txt"
+                      "test_effect = {\n\
+                       \tevery_owned_planet = {\n\
+                       \t\tcheck_variable = { which = owner.target_var value = 1 }\n\
+                       \t}\n\
+                       }"
+
+              let res = CWTools.Validation.Stellaris.STLValidation.validateCrossScopeVariableInLoop (makeSet []) (makeSet [ script ])
+              match res with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 1 "Expected single CW286 error"
+                  Expect.equal errors.Head.code "CW286" "Diagnostic should be CW286"
+              | OK -> failtest "Expected CW286"
+
+          testCase "CW287 flags duplicate chained scope transition in same block"
+          <| fun _ ->
+              let script =
+                  makeEntity
+                      "game/common/scripted_effects/test_chain.txt"
+                      "test_effect = {\n\
+                       \tprev.prev.from = { set_variable = { which = a value = 1 } }\n\
+                       \tprev.prev.from = { set_variable = { which = b value = 2 } }\n\
+                       }"
+
+              let res = CWTools.Validation.Stellaris.STLValidation.validateDuplicateScopeChaining (makeSet []) (makeSet [ script ])
+              match res with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 1 "Expected single CW287 error on duplicate"
+                  Expect.equal errors.Head.code "CW287" "Diagnostic should be CW287"
+              | OK -> failtest "Expected CW287"
+
+          testCase "CW288 flags unsafe scope switch in hot context"
+          <| fun _ ->
+              let job =
+                  makeEntity
+                      "game/common/jobs/test_job.txt"
+                      "job_test = {\n\
+                       \tweight = {\n\
+                       \t\towner = {\n\
+                       \t\t\tis_ai = yes\n\
+                       \t\t}\n\
+                       \t}\n\
+                       }"
+
+              let res = CWTools.Validation.Stellaris.STLValidation.validateUnsafeScopeSwitchInHotContext (costedCommandLookup ()) (makeSet []) (makeSet [ job ])
+              match res with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 1 "Expected single CW288 error"
+                  Expect.equal errors.Head.code "CW288" "Diagnostic should be CW288"
+              | OK -> failtest "Expected CW288"
+
+          testCase "CW288 allows safe navigation operator owner?"
+          <| fun _ ->
+              let job =
+                  makeEntity
+                      "game/common/jobs/test_job.txt"
+                      "job_test = {\n\
+                       \tweight = {\n\
+                       \t\towner? = {\n\
+                       \t\t\tis_ai = yes\n\
+                       \t\t}\n\
+                       \t}\n\
+                       }"
+
+              let res = CWTools.Validation.Stellaris.STLValidation.validateUnsafeScopeSwitchInHotContext (costedCommandLookup ()) (makeSet []) (makeSet [ job ])
+              Expect.equal res OK "owner? with question mark is safe"
+
+          testCase "CW289 flags inline script invoked over 20 times"
+          <| fun _ ->
+              let calls = String.replicate 22 "inline_script = \"common/frequent_script\"\n"
+              let script =
+                  makeEntity
+                      "game/common/scripted_effects/test_inline.txt"
+                      ("test_effect = {\n" + calls + "}")
+
+              let res = CWTools.Validation.Stellaris.STLValidation.validateInlineScriptHighUsage (makeSet []) (makeSet [ script ])
+              match res with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 22 "Expected error on all occurrences"
+                  Expect.equal errors.Head.code "CW289" "Diagnostic should be CW289"
+                  Expect.stringContains errors.Head.message "22 times" "Message should name count"
+              | OK -> failtest "Expected CW289" ]

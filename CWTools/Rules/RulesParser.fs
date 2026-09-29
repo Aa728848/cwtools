@@ -360,7 +360,8 @@ module private RulesParserImpl =
                 match trimmed.Substring(0, equalsIndex).Trim().ToLowerInvariant() with
                 | "cost"
                 | "engine"
-                | "engine_evidence" -> true
+                | "engine_evidence"
+                | "sync_effect" -> true
                 | _ -> false
 
         let description =
@@ -394,7 +395,7 @@ module private RulesParserImpl =
                     else
                         [ parsed ]
             | None ->
-                match comments |> List.tryFind (fun s -> s.StartsWith("# scope =")) with
+                match comments |> List.tryFind (fun s -> s.StartsWith "# scope =") with
                 | Some s ->
                     let rhs = s.Substring(s.IndexOf '=' + 1).Trim()
                     if rhs.StartsWith('{') && rhs.EndsWith('}') then
@@ -496,6 +497,11 @@ module private RulesParserImpl =
             |> Option.map (fun v -> v.Trim().Trim('"'))
             |> Option.filter (String.IsNullOrWhiteSpace >> not)
 
+        let syncEffect =
+            commentSetting "sync_effect"
+            |> Option.map (fun v -> v.Trim().Trim('"'))
+            |> Option.filter (String.IsNullOrWhiteSpace >> not)
+
         { min = min
           max = max
           strictMin = strictmin
@@ -520,7 +526,8 @@ module private RulesParserImpl =
           inject = inject
           cost = cost
           engine = engine
-          engineEvidence = engineEvidence }
+          engineEvidence = engineEvidence
+          syncEffect = syncEffect }
 
     let fastStartsWith (x: string) y =
         x.StartsWith(y, StringComparison.OrdinalIgnoreCase)
@@ -881,7 +888,8 @@ module private RulesParserImpl =
           inject = None
           cost = None
           engine = None
-          engineEvidence = None }
+          engineEvidence = None
+          syncEffect = None }
 
     let private hsvRule =
         LeafValueRule(ValueField(ValueType.Float(0.0M, 2.0M))),
@@ -909,7 +917,8 @@ module private RulesParserImpl =
           inject = None
           cost = None
           engine = None
-          engineEvidence = None }
+          engineEvidence = None
+          syncEffect = None }
 
     let private configLeaf parseScope allScopes anyScope scopeGroup (leaf: Leaf) (comments: string list) (key: string) =
         let leftfield = processKey parseScope anyScope scopeGroup (key.Trim('"'))

@@ -2356,13 +2356,18 @@ type STLGame(setupSettings: StellarisSettings) =
                   validatePreTriggers, "pre"
                   validateIfWithNoEffect, "ifnoeffect"
                   validateMtthWithModifier, "mtthmodifier"
-                  validateDynamicNameDigitSuffix, "dynamicnamedigit" ]
+                  validateDynamicNameDigitSuffix, "dynamicnamedigit"
+                  validateNestedScopeIteration, "nestediteration"
+                  validateZeroFactorInWeightModifier, "zerofactor"
+                  validateCrossScopeVariableInLoop, "crossscopevar"
+                  validateDuplicateScopeChaining, "dupscopechain" ]
           globalValidators =
             [ validateVariables, "var"
               validateShipDesigns, "designs"
               validatePlanetKillers, "pk"
               valMegastructureGraphics, "megastructure"
-              valPlanetClassGraphics, "pcg" ]
+              valPlanetClassGraphics, "pcg"
+              validateInlineScriptHighUsage, "inlinescriptusage" ]
           dynamicValidators = [ validateVariables, "var" ]
           experimentalValidators = [ valSectionGraphics, "sections"; valComponentGraphics, "component" ]
           heavyExperimentalValidators = [ getEventChains, "event chains" ]
@@ -2372,6 +2377,8 @@ type STLGame(setupSettings: StellarisSettings) =
           lookupValidators = []
           globalLookupValidators =
               (validateHotContextCost, "hotcontextcost")
+              :: (validateSyncEffectsInLoop, "synceffectinloop")
+              :: (validateUnsafeScopeSwitchInHotContext, "unsafescopeswitch")
               :: (validateEconomicCatAIBudget, "aibudget")
               :: commonValidationRules
           lookupFileValidators = []
