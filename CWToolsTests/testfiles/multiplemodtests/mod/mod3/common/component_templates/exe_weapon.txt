@@ -25,6 +25,7 @@ utility_component_template = {
 			has_wg_authority = yes
 		}
 		modifier = {
+			# expected CW285: factor = 0 does not early-exit, the OR block is still evaluated
 			factor = 0.0
 			OR = {
 				component_no_resource = { RESOURCE = sr_alpha MIN_REQUIREMENT = 100 }
