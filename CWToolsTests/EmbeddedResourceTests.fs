@@ -72,7 +72,15 @@ let embeddedTests =
             Assembly
                 .GetExecutingAssembly()
                 .GetManifestResourceStream("CWToolsTests.testfiles.embeddedtest.embedded.vanilla_files_test.csv")
-            |> (fun f -> (new StreamReader(f)).ReadToEnd().Split(Environment.NewLine))
+            |> (fun f ->
+                // .gitattributes pins text files to LF, but a working tree checked out
+                // before that normalisation can still be CRLF, so split on LF and drop the
+                // leftover CR instead of assuming the host's newline convention.
+                (new StreamReader(f))
+                    .ReadToEnd()
+                    .Split([| '\n' |], StringSplitOptions.None)
+                |> Array.map (fun line -> line.Trim([| '\r'; '\n' |]))
+                |> Array.filter (fun line -> not (String.IsNullOrWhiteSpace line)))
             |> Array.toList
             |> List.map (fun f -> f, "")
 
