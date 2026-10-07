@@ -462,12 +462,6 @@ module CWToolsCLI =
         | x -> 1
 
 
-    let parse file =
-        match CKParser.parseFile file with
-        | Success(_, _, _) -> true, ""
-        | Failure(msg, _, _) -> false, msg
-
-
     let serialize game directory scope modFilter cachePath rulesPath compression (results: ParseResults<_>) =
         let cacheType =
             results.TryGetResult <@ OutputCacheType @>
@@ -598,7 +592,14 @@ module CWToolsCLI =
         | RulesPath path -> failwith "subcommand"
         | Compression compression -> failwith "subcommand"
         | DocsPath s -> failwith "subcommand"
-        | Parse results -> failwith "subcommand"
+        | Parse parseResults ->
+            let file = parseResults.GetResult <@ ParseArgs.File @>
+
+            match CKParser.parseFile file with
+            | Success(_, _, _) -> 0
+            | Failure(msg, _, _) ->
+                eprintfn "Parse failed: %s" msg
+                1
 
 //printfn "%A" argv
 // return an integer exit code
