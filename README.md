@@ -122,6 +122,45 @@ The repository contains several standalone tools and benchmark harnesses preserv
 - `CWToolsScripts`：用于规则和本地化数据提取的辅助脚本工程。
 - `tools/docker-regression-runner`：基于容器的回归测试环境，用于在干净的原版游戏环境中验证校验变动。
 
+### CWToolsCLI `list` / CWToolsCLI `list` 子命令
+
+`validate` produces the conclusion; `list` produces the evidence. `list` prints what
+the loaded game model actually contains: `folders`, `triggers`, `effects`,
+`localisation`, and `files`. Global arguments come before the subcommand, and the
+optional `--sort` must come before the list type:
+
+```bash
+dotnet <cli>/CWToolsCLI.dll --game stl --directory <dir> list --sort path folders
+```
+
+`list files` and `serialize Metadata` form a two-step protocol. Step 1 writes
+`cwtools-files.csv` into the **current working directory**, not into `--directory`.
+Step 2 reads that file back from `--directory` while building the metadata cache, so
+both paths must resolve to the same directory. Run both commands inside the game
+directory:
+
+```bash
+cd <game-dir>
+dotnet <cli>/CWToolsCLI.dll --game stl --directory . list --sort path files
+dotnet <cli>/CWToolsCLI.dll --game stl --directory . serialize Metadata
+```
+
+`list files` echoes the written path on stderr so a mismatch against `--directory`
+is visible immediately.
+
+`list files` 与 `serialize Metadata` 构成一个两步协议。第一步把 `cwtools-files.csv`
+写入**当前工作目录**，而不是 `--directory` 指向的目录；第二步在构建 metadata 缓存时
+从 `--directory` 把该文件读回，因此两个路径必须指向同一目录。通常在游戏目录内依次
+执行这两个命令：
+
+```bash
+cd <game-dir>
+dotnet <cli>/CWToolsCLI.dll --game stl --directory . list --sort path files
+dotnet <cli>/CWToolsCLI.dll --game stl --directory . serialize Metadata
+```
+
+`list files` 会把写入路径回显到 stderr，便于立即发现它与 `--directory` 不一致。
+
 Commit changes inside this submodule first. Then return to the parent repository
 and commit the updated submodule pointer separately. Do not combine library
 semantics and rules-data updates in one undifferentiated commit.

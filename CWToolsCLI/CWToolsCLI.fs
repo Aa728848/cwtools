@@ -119,8 +119,6 @@ module CWToolsCLI =
         | Triggers = 3
         | Effects = 4
         | Localisation = 5
-        | Technology = 6
-        | Types = 7
 
     type ListSort =
         | Path = 1
@@ -320,7 +318,7 @@ module CWToolsCLI =
                 None
             )
         //let gameObj = STL(directory, scope, modFilter, triggers, effects, getConfigFiles(Some directory, None))
-        let sortOrder = results.GetResult <@ Sort @>
+        let sortOrder = results.TryGetResult <@ Sort @> |> Option.flatten
 
         match results.GetResult <@ ListType @> with
         | ListTypes.Folders -> printfn "%A" gameObj.folders
@@ -330,6 +328,7 @@ module CWToolsCLI =
             | Some ListSort.Path ->
                 let files = gameObj.allFileList |> List.map (fun s -> s.file.Replace(directory, ""))
                 File.WriteAllLines("cwtools-files.csv", files)
+                eprintfn "cwtools-files.csv created at %s, relative to CWD; `serialize Metadata` reads it back from --directory, so run both commands from the same directory" "cwtools-files.csv"
             //gameObj.allFileList |> List.iter (fun f -> printfn "%O" f)
             | _ -> failwith "Unexpected sort order"
         | ListTypes.Triggers ->
@@ -340,27 +339,7 @@ module CWToolsCLI =
         | ListTypes.Effects ->
             let t = gameObj.scriptedEffectList
             printfn "%A" t
-        | ListTypes.Localisation -> ()
-        //printfn "%A" loc.GetKeys
-        // | ListTypes.Technology ->
-        //     (gameObj.references().Technologies) |> List.map fst |> List.iter (printfn "%A")
-        // | ListTypes.Types ->
-        //     gameObj.recompute()
-        //     let referencedTypes = gameObj.entities() |> List.choose (fun struct(e,l) -> l.Force().Referencedtypes)
-        //     // printfn "%A" referencedTypes
-        //     let combinedReferences = referencedTypes |> List.fold (fun s m -> merge s m (fun _ (a,b) -> a @ b)) Map.empty
-        //                                 |> Map.map (fun _ vs -> vs |> List.map (fun v -> v.name))
-        //     let types = gameObj.references().TypeMapInfo |> Map.map (fun _ vs -> vs |> List.map (fun t -> t.id))
-        //     let events = types |> Map.tryFind "scripted_trigger" |> Option.defaultValue []
-        //     let eventReferences = combinedReferences |> Map.tryFind "scripted_trigger" |> Option.defaultValue []
-        //     // eventReferences |> List.iter (printfn "%s")
-        //     let unused = List.except eventReferences events
-        //     unused |> List.iter (printfn "%s")
-        //     let files = events |> List.map (sprintf "%A")
-        //     File.WriteAllLines("file1.csv", files)
-        //     let files = eventReferences |> List.map (sprintf "%A")
-        //     File.WriteAllLines("file2.csv", files)
-
+        | ListTypes.Localisation -> gameObj.allLoadedLocalisation() |> List.iter (printfn "%s")
 
         | _ -> failwith "Unexpected list type"
 

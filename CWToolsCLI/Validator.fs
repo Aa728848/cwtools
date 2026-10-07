@@ -103,7 +103,7 @@ module Validator =
             Serializer.loadGame (dir, scope, modFilter, config, game, embedded, langs)
 
         let parserErrors = game.ParserErrors
-        member val folders = game.Folders
+        member val folders = game.Folders()
 
         member val parserErrorList =
             parserErrors ()
@@ -172,5 +172,6 @@ module Validator =
                           position = related.location }) })
 
         member __.recompute() = game.ForceRecompute()
-        member val scriptedTriggerList = game.ScriptedTriggers
-        member val scriptedEffectList = game.ScriptedEffects
+        member val scriptedTriggerList = game.ScriptedTriggers()
+        member val scriptedEffectList = game.ScriptedEffects()
+        member __.allLoadedLocalisation() = game.AllLoadedLocalisation()
