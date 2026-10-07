@@ -7,9 +7,9 @@
     <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>cwtools</ToolCommandName>
-    <PackageIconUrl>https://raw.githubusercontent.com/tboby/cwtools-vscode/master/docs/cwtools_logo.png</PackageIconUrl>
-    <PackageLicenseUrl>https://github.com/tboby/cwtools/blob/master/LICENSE</PackageLicenseUrl>
-    <RepositoryUrl>https://github.com/tboby/cwtools</RepositoryUrl>
+    <PackageIconUrl>https://raw.githubusercontent.com/Aa728848/cwtools-vscode/master/docs/cwtools_logo.png</PackageIconUrl>
+    <PackageLicenseUrl>https://github.com/Aa728848/cwtools/blob/master/LICENSE</PackageLicenseUrl>
+    <RepositoryUrl>https://github.com/Aa728848/cwtools</RepositoryUrl>
     <Authors>tboby</Authors>
     <PackageDescription>CWTools CLI as a dotnet tool</PackageDescription>
     <Description>A library for parsing, editing, and validating Paradox Interactive script files.</Description>
