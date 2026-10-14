@@ -689,5 +689,161 @@ test_item = {
                     $"{gameName} incremental localisation deletion diagnostics must match full refresh"
         finally
             try Directory.Delete(folder, true) with _ -> ()
-    )
+    )/// The TypeReferenceIndex and the FindAllRefsByType fallback memo are both
+/// derived state cached under the resource epoch. Neither may survive a commit/// The TypeReferenceIndex and the FindAllRefsByType fallback memo are both
+/// derived state cached under the resource epoch, so neither may outlive an
+/// incremental commit. The fallback memo is the observable half: it is repeated on
+/// the SAME game across an epoch move, so a memo keyed without the epoch replays
+/// the pre-edit answer (verified by breaking the key). The index assertions pin
+/// the "incremental == full refresh" contract.
+///
+/// Note on coverage: CommitTypeIndexForFiles dropping the index cache is not
+/// separable through the public API. A type-index commit advances only the
+/// type-rules epoch, but it also cannot change what the index is built from
+/// (entities, their computed-data lazies are not re-forced, and the InfoService is
+/// not rebuilt), and every current caller moves the resource epoch either just
+/// before it (UpdateFileInteractive / removeFile) or just after it
+/// (CommitRemoveFiles). So the clear is hardening that removes a hidden coupling
+/// rather than a fix for an observable divergence today.
+[<Tests>]
+let typeReferenceInvalidationTests =
+    testWithCapturedLogs
+    <| "type reference caches track the resource epoch and type-index commits"
+    <| fun () ->
+        let folder =
+            Path.Combine(Path.GetTempPath(), "cwtools-type-ref-invalidation-" + Guid.NewGuid().ToString("N"))
+        let itemFolder = Path.Combine(folder, "common", "test_items")
+        let itemFile = Path.Combine(itemFolder, "items.txt")
+        let holderFolder = Path.Combine(folder, "common", "test_holders")
+        let holderFile = Path.Combine(holderFolder, "holder.txt")
+        let callerFolder = Path.Combine(folder, "common", "test_caller")
+        let callerFile = Path.Combine(callerFolder, "caller.txt")
+        Directory.CreateDirectory(itemFolder) |> ignore
+        Directory.CreateDirectory(holderFolder) |> ignore
+        Directory.CreateDirectory(callerFolder) |> ignore
 
+        // value[test_item] is what makes the rules emit TypeDef references, which
+        // is what gives TypeReferenceIndex a non-empty body to assert on.
+        let rules =
+            """
+types = {
+    type[test_item] = {
+        path = "game/common/test_items"
+    }
+    type[test_holder] = {
+        path = "game/common/test_holders"
+    }
+}
+test_item = {
+    value = int
+}
+test_holder = {
+    item = value[test_item]
+}
+"""
+        let ruleFiles = [ Path.Combine(folder, "rules.cwt"), rules ]
+
+        let createGame () =
+            CWTools.Games.Custom.CustomGame(
+                crossGameSettings<JominiLookup> folder ruleFiles [| Lang.Custom CustomLang.English |],
+                "custom")
+            :> IGame
+
+        // Positions, not file names: the fallback matches by value text, so a
+        // second occurrence in the same file is exactly the observable we need.
+        let refFiles (game: IGame) (typeName: string) (id: string) =
+            game.FindAllRefsByType typeName id
+            |> List.map (fun r -> r.FileName, r.StartLine, r.StartColumn)
+            |> List.sort
+
+        let indexKeys (game: IGame) =
+            game.TypeReferenceIndex().Keys |> Seq.sort |> List.ofSeq
+
+        let typeFacts (game: IGame) =
+            game.Types()
+            |> Map.tryFind "test_item"
+            |> Option.defaultValue [||]
+            |> Array.map _.id
+            |> Array.sort
+
+        let initialItems = "first_item = { value = 1 }"
+        let editedItems = "second_item = { value = 2 }"
+        let twiceRenamedItems = "third_item = { value = 3 }"
+        let initialCaller = "caller = { note = orphan_value }"
+        let editedCaller = "caller = { note = orphan_value tail = orphan_value }"
+
+        // The holder references the item by value, so it lands in the index under
+        // ("test_item", <id>). Renaming the item must move that entry.
+        let writeState (itemText: string) (holderId: string) (callerText: string) =
+            File.WriteAllText(itemFile, itemText)
+            File.WriteAllText(holderFile, $"holder = {{ item = {holderId} }}")
+            File.WriteAllText(callerFile, callerText)
+
+        try
+            writeState initialItems "first_item" initialCaller
+
+            let incremental = createGame ()
+
+            // Two identical lookups in the same epoch: the second is served by the
+            // memo and must agree with the first verbatim.
+            let first = refFiles incremental "test_item" "orphan_value"
+            let second = refFiles incremental "test_item" "orphan_value"
+            Expect.equal
+                second
+                first
+                "a repeated lookup inside one epoch must return the memoised answer"
+
+            // A caller-only edit moves the resource epoch. The memo is keyed on
+            // that epoch, so it must NOT replay the pre-edit answer.
+            writeState initialItems "first_item" editedCaller
+            incremental.UpdateFile false callerFile (Some editedCaller) |> ignore
+
+            let afterCallerEdit = refFiles incremental "test_item" "orphan_value"
+            Expect.isGreaterThan
+                afterCallerEdit.Length
+                first.Length
+                "the memoised fallback must follow the resource epoch, not replay a stale answer"
+
+            // Now the TypeIndexOnly path: a plain type-definition rename prepared
+            // and committed through the incremental entry points. The comparison
+            // game is constructed only afterwards, so no intervening full refresh
+            // can mask a missing cache clear on the incremental one.
+            writeState editedItems "second_item" editedCaller
+            incremental.UpdateFile false itemFile (Some editedItems) |> ignore
+            incremental.UpdateFile false holderFile (Some "holder = { item = second_item }") |> ignore
+
+            let index = incremental :?> IIncrementalTypeIndex
+            let typeStage = index.PrepareTypeIndex [ itemFile; holderFile ]
+            Expect.isSome typeStage "a plain type-definition rename must prepare a type-index stage"
+            Expect.isTrue (index.CommitTypeIndex typeStage.Value) "the type-index stage must commit"
+
+            let full = createGame ()
+            Expect.equal
+                (typeFacts incremental)
+                (typeFacts full)
+                "the committed type index must match a full refresh"
+            Expect.equal
+                (indexKeys incremental)
+                (indexKeys full)
+                "the type reference index must match a full refresh after a type-index commit"
+            Expect.equal
+                (refFiles incremental "test_item" "orphan_value")
+                (refFiles full "test_item" "orphan_value")
+                "the fallback lookup must still match a full refresh after a type-index commit"
+
+            // A second commit in the same session: the clear is per-commit, not a
+            // one-shot at construction.
+            writeState twiceRenamedItems "third_item" editedCaller
+            incremental.UpdateFile false itemFile (Some twiceRenamedItems) |> ignore
+            incremental.UpdateFile false holderFile (Some "holder = { item = third_item }") |> ignore
+            let secondStage = index.PrepareTypeIndex [ itemFile; holderFile ]
+            Expect.isSome secondStage "a second rename must also prepare"
+            Expect.isTrue (index.CommitTypeIndex secondStage.Value) "the second type-index stage must commit"
+
+            let afterSecond = createGame ()
+            Expect.equal
+                (indexKeys incremental)
+                (indexKeys afterSecond)
+                "repeated type-index commits must keep the index equal to a full refresh"
+        finally
+            try Directory.Delete(folder, true) with _ -> ()

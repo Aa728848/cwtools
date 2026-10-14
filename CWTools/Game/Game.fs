@@ -1302,7 +1302,21 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         rulesManager.PrepareTypeIndex(files, typeKeys)
 
     member _.CommitTypeIndexForFiles(staged) =
-        rulesManager.CommitTypeIndex(staged)
+        let committed = rulesManager.CommitTypeIndex(staged)
+
+        // A committed type index changes which type values exist, so the derived
+        // TypeReferenceIndex has to go with it. Its cache key is the resource
+        // epoch, and `CommitTypeIndex` only advances the type-rules epoch, so
+        // relying on the key alone leaves a stale index for callers that commit a
+        // type index without moving the resource epoch. Rebuilding is lazy
+        // (`getOrBuildTypeReferenceIndex`), so dropping the entry here only costs
+        // the next lookup one full rebuild. Done inside the commit unit rather
+        // than at each call site so the delete path (RemoveTypeIndexForFiles and
+        // the staged file-deletion commit both land here) inherits it.
+        if committed then
+            LanguageFeatures.clearTypeReferenceIndexCache ()
+
+        committed
 
     member this.RemoveTypeIndexForFiles(files, typeKeys) =
         for file in files do

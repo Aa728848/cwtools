@@ -19,12 +19,24 @@ module LanguageFeatures =
     let private typeReferenceIndexCache =
         ConcurrentDictionary<struct (int * int), Map<string * string, range list>>()
 
+    /// `findAllRefsByType` falls back to a full AST walk over every validatable
+    /// entity when the index holds no entry for a value. That walk reads entity
+    /// ASTs only, so its result is a pure function of the resource epoch plus the
+    /// normalised query pair: same epoch and same query must yield the same list.
+    /// Memoised under the index's own epoch key so the two caches share a lifetime.
+    [<Literal>]
+    let internal TypeReferenceFallbackCacheMaxEntries = 512
+
+    let private typeReferenceFallbackCache =
+        ConcurrentDictionary<struct (int * int * string * string), range list>()
+
     let clearCompletionEntityCache () =
         completionEntityCache.Clear()
         infoEntityCache.Clear()
 
     let clearTypeReferenceIndexCache () =
         typeReferenceIndexCache.Clear()
+        typeReferenceFallbackCache.Clear()
 
     [<Literal>]
     let internal ScriptedEffectParamMapCacheMaxEntries = 256
@@ -197,6 +209,29 @@ module LanguageFeatures =
             )
 
         index
+
+    let getOrBuildTypeReferenceFallback
+        (resourceManager: ResourceManager<_>)
+        (typename: string)
+        (typeValue: string)
+        (buildFallback: unit -> range list)
+        =
+        let managerId = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(resourceManager)
+        let version = ResourceManagerEager.currentResource ()
+        let cacheKey = struct (managerId, version, typename, typeValue)
+
+        typeReferenceFallbackCache.GetOrAdd(
+            cacheKey,
+            fun _ ->
+                if typeReferenceFallbackCache.Count > TypeReferenceFallbackCacheMaxEntries then
+                    // Every entry is epoch-keyed, so an entry left behind by a
+                    // moved epoch is already dead: a wholesale drop is the
+                    // cheapest bounded policy and keeps the cache bounded on
+                    // workspaces that churn through many distinct values.
+                    typeReferenceFallbackCache.Clear()
+
+                buildFallback ()
+        )
 
     let getNodeForTypeDefAndType
         (resourceManager: ResourceManager<_>)
@@ -1874,28 +1909,33 @@ module LanguageFeatures =
         if refsFromTypes.Length > 0 then
             refsFromTypes
         else
-            let rec searchNode (node: Node) =
-                [ yield!
-                      node.Leaves
-                      |> Seq.choose (fun l ->
-                          if isSameText l.Key typeValue || isSameText (trimReferenceValue l.ValueText) typeValue then
-                              Some l.Position
-                          else
-                              None)
-                  yield!
-                      node.LeafValues
-                      |> Seq.choose (fun lv ->
-                          if isSameText (trimReferenceValue lv.ValueText) typeValue then
-                              Some lv.Position
-                          else
-                              None)
-                  yield!
-                      node.Nodes
-                      |> Seq.choose (fun n -> if isSameText n.Key typeValue then Some n.Position else None)
-                  yield! node.Nodes |> Seq.collect searchNode ]
+            getOrBuildTypeReferenceFallback
+                resourceManager
+                typename
+                typeValue
+                (fun () ->
+                    let rec searchNode (node: Node) =
+                        [ yield!
+                              node.Leaves
+                              |> Seq.choose (fun l ->
+                                  if isSameText l.Key typeValue || isSameText (trimReferenceValue l.ValueText) typeValue then
+                                      Some l.Position
+                                  else
+                                      None)
+                          yield!
+                              node.LeafValues
+                              |> Seq.choose (fun lv ->
+                                  if isSameText (trimReferenceValue lv.ValueText) typeValue then
+                                      Some lv.Position
+                                  else
+                                      None)
+                          yield!
+                              node.Nodes
+                              |> Seq.choose (fun n -> if isSameText n.Key typeValue then Some n.Position else None)
+                          yield! node.Nodes |> Seq.collect searchNode ]
 
-            resourceManager.Api.ValidatableEntities()
-            |> List.collect (fun struct (e, _) -> searchNode e.entity)
+                    resourceManager.Api.ValidatableEntities()
+                    |> List.collect (fun struct (e, _) -> searchNode e.entity))
 
     let findAllRefsFromPos
         (fileManager: FileManager)
