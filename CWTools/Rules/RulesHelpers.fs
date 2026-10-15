@@ -440,9 +440,18 @@ let generateModifiersFromTypes (typedefs: TypeDefinition list) (typeDefMap: Coll
         | Some typeInstances -> typeInstances |> Seq.collect (fun ti -> generateModifiersFromType td ti) |> List.ofSeq
         | None -> [])
 
+/// A typed modifier's `###` comment is the only place a rule author can document it,
+/// so it has to reach the produced rule's Options.description or hover/completion never
+/// show it. An already-present description is extended rather than replaced.
+let private combineDescription (existing: string option) (documentation: string option) =
+    match existing, documentation with
+    | Some previous, Some text -> Some(previous + Environment.NewLine + text)
+    | _, text -> text
+
 let private modifierRuleFromNameAndTypeDef (nameWithSubtypes: string) (m: TypeModifier) =
     let modifierOptions =
         { Options.DefaultOptions with
+            description = combineDescription Options.DefaultOptions.description m.documentation
             requiredScopes = modifierCategoryManager.SupportedScopes m.category
             typeHint = Some("modifier_type", false) }
 
