@@ -40,6 +40,12 @@ type LocalisationManager<'T when 'T :> ComputedData>
     let mutable completedDeltaCursor: LocalisationDeltaCursor option = None
     let takeDeltaOwner = "CWTools.LocalisationManager.TakeDelta"
 
+    // Aggregate observability for the staged processed-localisation candidate
+    // lifecycle (prepare builds, commit publishes). Legacy full reprocesses are
+    // deliberately not counted here.
+    let mutable prepareProcessedLocalisationCount = 0L
+    let mutable commitProcessedLocalisationCount = 0L
+
     let validatableLocalisation () =
         this.GetLocalisationAPIs()
         |> List.choose (fun struct (validate, api) -> if validate then Some api else None)
@@ -448,6 +454,44 @@ type LocalisationManager<'T when 'T :> ComputedData>
         lock deltaGate updateProcessedLocalisation
     member _.ReprocessLocalisationCommands() =
         lock deltaGate reprocessLocalisationCommands
+
+    /// Reference identity of the parsed localisation sources. Staged rules refreshes
+    /// capture this at prepare and re-check it at commit so a processed-localisation
+    /// candidate resolved against unchanged sources is never published after a source
+    /// edit.
+    member internal _.LocalisationSourceIdentity = box localisationAPIMap
+
+    /// Resolve processed-localisation candidates against a detached lookup without
+    /// touching live lookup state or the delta journal. Used by staged rules refresh;
+    /// the caller stages the result and publishes it via CommitProcessedLocalisationCommands.
+    member _.PrepareProcessedLocalisationCommands(detachedLookup: Lookup) =
+        lock deltaGate (fun () ->
+            System.Threading.Interlocked.Increment(&prepareProcessedLocalisationCount) |> ignore
+
+            let validatableEntries =
+                validatableLocalisation ()
+                |> List.groupBy _.GetLang
+                |> List.map (fun (k, g) ->
+                    k,
+                    g
+                    |> Seq.collect (fun ls -> ls.GetEntries |> Seq.map (fun x -> (x.key, x)))
+                    |> Map.ofSeq)
+
+            let processLoc = processLocalisation detachedLookup
+            validatableEntries |> List.map processLoc)
+
+    /// Publish a prepared processed-localisation candidate and commit the reverse
+    /// reference index. The delta journal is deliberately left untouched: the parsed
+    /// sources did not change, so its pending entries stay exactly as they were.
+    member _.CommitProcessedLocalisationCommands(candidate: (Lang * Collections.Map<string, LocEntry>) list) =
+        lock deltaGate (fun () ->
+            System.Threading.Interlocked.Increment(&commitProcessedLocalisationCount) |> ignore
+            lookup.proccessedLoc <- candidate
+            rebuildProcessedReferenceIndex ())
+
+    member internal _.ProcessedLocalisationCommandStats() =
+        (System.Threading.Volatile.Read(&prepareProcessedLocalisationCount),
+         System.Threading.Volatile.Read(&commitProcessedLocalisationCount))
     member _.UpdateLocalisationFile(locFile: FileWithContentResource) =
         lock deltaGate (fun () -> updateLocalisationSource locFile)
     member _.RemoveLocalisationFile(filepath: string) =

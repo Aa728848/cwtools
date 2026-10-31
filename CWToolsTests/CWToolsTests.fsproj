@@ -24,6 +24,7 @@
         <Compile Include="StellarisConfigValidationTests.fs"/>
         <Compile Include="ScopeRegressionTests.fs"/>
         <Compile Include="ContractTests.fs"/>
+        <Compile Include="RuleValidationMemoTests.fs"/>
         <Compile Include="ShaderUnitTests.fs"/>
         <Compile Include="CarrierEventTests.fs"/>
         <Compile Include="Tests.fs"/>

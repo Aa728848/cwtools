@@ -294,38 +294,67 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     // The structures below only change on a full refreshConfig (or an explicit rules reload),
     // so rebuilding them on every incremental scripted-type commit is wasted work inside the
     // save path. All caches key on reference identity of their immutable sources: any real
-    // change produces a new instance and therefore a cache miss.
+    // change produces a new instance and therefore a cache miss. A single lock guards every
+    // entry so live, staged-clone, and overlay materialisation share them safely, and each
+    // helper computes only from the source reference it is handed: a staged clone can only
+    // ever hit against its own sources, never the live lookup's current fields.
+    let serviceInputCacheLock = obj ()
+    let mutable serviceInputCacheHits = 0L
+    let mutable serviceInputCacheMisses = 0L
+
     let mutable cachedRulesWrapperSource: obj = null
     let mutable cachedRulesWrapper: RulesWrapper option = None
 
     let rulesWrapperFor (rules: RootRule array) =
-        match cachedRulesWrapper with
-        | Some wrapper when Object.ReferenceEquals(cachedRulesWrapperSource, rules) -> wrapper
-        | _ ->
-            let wrapper = RulesWrapper(rules)
-            cachedRulesWrapperSource <- box rules
-            cachedRulesWrapper <- Some wrapper
-            wrapper
+        lock serviceInputCacheLock (fun () ->
+            match cachedRulesWrapper with
+            | Some wrapper when Object.ReferenceEquals(cachedRulesWrapperSource, rules) ->
+                serviceInputCacheHits <- serviceInputCacheHits + 1L
+                wrapper
+            | _ ->
+                serviceInputCacheMisses <- serviceInputCacheMisses + 1L
+                let wrapper = RulesWrapper(rules)
+                cachedRulesWrapperSource <- box rules
+                cachedRulesWrapper <- Some wrapper
+                wrapper)
+
+    let mutable cachedFrozenTypeMapSource: obj = null
+
+    let mutable cachedFrozenTypeMap: FrozenDictionary<string, PrefixOptimisedStringSet> =
+        FrozenDictionary.Empty
+
+    let frozenTypeMapFor (typeMapSource: Map<string, PrefixOptimisedStringSet>) =
+        lock serviceInputCacheLock (fun () ->
+            if Object.ReferenceEquals(cachedFrozenTypeMapSource, typeMapSource) then
+                serviceInputCacheHits <- serviceInputCacheHits + 1L
+                cachedFrozenTypeMap
+            else
+                serviceInputCacheMisses <- serviceInputCacheMisses + 1L
+                let frozen = typeMapSource.ToFrozenDictionary()
+                cachedFrozenTypeMapSource <- box typeMapSource
+                cachedFrozenTypeMap <- frozen
+                frozen)
 
     let mutable cachedVarMapSource: obj = null
 
     let mutable cachedVarMap: FrozenDictionary<string, PrefixOptimisedStringSet> =
         FrozenDictionary.Empty
 
-    let varMapFrom (sourceLookup: 'L) =
-        (sourceLookup.varDefInfo
-         |> Map.toSeq
-         |> PSeq.map (fun (k, s) -> KeyValuePair(k, s |> Seq.map fst |> createStringSet)))
-            .ToFrozenDictionary()
-
-    let currentVarMap () =
-        if not (Object.ReferenceEquals(cachedVarMapSource, lookup.varDefInfo)) then
-            cachedVarMap <-
-                varMapFrom lookup
-
-            cachedVarMapSource <- box lookup.varDefInfo
-
-        cachedVarMap
+    let varMapFor (varDefInfo: Map<string, array<string * range>>) =
+        lock serviceInputCacheLock (fun () ->
+            if Object.ReferenceEquals(cachedVarMapSource, varDefInfo) then
+                serviceInputCacheHits <- serviceInputCacheHits + 1L
+                cachedVarMap
+            else
+                serviceInputCacheMisses <- serviceInputCacheMisses + 1L
+                let varMap =
+                    (varDefInfo
+                     |> Map.toSeq
+                     |> PSeq.map (fun (k, s) -> KeyValuePair(k, s |> Seq.map fst |> createStringSet)))
+                        .ToFrozenDictionary()
+                cachedVarMapSource <- box varDefInfo
+                cachedVarMap <- varMap
+                varMap)
 
     let mutable cachedAliasKeyMapKey: (obj * obj * obj) voption = ValueNone
 
@@ -335,20 +364,23 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
     let aliasKeyMapFor
         (rulesWrapper: RulesWrapper)
         (typeMapSource: Map<string, PrefixOptimisedStringSet>)
-        (frozenTypeMap: FrozenDictionary<string, PrefixOptimisedStringSet>)
+        (enumMapSource: FrozenDictionary<string, string * PrefixOptimisedStringSet>)
         =
-        match cachedAliasKeyMapKey with
-        | ValueSome(w, t, e) when
-            Object.ReferenceEquals(w, rulesWrapper)
-            && Object.ReferenceEquals(t, typeMapSource)
-            && Object.ReferenceEquals(e, tempEnumMap)
-            ->
-            cachedAliasKeyMap
-        | _ ->
-            let result = computeAliasKeyMap rulesWrapper frozenTypeMap tempEnumMap
-            cachedAliasKeyMapKey <- ValueSome(box rulesWrapper, box typeMapSource, box tempEnumMap)
-            cachedAliasKeyMap <- result
-            result
+        lock serviceInputCacheLock (fun () ->
+            match cachedAliasKeyMapKey with
+            | ValueSome(w, t, e) when
+                Object.ReferenceEquals(w, rulesWrapper)
+                && Object.ReferenceEquals(t, typeMapSource)
+                && Object.ReferenceEquals(e, enumMapSource)
+                ->
+                serviceInputCacheHits <- serviceInputCacheHits + 1L
+                cachedAliasKeyMap
+            | _ ->
+                serviceInputCacheMisses <- serviceInputCacheMisses + 1L
+                let result = computeAliasKeyMap rulesWrapper (frozenTypeMapFor typeMapSource) enumMapSource
+                cachedAliasKeyMapKey <- ValueSome(box rulesWrapper, box typeMapSource, box enumMapSource)
+                cachedAliasKeyMap <- result
+                result)
 
     let buildRuleValidationServiceFor
         (sourceLookup: 'L)
@@ -394,9 +426,9 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         loc
         files
         =
-        let typeMap = typeMapSource.ToFrozenDictionary()
-        let varMap = varMapFrom sourceLookup
-        let aliasKeyMap = computeAliasKeyMap rulesWrapper typeMap sourceTempEnumMap
+        let typeMap = frozenTypeMapFor typeMapSource
+        let varMap = varMapFor sourceLookup.varDefInfo
+        let aliasKeyMap = aliasKeyMapFor rulesWrapper typeMapSource sourceTempEnumMap
 
         let dataTypes =
             embeddedSettings.localisationCommands
@@ -473,75 +505,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         ruleValidationService, infoService, completionService
 
     let buildServices rulesWrapper (typeMapSource: Map<string, PrefixOptimisedStringSet>) loc files =
-        let typeMap = typeMapSource.ToFrozenDictionary()
-        let varMap = currentVarMap ()
-        let aliasKeyMap = aliasKeyMapFor rulesWrapper typeMapSource typeMap
-
-        let dataTypes =
-            embeddedSettings.localisationCommands
-            |> function
-                | Jomini dts -> dts
-                | _ ->
-                    { promotes = Map.empty
-                      confidentFunctions = Map.empty
-                      functions = Map.empty
-                      dataTypes = Map.empty
-                      dataTypeNames = Set.empty }
-
-        let processLoc, validateLoc = settings.locFunctions lookup
-        let globalScriptVariables = lookup.globalScriptedVariableNames
-
-        let ruleValidationService =
-            buildRuleValidationService rulesWrapper typeMap varMap loc files (Some aliasKeyMap)
-
-        let infoService =
-            InfoService(
-                rulesWrapper,
-                lookup.typeDefs,
-                typeMap,
-                tempEnumMap,
-                varMap,
-                loc,
-                files,
-                lookup.eventTargetLinksMap,
-                lookup.valueTriggerMap,
-                ruleValidationService,
-                settings.changeScope,
-                settings.defaultContext,
-                settings.anyScope,
-                settings.defaultLang,
-                processLoc,
-                validateLoc,
-                extendedConfigMetadata = lookup.extendedConfigMetadata,
-                aliasKeyMapOverride = aliasKeyMap,
-                scopeContextOverride = settings.scopeContextOverride
-            )
-
-        let completionService =
-            CompletionService(
-                rulesWrapper,
-                lookup.typeDefs,
-                typeMap,
-                tempEnumMap,
-                varMap,
-                loc,
-                files,
-                lookup.eventTargetLinksMap,
-                lookup.valueTriggerMap,
-                globalScriptVariables,
-                settings.changeScope,
-                settings.defaultContext,
-                settings.anyScope,
-                settings.oneToOneScopesNames,
-                settings.defaultLang,
-                dataTypes,
-                processLoc,
-                validateLoc,
-                extendedConfigMetadata = lookup.extendedConfigMetadata,
-                aliasKeyMapOverride = aliasKeyMap
-            )
-
-        ruleValidationService, infoService, completionService
+        buildServicesFor lookup tempEnumMap rulesWrapper typeMapSource loc files
 
     let scriptedParameterPattern =
         Regex(@"\$([^$|]+)(?:\|([^$]*))?\$", RegexOptions.Compiled)
@@ -716,8 +680,6 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let mutable tempTypeMap = initialTempTypeMap
         let mutable tempEnumMap = initialTempEnumMap
         let mutable rulesDataGenerated = initialRulesDataGenerated
-
-        let rulesWrapperFor (rules: RootRule array) = RulesWrapper(rules)
 
         let refreshDynamicParameterEnums () =
             settings.refreshConfigBeforeFirstTypesHook lookup resources embeddedSettings
@@ -1492,7 +1454,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let loc = currentLoc ()
         let allFiles = currentFiles ()
         let emptyVarMap: FrozenDictionary<string, PrefixOptimisedStringSet> = FrozenDictionary.Empty
-        let baseFrozenTypeMap = tempTypeMap.ToFrozenDictionary()
+        let baseFrozenTypeMap = frozenTypeMapFor tempTypeMap
 
         let tempRuleValidationService =
             buildRuleValidationService
@@ -1501,7 +1463,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 emptyVarMap
                 loc
                 allFiles
-                (Some(aliasKeyMapFor rulesWrapper tempTypeMap baseFrozenTypeMap))
+                (Some(aliasKeyMapFor rulesWrapper tempTypeMap tempEnumMap))
 
         let entities =
             files
@@ -1594,7 +1556,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                     let loc = currentLoc ()
                     let allFiles = currentFilesFrom resourceSource
                     let emptyVarMap: FrozenDictionary<string, PrefixOptimisedStringSet> = FrozenDictionary.Empty
-                    let baseFrozenTypeMap = baseTempTypeMap.ToFrozenDictionary()
+                    let baseFrozenTypeMap = frozenTypeMapFor baseTempTypeMap
                     let service =
                         buildRuleValidationService
                             rulesWrapper
@@ -1602,7 +1564,7 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                             emptyVarMap
                             loc
                             allFiles
-                            (Some(aliasKeyMapFor rulesWrapper baseTempTypeMap baseFrozenTypeMap))
+                            (Some(aliasKeyMapFor rulesWrapper baseTempTypeMap tempEnumMap))
                     preparedTypeIndexServiceCache <-
                         Some(
                             configRulesIdentity,
@@ -1857,6 +1819,9 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         let baseTypeDefInfo = lookup.typeDefInfo
         let baseVarDefInfo = lookup.varDefInfo
         let baseConfigRules = lookup.configRules
+        let baseProcessedLoc = lookup.proccessedLoc
+        let baseLocalisationSources = localisation.LocalisationSourceIdentity
+        let localisationEpoch = ResourceManagerEager.currentLocalisation ()
         let clone = lookup.ShallowClone() :?> 'L
         let (ruleValidationService,
              infoService,
@@ -1865,6 +1830,13 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
              refreshedTempEnumMap,
              refreshedRulesDataGenerated) =
             refreshConfigFor clone tempTypeMap tempEnumMap rulesDataGenerated
+
+        // Processed-localisation commands resolve against the indexes rebuilt on the
+        // clone (event targets, scripted loc, variables). Prepare the candidate now so
+        // the write-locked commit only publishes it, and fold it into the field
+        // snapshot so the apply is a single guarded swap.
+        let processedLocCandidate = localisation.PrepareProcessedLocalisationCommands(clone)
+        clone.proccessedLoc <- processedLocCandidate
 
         Some
             { lookupSnapshot = clone.CreateFieldSnapshot()
@@ -1876,7 +1848,11 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
               newRulesDataGenerated = refreshedRulesDataGenerated
               ruleService = box ruleValidationService
               infoService = box infoService
-              completionService = box completionService }
+              completionService = box completionService
+              processedLocCandidate = box processedLocCandidate
+              baseProcessedLoc = box baseProcessedLoc
+              baseLocalisationSources = baseLocalisationSources
+              localisationEpoch = localisationEpoch }
 
     let prepareConfigRules (rulesSettings: RulesSettings) =
         clearPreparedTypeIndexServiceCache ()
@@ -1898,12 +1874,22 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
     let commitRefreshConfig (staged: StagedCacheRefresh) =
         clearPreparedTypeIndexServiceCache ()
-        let guardsHold =
+        let lookupGuardsHold =
             System.Object.ReferenceEquals(lookup.typeDefInfo, staged.baseTypeDefInfo)
             && System.Object.ReferenceEquals(lookup.varDefInfo, staged.baseVarDefInfo)
             && System.Object.ReferenceEquals(lookup.configRules, staged.baseConfigRules)
 
-        if not guardsHold then
+        // The processed-localisation candidate was resolved against the staged clone's
+        // indexes and the localisation sources observed at prepare. Publishing it after
+        // a localisation edit would resurrect stale command diagnostics, so the live
+        // processed entries, the parsed-source identity, and the localisation epoch
+        // must all still match prepare.
+        let localisationGuardsHold =
+            System.Object.ReferenceEquals(lookup.proccessedLoc, staged.baseProcessedLoc)
+            && System.Object.ReferenceEquals(localisation.LocalisationSourceIdentity, staged.baseLocalisationSources)
+            && ResourceManagerEager.currentLocalisation () = staged.localisationEpoch
+
+        if not (lookupGuardsHold && localisationGuardsHold) then
             None
         else
             lookup.ApplyFieldSnapshot(staged.lookupSnapshot)
@@ -1913,6 +1899,12 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                 staged.newTempEnumMap :?> FrozenDictionary<string, string * PrefixOptimisedStringSet>
 
             rulesDataGenerated <- staged.newRulesDataGenerated
+
+            // Publish the prepared candidate and commit its reverse reference index.
+            // The delta journal is deliberately not cleared or acknowledged here.
+            localisation.CommitProcessedLocalisationCommands(
+                staged.processedLocCandidate :?> (Lang * Collections.Map<string, LocEntry>) list
+            )
 
             ResourceManagerEager.nextTypeRules () |> ignore
 
@@ -2050,6 +2042,11 @@ type RulesManager<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
             preparedTypeIndexServiceCache.IsSome,
             preparedTypeIndexServiceCacheHits,
             preparedTypeIndexServiceCacheMisses)
+
+    /// Aggregate hit/miss counters for the reference-keyed service input caches
+    /// (rules wrapper, frozen type map, var map, alias key map).
+    member internal _.ServiceInputCacheStats() =
+        lock serviceInputCacheLock (fun () -> serviceInputCacheHits, serviceInputCacheMisses)
 
     member _.LoadBaseConfig(rulesSettings) = loadBaseConfig rulesSettings
     member internal _.BaseConfigRules = baseConfigRules

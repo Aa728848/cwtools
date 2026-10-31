@@ -1503,16 +1503,35 @@ type ResourceManager<'T when 'T :> ComputedData>
         entitiesMap.Values
         |> PSeq.iter (fun (struct (e, l)) -> computedDataUpdateFunction e (l.Force()))
 
+    // Aggregate observability for the on-demand Lazy invalidation. The caller
+    // holds the game write lock, so no concurrent evaluation can race the swap.
+    let mutable forceRecomputeReplaced = 0L
+    let mutable forceRecomputeSkipped = 0L
+
     let forceRecompute () =
         // 失效 inline_script 缓存，确保下一次展开使用最新数据
         invalidateInlineScriptsCache ()
+        let mutable replaced = 0L
+        let mutable skipped = 0L
+
         for pair in entitiesMap do
-            let struct (entity, _) = pair.Value
+            let struct (entity, lazyData) = pair.Value
 
-            let lazyi =
-                System.Lazy<_>((fun () -> computedDataFunction entity), LazyThreadSafetyMode.PublicationOnly)
+            if lazyData.IsValueCreated then
+                // Already-created values are stale under the refreshed services;
+                // swap in a fresh instance so the next access recomputes on demand.
+                let lazyi =
+                    System.Lazy<_>((fun () -> computedDataFunction entity), LazyThreadSafetyMode.PublicationOnly)
 
-            entitiesMap[pair.Key] <- struct (entity, lazyi)
+                entitiesMap[pair.Key] <- struct (entity, lazyi)
+                replaced <- replaced + 1L
+            else
+                // Never-created values keep their instance and must not be forced:
+                // whole-table prewarm would only amplify peak allocation.
+                skipped <- skipped + 1L
+
+        Interlocked.Add(&forceRecomputeReplaced, replaced) |> ignore
+        Interlocked.Add(&forceRecomputeSkipped, skipped) |> ignore
 
         // Validation and language features force the data they actually consume.
         // A competing whole-workspace prewarm can evaluate PublicationOnly lazies
@@ -1873,6 +1892,9 @@ type ResourceManager<'T when 'T :> ComputedData>
         | Success(s, _, _) ->
             let filenamenopath = Path.GetFileNameWithoutExtension filename
             Some(shipProcess EntityType.Other filenamenopath (mkZeroFile filename) s)
+
+    member internal _.ForceRecomputeStats() =
+        (Volatile.Read(&forceRecomputeReplaced), Volatile.Read(&forceRecomputeSkipped))
 
     member _.Api =
         { new IResourceAPI<'T> with

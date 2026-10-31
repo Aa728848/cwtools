@@ -166,6 +166,28 @@ type ValidationManagerServices<'T when 'T :> ComputedData> =
       localisationKeys: unit -> (Lang * Set<string>) array
       fileManager: Files.FileManager }
 
+/// Key of the completed rule-validation result memo. Entity and service are
+/// compared by reference; the path uses the canonical path comparison; the
+/// resource and localisation epochs pin the workspace snapshot the result was
+/// computed against; lazyCreated records whether the entity's computed data
+/// had already been forced when the result was observed.
+[<Sealed>]
+type internal RuleResultMemoKey
+    (
+        path: string,
+        entity: Entity,
+        service: RuleValidationService,
+        resourceEpoch: int,
+        localisationEpoch: int,
+        lazyCreated: bool
+    ) =
+    member _.Path = path
+    member _.Entity = entity
+    member _.Service = service
+    member _.ResourceEpoch = resourceEpoch
+    member _.LocalisationEpoch = localisationEpoch
+    member _.LazyCreated = lazyCreated
+
 open System.Collections.Generic
 
 type ErrorCache() =
@@ -333,6 +355,29 @@ type ValidationManager<'T when 'T :> ComputedData>
             scriptedParamsSnapshotCache <- None
             scriptedParamsDirtyFiles <- Set.empty)
 
+    // Single-slot whole-workspace snapshot for the deferred dynamic
+    // validators, keyed by the resource epoch so an unchanged workspace
+    // reuses one EntitySet; changedEntities stays per-batch and the
+    // dynamic validators still run on every batch.
+    let dynamicWorkspaceGate = obj ()
+    let mutable dynamicWorkspaceSnapshotCache: (int * EntitySet<'T>) option = None
+    let mutable dynamicWorkspaceSnapshotBuilds = 0L
+    let mutable dynamicWorkspaceSnapshotReuses = 0L
+
+    let dynamicWorkspaceEntitySetSnapshot () =
+        let epoch = ResourceManagerEager.currentResource ()
+
+        lock dynamicWorkspaceGate (fun () ->
+            match dynamicWorkspaceSnapshotCache with
+            | Some(storedEpoch, snapshot) when storedEpoch = epoch ->
+                dynamicWorkspaceSnapshotReuses <- dynamicWorkspaceSnapshotReuses + 1L
+                snapshot
+            | _ ->
+                let snapshot = EntitySet<'T>(resources.AllEntities())
+                dynamicWorkspaceSnapshotCache <- Some(epoch, snapshot)
+                dynamicWorkspaceSnapshotBuilds <- dynamicWorkspaceSnapshotBuilds + 1L
+                snapshot)
+
     // A DidChange interactive pass and the following save often validate the exact
     // same immutable Entity with the exact same RuleValidationService. Keep a small
     // bounded LRU of completed results so save-time deep validation can reuse them
@@ -459,6 +504,122 @@ type ValidationManager<'T when 'T :> ComputedData>
                 | _ -> None
             | None -> None)
 
+    // Completed rule-validation result memo, kept fully separate from the
+    // one-shot detached cache above. Query order per entity is detached take
+    // -> memo -> runRuleValidation. A memo hit still runs addToCache, the
+    // nonSelf/impacted assembly and every downstream filter; only the
+    // RuleValidateEntity body itself is skipped. Rule services capture their
+    // inputs by value at construction, so a detached result for the exact same
+    // entity and service may also seed this memo at the current epoch; any
+    // future runtime lookup reads would require a fresh key/invalidation rule.
+    let maxRuleResultMemoEntries = 1024
+
+    let ruleResultMemoComparer =
+        { new IEqualityComparer<RuleResultMemoKey> with
+            member _.Equals(x, y) =
+                x.ResourceEpoch = y.ResourceEpoch
+                && x.LocalisationEpoch = y.LocalisationEpoch
+                && x.LazyCreated = y.LazyCreated
+                && pathComparer.Equals(x.Path, y.Path)
+                && Object.ReferenceEquals(x.Entity, y.Entity)
+                && Object.ReferenceEquals(x.Service, y.Service)
+
+            member _.GetHashCode(x) =
+                HashCode.Combine(
+                    pathComparer.GetHashCode(x.Path),
+                    x.ResourceEpoch,
+                    x.LocalisationEpoch,
+                    x.LazyCreated
+                ) }
+
+    let ruleResultMemo = Dictionary<RuleResultMemoKey, ValidationResult>(ruleResultMemoComparer)
+    let ruleResultMemoOrder = LinkedList<RuleResultMemoKey>()
+    let ruleResultMemoNodes = Dictionary<RuleResultMemoKey, LinkedListNode<RuleResultMemoKey>>(ruleResultMemoComparer)
+    let ruleResultMemoGate = obj ()
+    let mutable ruleResultMemoHits = 0L
+    let mutable ruleResultMemoMisses = 0L
+    let mutable ruleResultMemoStores = 0L
+    let mutable ruleResultMemoEvictions = 0L
+
+    let ruleResultMemoKeyFor (entity: Entity) (service: RuleValidationService) (lazyCreated: bool) =
+        RuleResultMemoKey(
+            entity.filepath,
+            entity,
+            service,
+            ResourceManagerEager.currentResource (),
+            ResourceManagerEager.currentLocalisation (),
+            lazyCreated
+        )
+
+    let tryTakeRuleResultMemo (entity: Entity) (service: RuleValidationService) (lazyCreated: bool) =
+        let key = ruleResultMemoKeyFor entity service lazyCreated
+
+        lock ruleResultMemoGate (fun () ->
+            match ruleResultMemo.TryGetValue key with
+            | true, result ->
+                ruleResultMemoHits <- ruleResultMemoHits + 1L
+
+                match ruleResultMemoNodes.TryGetValue key with
+                | true, node ->
+                    ruleResultMemoOrder.Remove node
+                    ruleResultMemoOrder.AddLast node
+                | _ -> ()
+
+                Some result
+            | _ ->
+                ruleResultMemoMisses <- ruleResultMemoMisses + 1L
+                None)
+
+    // Persist a completed result only after addToCache has consumed it, and
+    // never for cancelled or superseded runs.
+    let storeRuleResultMemo (entity: Entity) (service: RuleValidationService) (lazyCreated: bool) (result: ValidationResult) =
+        let key = ruleResultMemoKeyFor entity service lazyCreated
+
+        lock ruleResultMemoGate (fun () ->
+            ruleResultMemoStores <- ruleResultMemoStores + 1L
+            ruleResultMemo.[key] <- result
+
+            match ruleResultMemoNodes.TryGetValue key with
+            | true, node ->
+                ruleResultMemoOrder.Remove node
+                ruleResultMemoOrder.AddLast node
+            | _ ->
+                let node = ruleResultMemoOrder.AddLast key
+                ruleResultMemoNodes.[key] <- node
+
+            while ruleResultMemo.Count > maxRuleResultMemoEntries do
+                let evicted = ruleResultMemoOrder.First.Value
+                ruleResultMemoOrder.RemoveFirst()
+                ruleResultMemoNodes.Remove evicted |> ignore
+                ruleResultMemo.Remove evicted |> ignore
+                ruleResultMemoEvictions <- ruleResultMemoEvictions + 1L)
+
+    let removeRuleResultMemoWhere predicate =
+        lock ruleResultMemoGate (fun () ->
+            for key in ruleResultMemo.Keys |> Seq.toArray do
+                if predicate key then
+                    ruleResultMemo.Remove key |> ignore
+
+                    match ruleResultMemoNodes.TryGetValue key with
+                    | true, node ->
+                        ruleResultMemoOrder.Remove node
+                        ruleResultMemoNodes.Remove key |> ignore
+                    | _ -> ())
+
+    // Edited entities must never keep their predecessors alive. The current
+    // entity's entry remains reusable; older records at the same path are
+    // released eagerly instead of waiting for LRU eviction or Cleanup.
+    let removeRuleResultMemoForEntity (entity: Entity) =
+        removeRuleResultMemoWhere (fun key ->
+            pathComparer.Equals(key.Path, entity.filepath)
+            && not (Object.ReferenceEquals(key.Entity, entity)))
+
+    let removeRuleResultMemoForPath filePath =
+        removeRuleResultMemoWhere (fun key -> pathComparer.Equals(key.Path, filePath))
+
+    let cleanupRuleResultMemo (existingFiles: Set<string>) =
+        removeRuleResultMemoWhere (fun key -> not (existingFiles.Contains key.Path))
+
     let addToCache (entity: Entity) errors =
         // Try to get all other files which this file had generated errors for
         // And all files that it now generates errors for
@@ -509,6 +670,7 @@ type ValidationManager<'T when 'T :> ComputedData>
         entities
         |> List.iter (fun struct (entity, _) ->
             removeDetachedRuleResult entity.filepath
+            removeRuleResultMemoForEntity entity
             addToCache entity Seq.empty |> ignore)
         lock localisationReferenceGate (fun () ->
             if localisationReferenceIndexBuilt then
@@ -529,14 +691,20 @@ type ValidationManager<'T when 'T :> ComputedData>
                 ruleCancellation.Cancel()
                 OK
 
-            let ruleValidate (e: Entity) =
+            let ruleValidate (struct (e: Entity, lazyData: Lazy<'T>)) =
                 if validationCancelled () then
                     cancelledResult ()
                 else
-                    let result =
+                    let service = services.ruleValidationService.Value
+                    let lazyCreated = lazyData.IsValueCreated
+
+                    let result, fromMemo =
                         match tryTakeDetachedRuleResult e with
-                        | Some cached -> Some cached
-                        | None -> runRuleValidation e
+                        | Some cached -> Some cached, false
+                        | None ->
+                            match tryTakeRuleResultMemo e service lazyCreated with
+                            | Some cached -> Some cached, true
+                            | None -> runRuleValidation e, false
 
                     match result with
                     | None -> cancelledResult ()
@@ -550,6 +718,14 @@ type ValidationManager<'T when 'T :> ComputedData>
 
                         let impactedFiles = addToCache e errors
                         impactedFiles |> Seq.iter impactedFileBag.Add
+
+                        // The result is complete and consumed; persist it for
+                        // identical future entities unless this run was
+                        // cancelled or superseded mid-flight.
+                        if not fromMemo
+                           && not (ruleCancellation.IsCancellationRequested || validationCancelled ()) then
+                            storeRuleResultMemo e service lazyCreated res
+
                         let fileIndex = fileIndexOfFile e.filepath
 
                         res
@@ -560,7 +736,6 @@ type ValidationManager<'T when 'T :> ComputedData>
 
             let directErrors =
                 entities
-                |> List.map (fun struct (e, _) -> e)
                 <&!&> ruleValidate                |> function
                     | Invalid(_, es) -> es
                     | _ -> []
@@ -766,7 +941,7 @@ type ValidationManager<'T when 'T :> ComputedData>
         if settings.dynamicValidators.IsEmpty || validationCancelled () then
             shallow, deep
         else
-            let workspaceEntities = EntitySet(resources.AllEntities())
+            let workspaceEntities = dynamicWorkspaceEntitySetSnapshot ()
             let changedEntities = EntitySet entities
             let dynamicErrors =
                 settings.dynamicValidators
@@ -1056,6 +1231,7 @@ type ValidationManager<'T when 'T :> ComputedData>
             for filePath in detachedRuleResults.Keys |> Seq.toArray do
                 if not (existingFiles.Contains filePath) then
                     removeDetachedRuleResultUnsafe filePath)
+        cleanupRuleResultMemo existingFiles
         lock localisationReferenceGate (fun () ->
             if localisationReferenceIndexBuilt then
                 for filePath in localisationKeysByFile.Keys |> Seq.toArray do
@@ -1064,6 +1240,7 @@ type ValidationManager<'T when 'T :> ComputedData>
 
     member _.InvalidateFile(filepath: string) =
         removeDetachedRuleResult filepath
+        removeRuleResultMemoForPath filepath
 
     member _.CachedRuleErrors(entities: struct (Entity * Lazy<'T>) list) =
         let res =
@@ -1079,3 +1256,19 @@ type ValidationManager<'T when 'T :> ComputedData>
         (res |> List.choose (fun (_, errors) -> errors) |> List.collect id) @ forced
 
     member _.ErrorCache() = errorCache
+
+    /// Aggregate memo counters (hits, misses, stores, evictions); diagnostics
+    /// equivalence is observed through the public validation results, these
+    /// only assist verification.
+    member internal _.RuleResultMemoStats =
+        lock ruleResultMemoGate (fun () ->
+            ruleResultMemoHits, ruleResultMemoMisses, ruleResultMemoStores, ruleResultMemoEvictions)
+
+    member internal _.RuleResultMemoCount =
+        lock ruleResultMemoGate (fun () -> ruleResultMemo.Count)
+
+    /// Workspace snapshot build/reuse counters for the deferred dynamic
+    /// validators.
+    member internal _.DynamicWorkspaceSnapshotStats =
+        lock dynamicWorkspaceGate (fun () ->
+            dynamicWorkspaceSnapshotBuilds, dynamicWorkspaceSnapshotReuses)

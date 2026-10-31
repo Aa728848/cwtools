@@ -892,6 +892,17 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
 
     member _.Resources: IResourceAPI<'T> = resourceManager.Api
     member internal _.LastLazyRefreshStats = lastLazyRefreshStats
+
+    /// Aggregate hit/miss counters for the reference-keyed service input caches.
+    member internal _.ServiceInputCacheStats() = rulesManager.ServiceInputCacheStats()
+
+    /// Aggregate counters for the staged processed-localisation candidate lifecycle.
+    member internal _.ProcessedLocalisationCommandStats() =
+        localisationManager.ProcessedLocalisationCommandStats()
+
+    /// Aggregate replaced/skipped counters for the last on-demand Lazy recompute.
+    member internal _.ForceRecomputeStats() = resourceManager.ForceRecomputeStats()
+
     member _.ResourceManager = resourceManager
     member _.Lookup: 'L = lookup
     // member __.AllLocalisation() = localisationManager.allLocalisation()
@@ -1238,10 +1249,11 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
         LanguageFeatures.clearScriptedEffectParamMapCache ()
         match rulesManager.CommitConfigRules staged with
         | Some(rules, info, completion) ->
+            // The staged commit already published the processed-localisation candidate
+            // resolved during prepare; do not re-run a full reprocess here.
             this.RuleValidationService <- Some rules
             this.InfoService <- Some info
             this.completionService <- Some completion
-            refreshProcessedLocalisation ()
             this.ResetValidationManager()
             LanguageFeatures.clearCompletionEntityCache ()
             LanguageFeatures.clearTypeReferenceIndexCache ()
@@ -1273,7 +1285,8 @@ type GameObject<'T, 'L when 'T :> ComputedData and 'L :> Lookup>
                       afterRecomputeCreated = afterRecomputeCreated
                       newlyCreated = max 0 (afterRefreshCreated - beforeCreated)
                       total = total }
-            refreshProcessedLocalisation ()
+            // The staged commit already published the processed-localisation candidate
+            // resolved during prepare; do not re-run a full reprocess here.
             this.ResetValidationManager()
             LanguageFeatures.clearCompletionEntityCache ()
             LanguageFeatures.clearTypeReferenceIndexCache ()

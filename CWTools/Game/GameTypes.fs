@@ -165,7 +165,17 @@ type StagedCacheRefresh =
       newRulesDataGenerated: bool
       ruleService: obj
       infoService: obj
-      completionService: obj }
+      completionService: obj
+      /// Processed-localisation candidate resolved against the staged clone's indexes
+      /// during prepare. Commit publishes this instead of re-running a full reprocess.
+      processedLocCandidate: obj
+      /// lookup.proccessedLoc reference at prepare; commit-time ReferenceEquals guard.
+      baseProcessedLoc: obj
+      /// LocalisationManager parsed-source identity at prepare; commit-time guard so a
+      /// candidate can never be published after a localisation edit.
+      baseLocalisationSources: obj
+      /// ResourceManagerEager localisation epoch at prepare; commit-time guard.
+      localisationEpoch: int }
 
 /// Parsed replacement rules and fully prepared derived services. The live lookup
 /// is unchanged until CommitConfigRules validates the captured generation guards.
