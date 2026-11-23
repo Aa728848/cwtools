@@ -693,127 +693,130 @@ type CompletionService
                         CompletionCategory.Other
                     )
 
-                match r with
-                | NodeRule(SpecificField(SpecificValue s), innerRules) ->
-                    [| createSnippetForClausei
-                           innerRules
-                           o.description
-                           (StringResource.stringManager.GetStringForID s.normal) |]
-                | NodeRule(ValueField(ValueType.Enum e), innerRules) ->
-                    enums.TryFind(e)
-                    |> Option.map (fun (_, es) ->
-                        es.StringValues
-                        |> Array.ofSeq
-                        |> Array.map (fun e -> createSnippetForClausei innerRules o.description e))
-                    |> Option.defaultValue [||]
-                | NodeRule(ValueField _, _) -> [||]
-                | NodeRule(AliasField _, _) -> [||]
-                | NodeRule(FilepathField _, _) -> [||]
-                | NodeRule(IconField(folder), innerRules) ->
-                    checkIconField folder
-                    |> Array.map (fun e -> createSnippetForClausei innerRules o.description e)
-                | NodeRule(LocalisationField _, _) -> [||]
-                | NodeRule(ScopeField(x), innerRules) ->
-                    (completionForScopeDotChain
-                        key
-                        context
-                        innerRules
-                        o.description
-                        (CompletionScopeExpectation.Scopes x))
-                    |> List.toArray
-                //TODO: Scopes better
-                | NodeRule(SubtypeField _, _) -> [||]
-                | NodeRule(TypeField(TypeType.Simple t), innerRules) ->
-                    tryFindTypeValueList t
-                    |> Option.map (fun ts ->
-                        ts
-                        |> Seq.map (fun e -> createSnippetForClausei innerRules o.description e)
-                        |> Seq.toArray)
-                    |> Option.defaultValue [||]
-                | NodeRule(TypeField(TypeType.Complex(p, t, s)), innerRules) ->
-                    tryFindTypeValueList t
-                    |> Option.map (fun ts ->
-                        ts
-                        |> Seq.map (fun e -> createSnippetForClausei innerRules o.description (p + e + s))
-                        |> Seq.toArray)
-                    |> Option.defaultValue [||]
-                | NodeRule(VariableGetField v, innerRules) ->
-                    varMap.TryFind(v)
-                    |> Option.map (fun ss ->
-                        ss.StringValues
-                        |> List.ofSeq
-                        |> List.map (fun e -> createSnippetForClausei innerRules o.description e)
-                        |> List.toArray)
-                    |> Option.defaultValue [||]
-
-                | LeafRule(SpecificField(SpecificValue s), _) ->
-                    [| keyvalue (StringResource.stringManager.GetStringForID s.normal) |]
-                | LeafRule(ValueField(ValueType.Enum e), _) ->
-                    enums.TryFind(e)
-                    |> Option.map (fun (_, es) -> es.StringValues |> Array.ofSeq |> Array.map (fun e -> keyvalue e))
-                    |> Option.defaultValue [||]
-                | LeafRule(ValueField _, _) -> [||]
-                | LeafRule(AliasField _, _) -> [||]
-                | LeafRule(FilepathField _, _) -> [||]
-                | LeafRule(IconField(folder), _) -> checkIconField folder |> Array.map keyvalue
-                | LeafRule(LocalisationField _, _) -> [||]
-                | LeafRule(ScopeField _, _) ->
-                    scopeFieldAll
-                    |> Seq.map (fun x -> keyvalueWithCustomScopeReq x.requiredScopes x.key)
-                    |> Seq.toArray
-                //TODO: Scopes
-                | LeafRule(SubtypeField _, _) -> [||]
-                | LeafRule(TypeField(TypeType.Simple t), _) ->
-                    tryFindTypeValueList t
-                    |> Option.map (fun ts -> ts |> Seq.map keyvalue |> Seq.toArray)
-                    |> Option.defaultValue [||]
-                | LeafRule(TypeField(TypeType.Complex(p, t, s)), _) ->
-                    tryFindTypeValueList t
-                    |> Option.map (fun ts -> ts |> Seq.map (fun e -> keyvalue (p + e + s)) |> Seq.toArray)
-                    |> Option.defaultValue [||]
-                | LeafRule(VariableGetField v, _) ->
-                    varMap.TryFind(v)
-                    |> Option.map (fun ss -> ss.StringValues |> Array.ofSeq |> Array.map keyvalue)
-                    |> Option.defaultValue [||]
-                | LeafRule(VariableSetField v, _) ->
-                    varMap.TryFind(v)
-                    |> Option.map (fun ss -> ss.StringValues |> Array.ofSeq |> Array.map keyvalue)
-                    |> Option.defaultValue [||]
-
-                | LeafValueRule lv ->
-                    match lv with
-                    | NewField.TypeField(TypeType.Simple t) ->
-                        tryFindTypeValueList t
-                        |> Option.defaultValue []
-                        |> Seq.map CompletionResponse.CreateSimple
-                        |> Seq.toArray
-                    | NewField.TypeField(TypeType.Complex(p, t, s)) ->
-                        tryFindTypeValueList t
-                        |> Option.map (fun ns -> List.map (fun n -> p + n + s) ns)
-                        |> Option.defaultValue []
-                        |> Seq.map CompletionResponse.CreateSimple
-                        |> Seq.toArray
-                    | NewField.ValueField(Enum e) ->
+                if o.errorIfOnlyMatch.IsSome then
+                    [||]
+                else
+                    match r with
+                    | NodeRule(SpecificField(SpecificValue s), innerRules) ->
+                        [| createSnippetForClausei
+                               innerRules
+                               o.description
+                               (StringResource.stringManager.GetStringForID s.normal) |]
+                    | NodeRule(ValueField(ValueType.Enum e), innerRules) ->
                         enums.TryFind(e)
-                        |> Option.map (fun (_, s) -> s.StringValues |> List.ofSeq)
-                        |> Option.defaultValue []
-                        |> Seq.map CompletionResponse.CreateSimple
-                        |> Seq.toArray
-                    | NewField.VariableGetField v ->
+                        |> Option.map (fun (_, es) ->
+                            es.StringValues
+                            |> Array.ofSeq
+                            |> Array.map (fun e -> createSnippetForClausei innerRules o.description e))
+                        |> Option.defaultValue [||]
+                    | NodeRule(ValueField _, _) -> [||]
+                    | NodeRule(AliasField _, _) -> [||]
+                    | NodeRule(FilepathField _, _) -> [||]
+                    | NodeRule(IconField(folder), innerRules) ->
+                        checkIconField folder
+                        |> Array.map (fun e -> createSnippetForClausei innerRules o.description e)
+                    | NodeRule(LocalisationField _, _) -> [||]
+                    | NodeRule(ScopeField(x), innerRules) ->
+                        (completionForScopeDotChain
+                            key
+                            context
+                            innerRules
+                            o.description
+                            (CompletionScopeExpectation.Scopes x))
+                        |> List.toArray
+                    //TODO: Scopes better
+                    | NodeRule(SubtypeField _, _) -> [||]
+                    | NodeRule(TypeField(TypeType.Simple t), innerRules) ->
+                        tryFindTypeValueList t
+                        |> Option.map (fun ts ->
+                            ts
+                            |> Seq.map (fun e -> createSnippetForClausei innerRules o.description e)
+                            |> Seq.toArray)
+                        |> Option.defaultValue [||]
+                    | NodeRule(TypeField(TypeType.Complex(p, t, s)), innerRules) ->
+                        tryFindTypeValueList t
+                        |> Option.map (fun ts ->
+                            ts
+                            |> Seq.map (fun e -> createSnippetForClausei innerRules o.description (p + e + s))
+                            |> Seq.toArray)
+                        |> Option.defaultValue [||]
+                    | NodeRule(VariableGetField v, innerRules) ->
                         varMap.TryFind(v)
-                        |> Option.map (fun s -> s.StringValues |> List.ofSeq)
-                        |> Option.defaultValue []
-                        |> Seq.map CompletionResponse.CreateSimple
+                        |> Option.map (fun ss ->
+                            ss.StringValues
+                            |> List.ofSeq
+                            |> List.map (fun e -> createSnippetForClausei innerRules o.description e)
+                            |> List.toArray)
+                        |> Option.defaultValue [||]
+
+                    | LeafRule(SpecificField(SpecificValue s), _) ->
+                        [| keyvalue (StringResource.stringManager.GetStringForID s.normal) |]
+                    | LeafRule(ValueField(ValueType.Enum e), _) ->
+                        enums.TryFind(e)
+                        |> Option.map (fun (_, es) -> es.StringValues |> Array.ofSeq |> Array.map (fun e -> keyvalue e))
+                        |> Option.defaultValue [||]
+                    | LeafRule(ValueField _, _) -> [||]
+                    | LeafRule(AliasField _, _) -> [||]
+                    | LeafRule(FilepathField _, _) -> [||]
+                    | LeafRule(IconField(folder), _) -> checkIconField folder |> Array.map keyvalue
+                    | LeafRule(LocalisationField _, _) -> [||]
+                    | LeafRule(ScopeField _, _) ->
+                        scopeFieldAll
+                        |> Seq.map (fun x -> keyvalueWithCustomScopeReq x.requiredScopes x.key)
                         |> Seq.toArray
-                    | NewField.VariableSetField v ->
+                    //TODO: Scopes
+                    | LeafRule(SubtypeField _, _) -> [||]
+                    | LeafRule(TypeField(TypeType.Simple t), _) ->
+                        tryFindTypeValueList t
+                        |> Option.map (fun ts -> ts |> Seq.map keyvalue |> Seq.toArray)
+                        |> Option.defaultValue [||]
+                    | LeafRule(TypeField(TypeType.Complex(p, t, s)), _) ->
+                        tryFindTypeValueList t
+                        |> Option.map (fun ts -> ts |> Seq.map (fun e -> keyvalue (p + e + s)) |> Seq.toArray)
+                        |> Option.defaultValue [||]
+                    | LeafRule(VariableGetField v, _) ->
                         varMap.TryFind(v)
-                        |> Option.map (fun s -> s.StringValues |> List.ofSeq)
-                        |> Option.defaultValue []
-                        |> Seq.map CompletionResponse.CreateSimple
-                        |> Seq.toArray
+                        |> Option.map (fun ss -> ss.StringValues |> Array.ofSeq |> Array.map keyvalue)
+                        |> Option.defaultValue [||]
+                    | LeafRule(VariableSetField v, _) ->
+                        varMap.TryFind(v)
+                        |> Option.map (fun ss -> ss.StringValues |> Array.ofSeq |> Array.map keyvalue)
+                        |> Option.defaultValue [||]
+
+                    | LeafValueRule lv ->
+                        match lv with
+                        | NewField.TypeField(TypeType.Simple t) ->
+                            tryFindTypeValueList t
+                            |> Option.defaultValue []
+                            |> Seq.map CompletionResponse.CreateSimple
+                            |> Seq.toArray
+                        | NewField.TypeField(TypeType.Complex(p, t, s)) ->
+                            tryFindTypeValueList t
+                            |> Option.map (fun ns -> List.map (fun n -> p + n + s) ns)
+                            |> Option.defaultValue []
+                            |> Seq.map CompletionResponse.CreateSimple
+                            |> Seq.toArray
+                        | NewField.ValueField(Enum e) ->
+                            enums.TryFind(e)
+                            |> Option.map (fun (_, s) -> s.StringValues |> List.ofSeq)
+                            |> Option.defaultValue []
+                            |> Seq.map CompletionResponse.CreateSimple
+                            |> Seq.toArray
+                        | NewField.VariableGetField v ->
+                            varMap.TryFind(v)
+                            |> Option.map (fun s -> s.StringValues |> List.ofSeq)
+                            |> Option.defaultValue []
+                            |> Seq.map CompletionResponse.CreateSimple
+                            |> Seq.toArray
+                        | NewField.VariableSetField v ->
+                            varMap.TryFind(v)
+                            |> Option.map (fun s -> s.StringValues |> List.ofSeq)
+                            |> Option.defaultValue []
+                            |> Seq.map CompletionResponse.CreateSimple
+                            |> Seq.toArray
+                        | _ -> [||]
+                    | SubtypeRule _ -> [||]
                     | _ -> [||]
-                | SubtypeRule _ -> [||]
-                | _ -> [||]
         //TODO: Add leafvalue
         let typeCompletionItems (typeName: string) (suffixPatterns: string list) =
             let values = tryFindTypeValueList typeName |> Option.defaultValue []

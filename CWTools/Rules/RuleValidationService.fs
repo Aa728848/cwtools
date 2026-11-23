@@ -966,6 +966,11 @@ type RuleValidationService
                                        node.Key)
                                    node ]
                          ))
+            <&&> (match options.errorIfOnlyMatch with
+                  | Some msg ->
+                      inv (ErrorCodes.FromRulesCustomError msg severity) node
+                      <&&&> OK
+                  | None -> OK)
             <&&> match rule with
                  | IgnoreField _ -> OK
                  | ScopeField s ->

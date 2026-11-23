@@ -419,5 +419,130 @@ let testc =
 
               Expect.equal unusedErrors OK "Obsolete on_action keys should not also be reported as unused"
 
+          testWithCapturedLogs "error_if_only_match warns on both leaf and block deprecated fields and omits them from completions"
+          <| fun () ->
+              let config =
+                  "types = {\n\
+                  \ttype[sample_district] = {\n\
+                  \t\tpath = \"game/common/districts\"\n\
+                  \t}\n\
+                  }\n\
+                  sample_district = {\n\
+                  \t## cardinality = 0..1\n\
+                  \tis_uncapped = { }\n\
+                  \t## cardinality = 0..1\n\
+                  \t## severity = warning\n\
+                  \t## error_if_only_match = \"Deprecated: use is_uncapped\"\n\
+                  \tis_capped_by_modifier = bool\n\
+                  \t## cardinality = 0..1\n\
+                  \tincluded_buildings = { }\n\
+                  \t## cardinality = 0..1\n\
+                  \t## severity = warning\n\
+                  \t## error_if_only_match = \"Deprecated: use included_buildings\"\n\
+                  \tinclude = { }\n\
+                  }"
+
+              let rules, types, _, _, _ =
+                  parseConfig
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      scopeManager.AnyScope
+                      scopeManager.ScopeGroups
+                      "districts.cwt"
+                      config
+
+              let input =
+                  "district_test = {\n\
+                  \tis_capped_by_modifier = yes\n\
+                  \tinclude = { }\n\
+                  }"
+
+              match CKParser.parseString input "common/districts/test.txt" with
+              | Success(r, _, _) ->
+                  let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+
+                  let apply =
+                      RuleValidationService(
+                          RulesWrapper(rules |> List.toArray),
+                          types,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          [||],
+                          FrozenSet.Empty,
+                          effectMap,
+                          effectMap,
+                          (scopeManager.ParseScope () "Any"),
+                          changeScope,
+                          defaultContext,
+                          STL STLLang.Default,
+                          processLocalisationLazy.Value,
+                          validateLocalisationLazy.Value
+                      )
+
+                  let errors = apply.ManualRuleValidate("common/districts/test.txt", node)
+
+                  match errors with
+                  | OK -> Expect.isTrue false "Expected deprecation warnings for both leaf and block fields"
+                  | Invalid(_, es) ->
+                      Expect.equal es.Length 2 $"Expected leaf + block deprecation warnings, got %A{es}"
+                      Expect.isTrue (es |> List.forall (fun e -> e.severity = Severity.Warning)) "Both should be warnings"
+                      Expect.isTrue (es |> List.exists (fun e -> e.message.Contains("use is_uncapped"))) "Should warn on deprecated leaf"
+                      Expect.isTrue (es |> List.exists (fun e -> e.message.Contains("use included_buildings"))) "Should warn on deprecated block"
+              | Failure(e, _, _) -> Expect.isTrue false e
+
+              let completionInput = "district_test = {\n\t" + magicCharString + "\n}"
+
+              match CKParser.parseString completionInput "common/districts/test.txt" with
+              | Success(r, _, _) ->
+                  let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+                  let entity =
+                      { filepath = "common/districts/test.txt"
+                        logicalpath = "common/districts/test.txt"
+                        rawEntity = node
+                        entity = node
+                        validate = true
+                        entityType = EntityType.Other
+                        overwrite = Overwrite.No }
+
+                  let comp =
+                      CompletionService(
+                          RulesWrapper(rules |> List.toArray),
+                          types,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          FrozenDictionary.Empty,
+                          [||],
+                          FrozenSet.Empty,
+                          effectMap,
+                          effectMap,
+                          [],
+                          changeScope,
+                          defaultContext,
+                          (scopeManager.ParseScope () "Any"),
+                          [],
+                          STL STLLang.Default,
+                          ({ dataTypes = Map.empty
+                             dataTypeNames = Set.empty
+                             functions = Map.empty
+                             confidentFunctions = Map.empty
+                             promotes = Map.empty }: CWTools.Parser.DataTypeParser.JominiLocDataTypes),
+                          processLocalisationLazy.Value,
+                          validateLocalisationLazy.Value
+                      )
+
+                  let labels =
+                      comp.Complete(mkPos 2 2, entity, None, None)
+                      |> List.map (function
+                          | Simple(l, _, _) -> l
+                          | Detailed(l, _, _, _) -> l
+                          | Snippet(l, _, _, _, _) -> l)
+
+                  Expect.contains labels "is_uncapped" "Active block field should still be suggested"
+                  Expect.contains labels "included_buildings" "Active replacement field should still be suggested"
+                  Expect.isFalse (List.contains "is_capped_by_modifier" labels) "Deprecated leaf field should be omitted from completions"
+                  Expect.isFalse (List.contains "include" labels) "Deprecated block field should be omitted from completions"
+              | Failure(e, _, _) -> Expect.isTrue false e
+
           ]
 
