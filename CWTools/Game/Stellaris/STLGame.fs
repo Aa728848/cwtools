@@ -1546,11 +1546,19 @@ module STLGameFunctions =
             // their concrete caller/root ownership by object identity so contextual
             // event-target inference does not jump back to the unexpanded template.
             let expandedNodeOwners = emptyExpandedNodeOwners ()
+            let rootNodeCache = Dictionary<Node, Node array>(HashIdentity.Reference)
+            let cachedAllNodes (root: Node) =
+                match rootNodeCache.TryGetValue root with
+                | true, nodes -> nodes
+                | _ ->
+                    let nodes = allNodes root |> Seq.toArray
+                    rootNodeCache[root] <- nodes
+                    nodes
 
             for entity in entities do
                 checkCancellation ()
                 for root in entity.entity.Nodes do
-                    for node in allNodes root do
+                    for node in cachedAllNodes root do
                         if
                             not (String.IsNullOrWhiteSpace node.Position.FileName)
                             && not (String.Equals(node.Position.FileName, entity.filepath, StringComparison.OrdinalIgnoreCase))
@@ -1575,7 +1583,7 @@ module STLGameFunctions =
             for entity in entities do
                 checkCancellation ()
                 for root in entity.entity.Nodes do
-                    for node in allNodes root do
+                    for node in cachedAllNodes root do
                         match normalizeKey node.Key with
                         | "enable_special_project" ->
                             let id = node.TagText "name" |> cleanValue
@@ -1613,7 +1621,7 @@ module STLGameFunctions =
                     for root in entity.entity.Nodes do
                         match situationScopes |> Map.tryFind (root.Key.ToLowerInvariant()) with
                         | Some targets ->
-                            for node in allNodes root do
+                            for node in cachedAllNodes root do
                                 if normalizeKey node.Key = "situation_event" then
                                     let eventId = node.TagText "id" |> cleanValue
                                     for target in targets do
@@ -1650,7 +1658,7 @@ module STLGameFunctions =
                     let callerCarrierId =
                         if normalizeKey root.Key = "carrier_event" && carrierEventIds.Contains rootEventId then Some rootEventId else None
 
-                    for node in allNodes root do
+                    for node in cachedAllNodes root do
                         if (normalizeKey node.Key).EndsWith("_event") && not (node.Position.Equals root.Position) then
                             let targetId = node.TagText "id" |> cleanValue
                             if eventDefinitions.ContainsKey targetId then
@@ -1709,7 +1717,7 @@ module STLGameFunctions =
 
                     if isOnActionPath entity then
                         let eventListNodes =
-                            allNodes root
+                            cachedAllNodes root
                             |> Seq.filter (fun node ->
                                 let key = normalizeKey node.Key
                                 key = "events" || key = "random_events")
@@ -1840,7 +1848,7 @@ module STLGameFunctions =
                         | Some eventScope -> setCarrierHost eventScope rootContext
                         | None -> rootContext
 
-                    for node in allNodes root do
+                    for node in cachedAllNodes root do
                         // Expanded inline-script nodes retain the source inline
                         // file's range; their call-site scope is handled by the
                         // normal expansion pass.
