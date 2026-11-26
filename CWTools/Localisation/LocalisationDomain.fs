@@ -7,7 +7,7 @@ open FParsec
 
 type Entry =
     { key: string
-      value: char option
+      value: string option
       desc: string
       position: range
       errorRange: range option }

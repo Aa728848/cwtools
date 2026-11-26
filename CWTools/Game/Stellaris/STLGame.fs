@@ -1286,6 +1286,27 @@ module STLGameFunctions =
                           Scopes = [ scope ] }
                 | None, None -> None)
 
+        let mutable cachedConfigRulesRef: RootRule array = null
+        let mutable cachedRulePushScopes = Dictionary<string, Scope>(StringComparer.OrdinalIgnoreCase)
+
+        let getRulePushScopes () =
+            let rules = lookup.configRules
+            if not (Object.ReferenceEquals(cachedConfigRulesRef, rules)) then
+                let dict = Dictionary<string, Scope>(StringComparer.OrdinalIgnoreCase)
+                for rule in rules do
+                    match rule with
+                    | AliasRule(("effect" | "trigger"), (NodeRule(SpecificField(SpecificValue name), _), opts)) ->
+                        match opts.pushScope with
+                        | Some ps when not (ps.Equals scopeManager.AnyScope) ->
+                            let key = CWTools.Utilities.StringResource.stringManager.GetStringForID name.normal
+                            if not (dict.ContainsKey key) then
+                                dict[key] <- ps
+                        | _ -> ()
+                    | _ -> ()
+                cachedRulePushScopes <- dict
+                cachedConfigRulesRef <- rules
+            cachedRulePushScopes
+
         let changeContextByKey (key: string) (context: ScopeContext) =
             match
                 changeScope.Invoke(
@@ -1300,7 +1321,11 @@ module STLGameFunctions =
                 )
             with
             | ScopeResult.NewScope(newContext, _, _) -> newContext
-            | _ -> context
+            | _ ->
+                let normalized = normalizeKey key
+                match getRulePushScopes().TryGetValue normalized with
+                | true, pushScope -> context.PushScopeReset pushScope
+                | false, _ -> context
 
         let contextAtNodeFromRoot typeName (root: Node) (target: Node) =
             trySubtypeContext typeName root

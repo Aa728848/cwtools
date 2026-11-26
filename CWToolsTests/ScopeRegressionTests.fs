@@ -1142,4 +1142,195 @@ let nestedEventTargetTests =
                   match errors with
                   | OK -> ()
                   | Invalid(_, es) -> failtest $"Expected no errors, but got %A{es}"
-              | Failure(err, _, _) -> failwith err ]
+              | Failure(err, _, _) -> failwith err
+
+          testCase "conditional parameter branches do not trigger false max cardinality warnings"
+          <| fun () ->
+              let config =
+                  "types = {\n\
+                       type[scripted_effect] = {\n\
+                           path = \"game/common/scripted_effects\"\n\
+                       }\n\
+                   }\n\
+                   alias[effect:while] = {\n\
+                       ## cardinality = 0..1\n\
+                       count = int\n\
+                   }\n\
+                   scripted_effect = {\n\
+                       alias_name[effect] = alias_match_left[effect]\n\
+                   }\n"
+
+              let conditionalInput =
+                  "my_effect = {\n\
+                       while = {\n\
+                           [[SINGLE_LOOP]\n\
+                               count = 1\n\
+                           ]\n\
+                           [[!SINGLE_LOOP]\n\
+                               count = 5\n\
+                           ]\n\
+                       }\n\
+                   }\n"
+
+              let duplicateInput =
+                  "my_effect = {\n\
+                       while = {\n\
+                           count = 1\n\
+                           count = 5\n\
+                       }\n\
+                   }\n"
+
+              UtilityParser.initializeScopes None None
+
+              let rules, types, _, _, _ =
+                  parseConfig
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      (scopeManager.ParseScope () "Any")
+                      scopeManager.ScopeGroups
+                      "rules.cwt"
+                      config
+
+              let validate text =
+                  match CKParser.parseString text "common/scripted_effects/test.txt" with
+                  | Success(r, _, _) ->
+                      let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+                      let rulesWrapper = RulesWrapper(rules |> List.toArray)
+                      let validationService =
+                          RuleValidationService(
+                              rulesWrapper,
+                              types,
+                              FrozenDictionary.Empty,
+                              FrozenDictionary.Empty,
+                              FrozenDictionary.Empty,
+                              [||],
+                              FrozenSet.Empty,
+                              effectMap,
+                              effectMap,
+                              (scopeManager.ParseScope () "Any"),
+                              changeScope,
+                              defaultContext,
+                              STL STLLang.Default,
+                              processLocalisationLazy.Value,
+                              validateLocalisationLazy.Value
+                          )
+                      validationService.ManualRuleValidate("common/scripted_effects/test.txt", node)
+                  | Failure(err, _, _) -> failwith err
+
+              match validate conditionalInput with
+              | OK -> ()
+              | Invalid(_, es) -> failtest $"Conditional macro branches should not report cardinality errors, got %A{es}"
+
+              match validate duplicateInput with
+              | OK -> failtest "Unconditional duplicate keys must still report cardinality warning"
+              | Invalid(_, es) ->
+                  Expect.isTrue
+                      (es |> List.exists (fun e -> e.message.Contains("Too many count")))
+                      $"Expected 'Too many count' warning, got %A{es}"
+
+          testCase "is_scope_type narrows current scope in conjunctive trigger blocks only"
+          <| fun () ->
+              let config =
+                  "types = {\n\
+                       type[test_trait] = {\n\
+                           path = \"game/common/traits\"\n\
+                       }\n\
+                   }\n\
+                   alias[trigger:is_scope_type] = scalar\n\
+                   ## scopes = { country }\n\
+                   alias[trigger:is_at_war] = bool\n\
+                   alias[trigger:OR] = {\n\
+                       alias_name[trigger] = alias_match_left[trigger]\n\
+                   }\n\
+                   alias[trigger:NOT] = {\n\
+                       alias_name[trigger] = alias_match_left[trigger]\n\
+                   }\n\
+                   test_trait = {\n\
+                       ## replace_scope = { this = planet root = planet }\n\
+                       potential = {\n\
+                           alias_name[trigger] = alias_match_left[trigger]\n\
+                       }\n\
+                   }\n"
+
+              let narrowedInput =
+                  "trait_a = {\n\
+                       potential = {\n\
+                           is_scope_type = country\n\
+                           is_at_war = no\n\
+                       }\n\
+                   }\n"
+
+              let orBlockInput =
+                  "trait_b = {\n\
+                       potential = {\n\
+                           OR = {\n\
+                               is_scope_type = country\n\
+                               is_at_war = no\n\
+                           }\n\
+                       }\n\
+                   }\n"
+
+              let notBlockInput =
+                  "trait_c = {\n\
+                       potential = {\n\
+                           NOT = {\n\
+                               is_scope_type = country\n\
+                               is_at_war = no\n\
+                           }\n\
+                       }\n\
+                   }\n"
+
+              UtilityParser.initializeScopes None (Some(CWTools.Common.STLConstants.defaultScopeInputs ()))
+
+              let rules, types, _, _, _ =
+                  parseConfig
+                      (scopeManager.ParseScope())
+                      scopeManager.AllScopes
+                      scopeManager.AnyScope
+                      scopeManager.ScopeGroups
+                      "rules.cwt"
+                      config
+
+              let validate text =
+                  match CKParser.parseString text "common/traits/test.txt" with
+                  | Success(r, _, _) ->
+                      let node = STLProcess.shipProcess.ProcessNode () "root" range.Zero r
+                      let rulesWrapper = RulesWrapper(rules |> List.toArray)
+                      let validationService =
+                          RuleValidationService(
+                              rulesWrapper,
+                              types,
+                              FrozenDictionary.Empty,
+                              FrozenDictionary.Empty,
+                              FrozenDictionary.Empty,
+                              [||],
+                              FrozenSet.Empty,
+                              effectMap,
+                              effectMap,
+                              scopeManager.AnyScope,
+                              changeScope,
+                              defaultContext,
+                              STL STLLang.Default,
+                              processLocalisationLazy.Value,
+                              validateLocalisationLazy.Value
+                          )
+                      validationService.ManualRuleValidate("common/traits/test.txt", node)
+                  | Failure(err, _, _) -> failwith err
+
+              match validate narrowedInput with
+              | OK -> ()
+              | Invalid(_, es) -> failtest $"Expected is_scope_type = country to narrow scope in conjunctive block, got %A{es}"
+
+              match validate orBlockInput with
+              | OK -> failtest "OR block should NOT narrow scope via is_scope_type"
+              | Invalid(_, es) ->
+                  Expect.isTrue
+                      (es |> List.exists (fun e -> e.code = "CW247"))
+                      $"Expected CW247 wrong scope in OR block, got %A{es}"
+
+              match validate notBlockInput with
+              | OK -> failtest "NOT block should NOT narrow scope via is_scope_type"
+              | Invalid(_, es) ->
+                  Expect.isTrue
+                      (es |> List.exists (fun e -> e.code = "CW247"))
+                      $"Expected CW247 wrong scope in NOT block, got %A{es}" ]

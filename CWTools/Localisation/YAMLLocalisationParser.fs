@@ -22,7 +22,7 @@ module YAMLLocalisationParser =
     let private desc =
         many1Satisfy isLocValueChar .>>. getPosition .>> restOfLine false <?> "desc"
 
-    let value = digit .>> spaces <?> "version"
+    let value = many1Satisfy isDigit .>> spaces <?> "version"
 
     let getRange (start: Position) (endp: Position) =
         mkRange start.StreamName (mkPos (int start.Line) (int start.Column)) (mkPos (int endp.Line) (int endp.Column))

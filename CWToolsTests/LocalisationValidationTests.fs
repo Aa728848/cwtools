@@ -1068,6 +1068,24 @@ let locFileValidationRegressionTests =
 
           testCase "missing language suffix is classified as Warning severity"
           <| fun () ->
-              Expect.equal CWTools.Validation.ErrorCodes.MissingLocFileLang.Severity CWTools.Common.Severity.Warning "CW255 should be Warning" ]
+              Expect.equal CWTools.Validation.ErrorCodes.MissingLocFileLang.Severity CWTools.Common.Severity.Warning "CW255 should be Warning"
+
+          testCase "YAML localisation parser accepts multi-digit version numbers"
+          <| fun () ->
+              let text = "l_english:\n KEY_SINGLE:0 \"Single digit\"\n KEY_DOUBLE:10 \"Double digit\"\n KEY_FOURTEEN:14 \"Version fourteen\"\n KEY_NO_VER: \"No version\"\n"
+              match CWTools.Localisation.YAMLLocalisationParser.parseLocText text "multi_ver_l_english.yml" with
+              | FParsec.CharParsers.ParserResult.Success(res, _, _) ->
+                  let entries = res.entries |> Seq.toList
+                  Expect.hasLength entries 4 "All four entries should be parsed"
+                  Expect.equal entries.[0].value (Some "0") "Single-digit version should be preserved"
+                  Expect.equal entries.[0].desc "\"Single digit\"" "Single-digit desc should stay quoted"
+                  Expect.equal entries.[1].value (Some "10") "Multi-digit version :10 should be parsed completely"
+                  Expect.equal entries.[1].desc "\"Double digit\"" "Desc after :10 must start with double quote"
+                  Expect.equal entries.[2].value (Some "14") "Multi-digit version :14 should be parsed completely"
+                  Expect.equal entries.[2].desc "\"Version fourteen\"" "Desc after :14 must start with double quote"
+                  Expect.equal entries.[3].value None "Missing version should parse as None"
+                  Expect.equal entries.[3].desc "\"No version\"" "Desc without version should stay quoted"
+              | FParsec.CharParsers.ParserResult.Failure(err, _, _) ->
+                  failtestf "Multi-digit localisation version failed to parse: %s" err ]
 
 

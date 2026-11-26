@@ -334,6 +334,15 @@ type RuleValidationService
         | _ -> direct
 
 
+    let isScopeTypeId = stringManager.InternIdentifierToken "is_scope_type"
+
+    let isNonConjunctiveBlock (key: string) =
+        String.Equals(key, "OR", StringComparison.OrdinalIgnoreCase)
+        || String.Equals(key, "NOR", StringComparison.OrdinalIgnoreCase)
+        || String.Equals(key, "NOT", StringComparison.OrdinalIgnoreCase)
+        || String.Equals(key, "NAND", StringComparison.OrdinalIgnoreCase)
+        || String.Equals(key, "calc_true_if", StringComparison.OrdinalIgnoreCase)
+
     let rec applyClauseField
         (enforceCardinality: bool)
         (nodeSeverity: Severity option)
@@ -351,17 +360,61 @@ type RuleValidationService
 
         // 检查当前节点的子元素中是否包含宏/参数模式
         // 包括完整的 $PARAM$ 键和嵌入式参数（如 event_target:wg_crisis$CURRENT$_country）
+        let hasConditionalBranch =
+            startNode.LeafValues |> Seq.exists (fun lv ->
+                let text = lv.ValueText
+                text.StartsWith("[[") || text.StartsWith("\\["))
+            || startNode.Nodes |> Seq.exists (fun n ->
+                (stringManager.GetMetadataForID n.KeyId.lower).startsWithSquareBracket && n.Key.StartsWith("[["))
+            || startNode.Leaves |> Seq.exists (fun l ->
+                (stringManager.GetMetadataForID l.KeyId.lower).startsWithSquareBracket && l.Key.StartsWith("[["))
+
         let hasMacro =
-            (stringManager.GetMetadataForID startNode.KeyId.lower).containsDoubleDollar
+            hasConditionalBranch
+            || (stringManager.GetMetadataForID startNode.KeyId.lower).containsDoubleDollar
             || startNode.LeafValues |> Seq.exists (fun lv ->
                 let text = lv.ValueText
-                text.StartsWith("$") || text.StartsWith("\\[") || text.StartsWith("[[") ||
+                text.StartsWith("$") ||
                 text = "=" || text = "<" || text = ">" || text = "<=" || text = ">=" || text = "!=" || text = "==" || text = "?="
             )
             || startNode.Nodes |> Seq.exists (fun n ->
                 (stringManager.GetMetadataForID n.KeyId.lower).containsDoubleDollar)
             || startNode.Leaves |> Seq.exists (fun l ->
                 (stringManager.GetMetadataForID l.KeyId.lower).containsDoubleDollar)
+
+        // 在合取语义的触发器块中，若显式使用 `is_scope_type = <scope>` 进行运行时类型守卫，
+        // 则将当前块的校验作用域窄化为对应具体作用域，避免多态 from/target 产生误报。
+        let ctx =
+            if not hasConditionalBranch
+               && leafSpecificDict.ContainsKey isScopeTypeId.lower
+               && not (isNonConjunctiveBlock startNode.Key) then
+                let mutable matchedScope: Scope option = None
+                let mutable matchedCount = 0
+
+                for leaf in startNode.Leaves do
+                    if leaf.Operator = CWTools.Parser.Types.Operator.Equals then
+                        let _, keyIds, validationLeaf = RuleValidationHelpers.normalizeConditionalLeaf leaf
+
+                        if keyIds.lower = isScopeTypeId.lower then
+                            matchedCount <- matchedCount + 1
+
+                            if matchedCount = 1 then
+                                let token = validationLeaf.ValueText.Trim('"')
+
+                                match scopeManager.TryParseScope token with
+                                | Some s when s <> anyScope && s <> scopeManager.InvalidScope ->
+                                    matchedScope <- Some s
+                                | _ -> ()
+
+                match matchedCount, matchedScope with
+                | 1, Some narrowed ->
+                    { ctx with
+                        scopes =
+                            { ctx.scopes with
+                                Scopes = narrowed :: ctx.scopes.PopScope } }
+                | _ -> ctx
+            else
+                ctx
 
         let inline valueFun innerErrors (leaf: Leaf) =
             let key, keyIds, validationLeaf = RuleValidationHelpers.normalizeConditionalLeaf leaf
@@ -617,17 +670,6 @@ type RuleValidationService
                     true)
 
         let inline checkCardinality (clause: IClause) innerErrors (rule: NewRule) =
-            let hasMacro =
-                (stringManager.GetMetadataForID clause.KeyId.lower).containsDoubleDollar
-                || clause.LeafValues |> Seq.exists (fun lv ->
-                    let text = lv.ValueText
-                    text.StartsWith("$") || text.StartsWith("\\[") || text.StartsWith("[[") ||
-                    text = "=" || text = "<" || text = ">" || text = "<=" || text = ">=" || text = "!=" || text = "==" || text = "?="
-                )
-                || clause.Nodes |> Seq.exists (fun n ->
-                    (stringManager.GetMetadataForID n.KeyId.lower).containsDoubleDollar)
-                || clause.Leaves |> Seq.exists (fun l ->
-                    (stringManager.GetMetadataForID l.KeyId.lower).containsDoubleDollar)
             match rule with
             | NodeRule(SpecificField(SpecificValue key), _), opts
             | LeafRule(SpecificField(SpecificValue key), _), opts ->
@@ -654,7 +696,7 @@ type RuleValidationService
                             minSeverity)
                         clause
                     <&&&> innerErrors
-                else if opts.max < total then
+                else if opts.max < total && not hasConditionalBranch then
                     inv
                         (ErrorCodes.ConfigRulesWrongNumber
                             $"Too many %s{stringManager.GetStringForID key.normal}, expecting at most %i{opts.max}"
@@ -687,7 +729,7 @@ type RuleValidationService
                         (ErrorCodes.ConfigRulesWrongNumber $"Missing {l}, expecting at least %i{opts.min}" minSeverity)
                         clause
                     <&&&> innerErrors
-                else if opts.max < total then
+                else if opts.max < total && not hasConditionalBranch then
                     inv
                         (ErrorCodes.ConfigRulesWrongNumber
                             $"Too many n {l}, expecting at most %i{opts.max}"
@@ -716,7 +758,7 @@ type RuleValidationService
                         (ErrorCodes.ConfigRulesWrongNumber $"Missing {l}, expecting at least %i{opts.min}" minSeverity)
                         clause
                     <&&&> innerErrors
-                else if opts.max < total then
+                else if opts.max < total && not hasConditionalBranch then
                     inv
                         (ErrorCodes.ConfigRulesWrongNumber
                             $"Too many l {l} {r}, expecting at most %i{opts.max}"
@@ -745,7 +787,7 @@ type RuleValidationService
                         (ErrorCodes.ConfigRulesWrongNumber $"Missing {l}, expecting at least %i{opts.min}" minSeverity)
                         clause
                     <&&&> innerErrors
-                else if opts.max < total then
+                else if opts.max < total && not hasConditionalBranch then
                     inv
                         (ErrorCodes.ConfigRulesWrongNumber
                             $"Too many lv {l}, expecting at most %i{opts.max}"
@@ -770,7 +812,7 @@ type RuleValidationService
                             minSeverity)
                         clause
                     <&&&> innerErrors
-                else if opts.max < total then
+                else if opts.max < total && not hasConditionalBranch then
                     inv
                         (ErrorCodes.ConfigRulesWrongNumber
                             $"Too many clauses, expecting at most %i{opts.max}"

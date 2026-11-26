@@ -560,6 +560,33 @@ let carrierEventScopeValidationTests =
                                   }
                               }
                           }
+
+                          country_event = {
+                              id = carrier_origin.900
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  random_owned_planet = {
+                                      root = {
+                                          country_event = {
+                                              id = carrier_origin.901
+                                              scopes = { from = prev }
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+
+                          country_event = {
+                              id = carrier_origin.901
+                              hide_window = yes
+                              is_triggered_only = yes
+                              immediate = {
+                                  from = {
+                                      set_planet_flag = iterator_prev_from_marker
+                                  }
+                              }
+                          }
                           """
 
                   let projectPath, projectText =
@@ -1284,6 +1311,18 @@ let carrierEventScopeValidationTests =
                       situationPath
                       situationText
                       "monthly_progress target should resolve the Situation's proven Country target"
+                  expectScope
+                      "Planet"
+                      "iterator_prev_from_marker"
+                      eventPath
+                      eventText
+                      "event scopes.from = prev inside root should resolve the enclosing rule iterator's push_scope"
+                  expectFromScopes
+                      [ "Planet" ]
+                      "iterator_prev_from_marker"
+                      eventPath
+                      eventText
+                      "event calls inside rule iterators should propagate the iterator scope as FROM"
               finally
                   if Directory.Exists folder then
                       Directory.Delete(folder, true) ]

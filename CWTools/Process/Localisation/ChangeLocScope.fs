@@ -31,7 +31,7 @@ and JominiLocCommand = Command of string * JominiLocCommandParam list
 
 type LocEntry =
     { key: string
-      value: char option
+      value: string option
       desc: string
       position: range
       refs: string list

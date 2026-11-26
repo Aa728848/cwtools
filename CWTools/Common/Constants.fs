@@ -301,6 +301,9 @@ module rec NewScope =
         member this.AnyScope = anyScope
         member this.InvalidScope = invalidScope
         member this.ParseScope = parseScope
+        member this.TryParseScope(x: string) =
+            let found, value = dict.TryGetValue(x)
+            if found then Some value else None
         member this.ScopeGroups = groupDict
 
         member this.ParseScopes =
