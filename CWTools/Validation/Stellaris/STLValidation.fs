@@ -1330,10 +1330,13 @@ module STLValidation =
 
         List.concat
             [ fileHotBlocks "**/common/jobs/*.txt" (hotBlocksByName [ "weight"; "possible" ] "job")
+              fileHotBlocks "**/common/pop_jobs/*.txt" (fun entity ->
+                  hotBlocksByName [ "weight"; "possible" ] "job" entity @ triggeredBlocks entity)
               fileHotBlocks "**/common/decisions/*.txt" (hotBlocksByName [ "potential"; "allow" ] "decision")
               fileHotBlocks "**/common/casus_belli/*.txt" (hotBlocksByName [ "potential" ] "casus belli")
               fileHotBlocks "**/common/buildings/*.txt" triggeredBlocks
               fileHotBlocks "**/common/districts/*.txt" triggeredBlocks
+              fileHotBlocks "**/common/zones/*.txt" triggeredBlocks
               fileHotBlocks "**/common/factions/*.txt" (hotBlocksByName [ "can_join_faction"; "is_potential"; "can_pop_group_join_factions" ] "faction")
               fileHotBlocks "**/common/pop_faction_types/*.txt" (hotBlocksByName [ "can_join_faction"; "is_potential"; "can_pop_group_join_factions" ] "faction")
               fileHotBlocks "**/common/edicts/*.txt" (hotBlocksByName [ "potential"; "allow" ] "edict")
@@ -1436,8 +1439,8 @@ module STLValidation =
 
     let private isContainerIterator (key: string) =
         let k = key.ToLowerInvariant()
-        (k.StartsWith("every_") || k.StartsWith("any_") || k.StartsWith("count_"))
-        && (k.Contains("pop_group") || k.Contains("planet") || k.Contains("ship"))
+        (k.StartsWith("every_", StringComparison.Ordinal) || k.StartsWith("any_", StringComparison.Ordinal) || k.StartsWith("count_", StringComparison.Ordinal))
+        && (k.Contains("pop_group") || k.Contains("pop_job") || k.Contains("planet") || k.Contains("colony") || k.Contains("ship"))
 
     let private isUpwardScopeHop (key: string) =
         match key.ToLowerInvariant().TrimEnd('?') with
@@ -1539,7 +1542,8 @@ module STLValidation =
                 | dot when dot > 0 ->
                     let prefix = trimmed.Substring(0, dot).ToLowerInvariant()
                     match prefix with
-                    | "owner" | "root" | "from" | "prev" | "space_owner" | "solar_system" | "capital_scope" -> true
+                    | "owner" | "root" | "from" | "prev" | "space_owner" | "solar_system" | "capital_scope"
+                    | "overlord" | "controller" | "starbase" | "sector" | "federation" | "ideology" -> true
                     | _ -> false
                 | _ -> false
 
@@ -1584,7 +1588,8 @@ module STLValidation =
                     let parts = key.Split('.')
                     parts.Length >= 2 && parts |> Array.forall (fun p ->
                         match p.ToLowerInvariant().TrimEnd('?') with
-                        | "prev" | "from" | "root" | "this" | "owner" | "space_owner" | "capital_scope" | "solar_system" -> true
+                        | "prev" | "from" | "root" | "this" | "owner" | "space_owner" | "capital_scope" | "solar_system"
+                        | "overlord" | "controller" | "starbase" | "sector" | "federation" | "ideology" -> true
                         | _ -> false)
                 else
                     false
@@ -1614,7 +1619,7 @@ module STLValidation =
             | errors -> Invalid(Guid.NewGuid(), errors)
 
     let private unsafeScopeTargets =
-        Set.ofList [ "owner"; "space_owner"; "overlord"; "capital_scope"; "controller"; "starbase"; "sector"; "federation"; "from"; "prev" ]
+        Set.ofList [ "owner"; "space_owner"; "overlord"; "capital_scope"; "controller"; "starbase"; "sector"; "federation"; "ideology"; "from"; "prev" ]
 
     let validateUnsafeScopeSwitchInHotContext: LookupValidator<_> =
         fun _ _ es ->
@@ -1707,10 +1712,29 @@ module STLValidation =
             |> List.filter (fun e -> not (isInlineScriptFile e.Position.FileName))
             <&!&> eventToErrors
 
-    let private dynamicNameFlagKey (key: string) =
+    let private dynamicNameDirectKey (key: string) =
         key.EndsWith("_flag", StringComparison.OrdinalIgnoreCase)
         || key.IndexOf("event_target", StringComparison.OrdinalIgnoreCase) >= 0
         || key == "save_scope_as"
+        || key.EndsWith("_variable", StringComparison.OrdinalIgnoreCase)
+        || key == "is_variable_set"
+        || key.EndsWith("_point_of_interest", StringComparison.OrdinalIgnoreCase)
+
+    let private isVariableDynamicBlock (parentKey: string) =
+        parentKey.EndsWith("_variable", StringComparison.OrdinalIgnoreCase)
+        || parentKey.EndsWith("_to_variable", StringComparison.OrdinalIgnoreCase)
+        || parentKey == "check_variable"
+        || parentKey == "check_variable_arithmetic"
+        || parentKey == "round_variable_to_closest"
+        || parentKey == "set_variable_to_random_value"
+        || parentKey == "get_galaxy_setup_value"
+
+    let private dynamicNameLeafApplies (parentKey: string) (leafKey: string) =
+        dynamicNameDirectKey leafKey
+        || (leafKey == "flag" && parentKey.EndsWith("_flag", StringComparison.OrdinalIgnoreCase))
+        || (leafKey == "key" && parentKey == "set_saved_date")
+        || (leafKey == "id" && parentKey == "create_point_of_interest")
+        || ((leafKey == "which" || leafKey == "variable") && isVariableDynamicBlock parentKey)
 
     let private dynamicNameDigitSuffixError (leaf: Leaf) =
         let value = leaf.Value.ToRawString()
@@ -1733,7 +1757,7 @@ module STLValidation =
                     node.Leaves
                     |> Seq.fold
                         (fun acc (leaf: Leaf) ->
-                            if dynamicNameFlagKey leaf.Key then
+                            if dynamicNameLeafApplies node.Key leaf.Key then
                                 match dynamicNameDigitSuffixError leaf with
                                 | Some e -> e :: acc
                                 | None -> acc

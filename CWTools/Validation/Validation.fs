@@ -641,7 +641,7 @@ type ErrorCodes =
           Severity = Severity.Warning
           Message =
             sprintf
-                "Dynamic name '%s' ends with a digit; dynamic flag/event-target names are 'base + decimal ID' with no separator, so trailing digits can collide (a1@23 vs a12@3)"
+                "Dynamic name '%s' ends with a digit; dynamic flag/event-target/variable names are 'base + decimal ID' with no separator, so trailing digits can collide (a1@23 vs a12@3)"
                 name }
 
     static member PopJobSyncEffectInLoop (effect: string) (loopType: string) =

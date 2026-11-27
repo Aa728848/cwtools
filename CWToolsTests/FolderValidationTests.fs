@@ -2700,6 +2700,39 @@ let hotContextCostValidationRegressionTests =
 
               expectSingleCode "CW279" "job weight" (validate (costedCommandLookup ()) job)
 
+          testCase "flags expensive trigger in vanilla pop_jobs weight and triggered modifier"
+          <| fun _ ->
+              let popJob =
+                  makeEntity
+                      EntityType.Other
+                      "game/common/pop_jobs/00_test_jobs.txt"
+                      "test_job = {\n\
+                       \tweight = { expensive_trigger = yes }\n\
+                       \ttriggered_planet_modifier = {\n\
+                       \t\ttrigger = { expensive_trigger = yes }\n\
+                       \t}\n\
+                       }"
+
+              match validate (costedCommandLookup ()) popJob with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 2 "Both weight and triggered modifier in common/pop_jobs should be flagged"
+                  Expect.equal (errors |> List.map _.code |> Set.ofList) (Set.ofList [ "CW279" ]) "Codes should be CW279"
+              | OK -> failtest "Expected CW279 diagnostics in common/pop_jobs"
+
+          testCase "flags expensive trigger inside zone triggered modifier"
+          <| fun _ ->
+              let zone =
+                  makeEntity
+                      EntityType.Other
+                      "game/common/zones/00_test_zones.txt"
+                      "zone_test = {\n\
+                       \ttriggered_district_planet_modifier = {\n\
+                       \t\ttrigger = { expensive_trigger = yes }\n\
+                       \t}\n\
+                       }"
+
+              expectSingleCode "CW279" "triggered modifier" (validate (costedCommandLookup ()) zone)
+
           testCase "flags expensive trigger in decision allow block"
           <| fun _ ->
               let decision =
@@ -2904,7 +2937,7 @@ let dynamicNameDigitSuffixValidationRegressionTests =
 
     testList
         "dynamic name digit suffix validation regression"
-        [ testCase "flags flag and event target names ending in a digit"
+        [ testCase "flags flag, event target, variable, and POI dynamic names ending in a digit"
           <| fun _ ->
               let script =
                   makeEntity
@@ -2915,12 +2948,16 @@ let dynamicNameDigitSuffixValidationRegressionTests =
                        \tsave_scope_as = c3@root\n\
                        \tset_country_flag = flag@root\n\
                        \tset_country_flag = plain\n\
-                       \tset_variable = x4@root\n\
+                       \tset_variable = { which = x4@root value = 1 }\n\
+                       \tclear_variable = v5@root\n\
+                       \tset_timed_country_flag = { flag = t6@root days = 30 }\n\
+                       \tcreate_point_of_interest = { id = p7@root }\n\
+                       \tother_block = { id = ok8@root }\n\
                        }"
 
               match validate script with
               | Invalid(_, errors) ->
-                  Expect.equal errors.Length 3 "Only digit-suffixed dynamic names should be reported"
+                  Expect.equal errors.Length 7 "Only digit-suffixed dynamic flag/target/variable/POI names should be reported"
                   Expect.equal
                       (errors |> List.map _.code |> Set.ofList)
                       (Set.ofList [ "CW281" ])
@@ -2931,6 +2968,10 @@ let dynamicNameDigitSuffixValidationRegressionTests =
                   Expect.exists messages (fun m -> m.Contains("a1@root")) "Unquoted dynamic flag should be flagged"
                   Expect.exists messages (fun m -> m.Contains("b2@root")) "Quoted event target should be flagged"
                   Expect.exists messages (fun m -> m.Contains("c3@root")) "save_scope_as should be flagged"
+                  Expect.exists messages (fun m -> m.Contains("x4@root")) "Dynamic variable in which= should be flagged (4.6 ProcessDynamicFlag)"
+                  Expect.exists messages (fun m -> m.Contains("v5@root")) "Direct clear_variable dynamic name should be flagged"
+                  Expect.exists messages (fun m -> m.Contains("t6@root")) "Timed flag block flag= should be flagged"
+                  Expect.exists messages (fun m -> m.Contains("p7@root")) "POI dynamic id= should be flagged"
               | OK -> failtest "Expected dynamic name digit suffix diagnostics"
 
           testCase "allows dynamic names without a digit suffix"
@@ -3237,6 +3278,26 @@ let extendedHotContextAndAntiPatternTests =
 
               let res = CWTools.Validation.Stellaris.STLValidation.validateUnsafeScopeSwitchInHotContext (costedCommandLookup ()) (makeSet []) (makeSet [ job ])
               Expect.equal res OK "owner? with question mark is safe"
+
+          testCase "CW288 flags unsafe ideology scope switch in common/pop_jobs"
+          <| fun _ ->
+              let job =
+                  makeEntity
+                      "game/common/pop_jobs/test_job.txt"
+                      "job_test = {\n\
+                       \tweight = {\n\
+                       \t\tideology = {\n\
+                       \t\t\tis_ideology_stagnating = no\n\
+                       \t\t}\n\
+                       \t}\n\
+                       }"
+
+              let res = CWTools.Validation.Stellaris.STLValidation.validateUnsafeScopeSwitchInHotContext (costedCommandLookup ()) (makeSet []) (makeSet [ job ])
+              match res with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 1 "Expected single CW288 error on ideology in common/pop_jobs"
+                  Expect.equal errors.Head.code "CW288" "Diagnostic should be CW288"
+              | OK -> failtest "Expected CW288"
 
           testCase "CW289 flags inline script invoked over 20 times"
           <| fun _ ->
