@@ -459,22 +459,37 @@ module STLValidation =
            "is_being_purged"
            "is_being_assimilated"
            "has_planet"
-           "is_sapient" |]
+           "is_sapient"
+           "is_robotic" |]
+
+    let private eventPreTriggersForType (eventKey: string) =
+        match eventKey.ToLowerInvariant() with
+        | "planet_event"
+        | "colony_event"
+        | "carrier_event" -> Some stellarisEventPreTriggers
+        | "country_event" -> Some [| "is_ai" |]
+        | "pop_event"
+        | "pop_group_event" -> Some stellarisPopJobPreTriggers
+        | "system_event" -> Some [| "has_owner"; "is_capital"; "is_occupied_flag" |]
+        | "starbase_event" -> Some [| "has_owner"; "is_occupied_flag" |]
+        | "leader_event" -> Some [| "has_owner"; "is_idle" |]
+        | "situation_event" -> Some [| "has_owner" |]
+        | _ -> None
 
     let validatePreTriggers: STLStructureValidator =
         fun _ es ->
             let events =
                 es.AllOfTypeChildren EntityType.Events
                 |> List.filter (fun e -> not (isInlineScriptFile e.Position.FileName))
-                |> List.filter (fun e -> e.Key == "planet_event")
+                |> List.choose (fun e -> eventPreTriggersForType e.Key |> Option.map (fun pts -> e, pts))
 
-            let eventToErrors (event: Node) =
+            let eventToErrors (event: Node, allowedPreTriggers: string array) =
                 match event.Child "trigger" with
                 | None -> OK
                 | Some trigger ->
                     trigger.Leaves
                     <&!&> (fun l ->
-                        if Array.contains l.Key stellarisEventPreTriggers then
+                        if Array.contains l.Key allowedPreTriggers then
                             Invalid(Guid.NewGuid(), [ inv (ErrorCodes.PossiblePretrigger l.Key) l ])
                         else
                             OK)
@@ -1080,7 +1095,11 @@ module STLValidation =
             // if sType == tType && sSize == tSize then OK else Invalid (Guid.NewGuid(), [inv (ErrorCodes.MismatchedComponentAndSlot slot sSize template tSize) c])
 
             let defaultTemplates =
-                [ "DEFAULT_COLONIZATION_SECTION"; "DEFAULT_CONSTRUCTION_SECTION" ]
+                [ "DEFAULT_COLONIZATION_SECTION"
+                  "DEFAULT_COLONIZATION_SECTION2"
+                  "DEFAULT_CONSTRUCTION_SECTION"
+                  "DEFAULT_SCIENCESHIP_SECTION"
+                  "DEFAULT_TRANSPORT_SECTION" ]
 
             let validateSection (s: Node) =
                 let section = s.TagText "template"

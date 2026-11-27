@@ -37,6 +37,7 @@ module STLConstants =
            "Debris", [ "debris" ]
            "Explorer", [ "explorer" ]
            "Background Planet", [ "backgroundplanet"; "background_planet" ]
+           "Background Colony", [ "backgroundcolony"; "background_colony" ]
            "Astral Rift", [ "astral_rift" ]
            "Lock Country", [ "lockcountry"; "lock_country" ]
            "Bypass", [ "bypass" ]
@@ -49,7 +50,8 @@ module STLConstants =
            "Thrid Damage Country", [ "third_damaging_country" ]
            "Colony", [ "colony" ]
            "Mission", [ "mission" ]
-           "Carrier", [ "carrier" ] |]
+           "Carrier", [ "carrier" ]
+           "Ideology", [ "ideology" ] |]
 
     let defaultScopeInputs () =
         defaultScopes
@@ -64,19 +66,31 @@ module STLConstants =
 
     let defaultModifiers =
         [| "Pop", Some 2, [ "pop"; "planet"; "galacticobject"; "country" ]
+           "Stations", Some 12, [ "starbase"; "galacticobject"; "country" ]
            "Science", Some 64, [ "ship"; "country" ]
            "Country", Some 256, [ "country" ]
            "Army", Some 512, [ "army"; "planet"; "country" ]
            "Leader", Some 1024, [ "leader"; "country" ]
            "Planet", Some 2048, [ "planet"; "galacticobject"; "country" ]
+           "Ship Components", Some 4096, [ "ship"; "starbase"; "fleet"; "country" ]
            "PopFaction", Some 8192, [ "popfaction"; "country" ]
            "ShipSize", Some 16496, [ "ship"; "starbase"; "country" ]
            "Ship", Some 16508, [ "ship"; "starbase"; "fleet"; "country" ]
+           "Deposits", Some 32768, [ "deposit"; "planet"; "leader"; "country" ]
            "Megastructure", Some 65536, [ "megastructure"; "country" ]
            "PlanetClass", Some 131072, [ "planet"; "pop"; "country" ]
            "Starbase", Some 262144, [ "starbase"; "country" ]
            "Resource", Some 524288, [ "country"; "galacticobject"; "planet"; "pop"; "starbase"; "leader"; "ship" ]
-           "Federation", Some 4194304, [ "federation" ] |]
+           "Star Systems", Some 1048576, [ "galacticobject" ]
+           "Waystations", Some 2097152, [ "starbase"; "country" ]
+           "Federation", Some 4194304, [ "federation" ]
+           "Espionage", Some 8388608, [ "country"; "spynetwork" ]
+           "Ship Design Stats", Some 33554432, [ "ship"; "starbase"; "fleet"; "country" ]
+           "Astral Rift", Some 67108864, [ "astral_rift" ]
+           "Cosmic Storm Influence Field", Some 134217728, [ "cosmic_storm_influence_field"; "galacticobject"; "country" ]
+           "Owned Ships", Some 268435456, [ "ship"; "starbase"; "fleet"; "leader"; "country" ]
+           "Galactic Community", Some 536870912, [ "country" ]
+           "Colony", Some 1073741824, [ "colony"; "leader"; "galacticobject"; "country" ] |]
 
     let defaultModifiersInputs () =
         defaultModifiers

@@ -82,6 +82,7 @@ module STLProcess =
         || key == "count_exact"
         || key == "count_at_least"
         || key == "count_at_most"
+        || key == "calc_true_if"
         || key == "any_of"
         || key == "hidden_effect"
         || key == "hidden_trigger"
@@ -127,7 +128,11 @@ module STLProcess =
 
             for value in current.Values do
                 let valueScopes =
-                    if value.Key.StartsWith('@') || value.Key = root then
+                    if
+                        value.Key.StartsWith('@')
+                        || value.Key = root
+                        || (current.Key == "calc_true_if" && value.Key == "amount")
+                    then
                         allScopesMask
                     else
                         match vanillaTriggersAndEffects.TryGetValue value.KeyId.normal with

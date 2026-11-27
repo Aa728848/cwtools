@@ -45,10 +45,25 @@ module STLEventValidation =
         let eventEffectKeys =
             [ "ship_event"
               "pop_event"
+              "pop_group_event"
               "fleet_event"
               "pop_faction_event"
               "country_event"
-              "planet_event" ]
+              "planet_event"
+              "colony_event"
+              "carrier_event"
+              "situation_event"
+              "leader_event"
+              "system_event"
+              "starbase_event"
+              "first_contact_event"
+              "espionage_operation_event"
+              "agreement_event"
+              "astral_rift_event"
+              "bypass_event"
+              "observer_event"
+              "cosmic_storm_event"
+              "cosmic_storm_influence_field_event" ]
 
         let fNode =
             (fun (x: Node) children ->

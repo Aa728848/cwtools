@@ -3314,3 +3314,164 @@ let extendedHotContextAndAntiPatternTests =
                   Expect.equal errors.Head.code "CW289" "Diagnostic should be CW289"
                   Expect.stringContains errors.Head.message "22 times" "Message should name count"
               | OK -> failtest "Expected CW289" ]
+
+[<Tests>]
+let stellaris46HardcodedParityTests =
+    let makeEntityWithType entityType logicalpath text =
+        match CKParser.parseString text logicalpath with
+        | Success(statements, _, _) ->
+            let node = STLProcess.shipProcess.ProcessNode () "root" (mkZeroFile logicalpath) statements
+
+            { filepath = logicalpath
+              logicalpath = logicalpath
+              rawEntity = node
+              entity = node
+              validate = true
+              entityType = entityType
+              overwrite = Overwrite.No }
+        | Failure(error, _, _) -> failwith error
+
+    let makeSet entities =
+        entities
+        |> List.map (fun entity ->
+            struct (
+                entity,
+                lazy (STLComputedData(None, None, None, false, None, None, None))
+            ))
+        |> EntitySet
+
+    testSequenced
+    <| testList
+        "stellaris 4.6 hardcoded parity regression"
+        [ testCase "defaultScopes and defaultModifiers cover 4.6 scopes and categories consistently"
+          <| fun _ ->
+              let scopeAliases =
+                  STLConstants.defaultScopes
+                  |> Array.collect (fun (_, aliases) -> aliases |> List.toArray)
+                  |> Array.map (fun s -> s.ToLowerInvariant())
+                  |> Set.ofArray
+
+              Expect.isTrue (scopeAliases.Contains "ideology") "defaultScopes should include ideology"
+              Expect.isTrue (scopeAliases.Contains "background_colony") "defaultScopes should include background_colony"
+
+              let modifierNames =
+                  STLConstants.defaultModifiers
+                  |> Array.map (fun (name, _, _) -> name)
+                  |> Set.ofArray
+
+              for expected in [ "Colony"; "Galactic Community"; "Cosmic Storm Influence Field"; "Ship Components"; "Stations"; "Deposits"; "Espionage"; "Astral Rift" ] do
+                  Expect.isTrue (modifierNames.Contains expected) $"defaultModifiers should include {expected}"
+
+              for (name, _, scopes) in STLConstants.defaultModifiers do
+                  for scopeAlias in scopes do
+                      Expect.isTrue
+                          (scopeAliases.Contains(scopeAlias.ToLowerInvariant()))
+                          $"defaultModifiers entry '{name}' references unknown scope alias '{scopeAlias}'"
+
+          testCase "validatePreTriggers covers 4.6 event types and pop_jobs is_robotic"
+          <| fun _ ->
+              let events =
+                  makeEntityWithType
+                      EntityType.Events
+                      "game/events/test_pretriggers.txt"
+                      "colony_event = { id = pt.1 trigger = { is_capital = yes } }\n\
+                       country_event = { id = pt.2 trigger = { is_ai = yes is_idle = yes } }\n\
+                       leader_event = { id = pt.3 trigger = { is_idle = yes } }\n\
+                       pop_group_event = { id = pt.4 trigger = { is_robotic = yes } }"
+
+              let popJob =
+                  makeEntityWithType
+                      EntityType.Other
+                      "game/common/pop_jobs/test_jobs.txt"
+                      "job_bot = { possible = { is_robotic = yes } }"
+
+              let res = STLValidation.validatePreTriggers (makeSet []) (makeSet [ events; popJob ])
+              match res with
+              | Invalid(_, errors) ->
+                  let codes = errors |> List.map (fun e -> e.code)
+                  Expect.allEqual codes "CW120" "All pre-trigger findings should be CW120"
+                  Expect.equal errors.Length 5 "Expected 4 event pre-triggers + 1 pop_job is_robotic (country_event is_idle must not trigger)"
+              | OK -> failtest "Expected CW120 diagnostics"
+
+          testCase "validateShipDesigns accepts 4.6 DEFAULT_* section templates and flags unknown ones"
+          <| fun _ ->
+              let designs =
+                  makeEntityWithType
+                      EntityType.GlobalShipDesigns
+                      "game/common/global_ship_designs/test_designs.txt"
+                      "ship_design = {\n\
+                       \tname = \"TEST_DEFAULTS\"\n\
+                       \tsection = { template = \"DEFAULT_COLONIZATION_SECTION2\" slot = \"mid\" }\n\
+                       \tsection = { template = \"DEFAULT_SCIENCESHIP_SECTION\" slot = \"mid\" }\n\
+                       \tsection = { template = \"DEFAULT_TRANSPORT_SECTION\" slot = \"mid\" }\n\
+                       }\n\
+                       ship_design = {\n\
+                       \tname = \"TEST_UNKNOWN\"\n\
+                       \tsection = { template = \"NO_SUCH_SECTION\" slot = \"mid\" }\n\
+                       }"
+
+              let res = STLValidation.validateShipDesigns (makeSet []) (makeSet [ designs ])
+              match res with
+              | Invalid(_, errors) ->
+                  Expect.equal errors.Length 1 "Only NO_SUCH_SECTION should fail ship design validation"
+                  Expect.stringContains errors.Head.message "NO_SUCH_SECTION" "Error should mention the unknown section"
+              | OK -> failtest "Expected unknown section template error"
+
+          testCase "STLEventValidation.findAllReferencedEvents discovers 4.6 event call types"
+          <| fun _ ->
+              let entity =
+                  makeEntityWithType
+                      EntityType.Events
+                      "game/events/test_chain.txt"
+                      "country_event = {\n\
+                       \tid = chain.1\n\
+                       \timmediate = {\n\
+                       \t\tpop_group_event = { id = chain.pg }\n\
+                       \t\tsituation_event = { id = chain.sit }\n\
+                       \t\tcolony_event = { id = chain.col }\n\
+                       \t\tastral_rift_event = { id = chain.ar }\n\
+                       \t\tcosmic_storm_influence_field_event = { id = chain.csif }\n\
+                       \t}\n\
+                       }"
+
+              let eventNode = entity.entity.Children |> List.head
+              let refs = STLEventValidation.findAllReferencedEvents [] eventNode
+              for expected in [ "chain.pg"; "chain.sit"; "chain.col"; "chain.ar"; "chain.csif" ] do
+                  Expect.contains refs expected $"findAllReferencedEvents should discover {expected}"
+
+          testCase "STLProcess infers scripted trigger scopes through calc_true_if"
+          <| fun _ ->
+              let entity =
+                  makeEntityWithType
+                      EntityType.Other
+                      "game/common/scripted_triggers/test_calc.txt"
+                      "my_calc_trigger = {\n\
+                       \tcalc_true_if = {\n\
+                       \t\tamount >= 1\n\
+                       \t\tcountry_only_trigger = yes\n\
+                       \t}\n\
+                       }"
+
+              if not scopeManager.Initialized then
+                  scopeManager.ReInit(STLConstants.defaultScopeInputs (), [||])
+
+              let triggerNode = entity.entity.Children |> List.head
+              let countryScope = scopeManager.ParseScope() "country"
+              let vanillaTriggers = System.Collections.Generic.Dictionary<StringToken, Scope list>()
+              vanillaTriggers.[(StringResource.stringManager.InternIdentifierToken "country_only_trigger").normal] <- [ countryScope ]
+              let effect =
+                  STLProcess.getScriptedTriggerScope
+                      false
+                      EffectType.Trigger
+                      Map.empty
+                      vanillaTriggers
+                      Map.empty
+                      (triggerNode, [])
+
+              Expect.equal effect.Scopes [ countryScope ] "calc_true_if should propagate inner trigger scope constraints"
+
+              // Also verify every defaultModifiersInputs() entry resolves its scopes cleanly.
+              let parsedModifiers = STLConstants.defaultModifiersInputs ()
+              Expect.equal parsedModifiers.Length STLConstants.defaultModifiers.Length "defaultModifiersInputs should preserve all default modifier categories"
+              for mc in parsedModifiers do
+                  Expect.isNonEmpty mc.scopes $"Modifier category '{mc.name}' should resolve at least one scope" ]
